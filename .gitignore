@@ -1,0 +1,36 @@
+CLAUDE.md
+MACHINE-SETUP.md
+.env
+.env*.local
+node_modules/
+.next/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Env / secrets (additional patterns beyond the fixed set above)
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# Build (additional, beyond the fixed set above)
+build/
+
+# Python (reserved for future use)
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Scratch / local-only
+.scratch/
+*.local
