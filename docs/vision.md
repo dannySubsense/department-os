@@ -16,6 +16,8 @@ Every module in Department OS produces an artifact that can be acted on, not jus
 
 Department OS is not a single app or a single workflow. It is the durable substrate — projects, evidence, decisions, workflow state, agent activity, costs, and outcomes — that every module and every workflow runs on top of. Department OS Core owns that substrate. Individual modules (Signal Foundry, Problem Department, Prototype Department, Creative Practice Engine) and packaged workflows are built on it and are replaceable; the record of what was tried, what was found, and what was decided is not.
 
+"Local-first" means Department OS Core keeps its authoritative record on infrastructure the user controls — it does not mean local-only; see [NORTHSTAR.md](NORTHSTAR.md#thesis) for the full definition.
+
 ## Who this is for
 
 A multidisciplinary creator and operator who needs to:

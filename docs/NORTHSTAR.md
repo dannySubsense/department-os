@@ -12,6 +12,8 @@ Department OS is a local-first operating system for discovering real problems, v
 
 It exists because ideas usually die in an ambiguous middle — noticed, discussed, never tested. Department OS closes that gap by making every module produce an artifact that can be acted on: a signal becomes a brief, a brief becomes a decision, a decision becomes a prototype, a prototype becomes evidence for the next decision. Department OS Core owns the durable substrate underneath this — domain records, evidence, workflow state, decisions, package versions, and knowledge relationships — so that record survives any individual module, workflow, or agent runtime.
 
+"Local-first" means Department OS Core keeps its authoritative domain records, evidence, workflow history, decisions, and package state in infrastructure controlled by the user. Cloud inference and external services may be used deliberately when useful, with explicit configuration, provenance, and appropriate data-boundary controls. Local-first does not mean local-only.
+
 ## Non-Goals
 
 - **Not a general-purpose agent framework.** Agent runtimes (Pi, OpenJarvis, Hermes, Claude Agent SDK, or otherwise) are replaceable execution components operating against Department OS Core, never forked or embedded as the product's identity.

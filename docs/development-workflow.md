@@ -2,19 +2,58 @@
 
 ## Roles
 
-- **The human (Danny)** — holds product, requirements, architecture, and final merge authority. All merges require human approval initially.
+- **Danny** — product, requirements, architecture, scope, and final merge authority. All merges require his explicit approval.
 - **Claude Code** — the primary builder. Implements features and documentation per approved specs.
-- **Codex** — the independent reviewer and quality-control engineer. Inspects diffs, compares implementation against specifications, identifies issues, adds or runs tests, and fixes confirmed problems through focused commits.
+- **Codex** — the independent engineering auditor and QC reviewer. Inspects the complete diff against the approved specification, adds or runs tests, and identifies confirmed issues for focused correction commits — independently of Claude Code, not as a rubber stamp.
+- **Frank** — the binding judgment gate. Evaluates specifications before implementation greenlight, and evaluates completed (and Codex-corrected) implementation before merge. Frank's verdict is PASS/FAIL/HALT — binding, no manual override.
 
-Doer and checker are deliberately different agents reading independently, not the same agent reviewing its own output. See the Research Data Integrity rules in [CONTRIBUTING.md](../CONTRIBUTING.md) for why this separation matters, especially in evidence-producing modules.
+Codex and Frank are complementary, not interchangeable: Codex is a diff-level engineering audit; Frank is a binding go/no-go judgment gate applied to the specification and to the final implementation state. Doer and checker are deliberately different agents reading independently, not the same agent reviewing its own output — see [Independent Review Discipline](#independent-review-discipline) and the Research Data Integrity rules in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## How work moves
 
-1. A requirement or milestone is documented (see [roadmap.md](roadmap.md) and [milestones/](milestones/)).
-2. Claude Code implements a complete vertical slice against that requirement, per [principles.md](principles.md).
-3. Codex independently reviews the diff against the spec, runs or adds tests, and raises confirmed issues.
-4. Confirmed issues are fixed through focused commits, not folded silently into the original change.
-5. The human approves and merges.
+1. **Intake** — the requirement or milestone is documented and approved (see [roadmap.md](roadmap.md) and [milestones/](milestones/)).
+2. **Interview** — a standalone stage, run inline in-session by default. It always produces `INTERVIEW.md` before specification begins, even when it finds zero gaps — the record of "no gaps found" is itself the deliverable, not an optional skip.
+3. **Specification** — requirements, architecture, and roadmap are written for the slice.
+4. **Frank's binding specification gate** — the spec must pass before implementation begins.
+5. **Human implementation greenlight** — Danny explicitly authorizes implementation to start.
+6. **Forge / slice-by-slice implementation** — Claude Code implements a complete vertical slice against the spec, per [principles.md](principles.md).
+7. **Codex independent review** — Codex reviews the complete diff against the approved specification, independently of Claude Code's reasoning path (see below).
+8. **Focused correction commits** — confirmed Codex findings are fixed through focused, traceable commits, not folded silently into the original change. This must happen *before* step 9, so the final gate evaluates the code that will actually be merged.
+9. **Frank's binding final forge gate** — evaluates the corrected, final branch state.
+10. **Human merge approval** — Danny merges.
+
+Live repository process documentation (e.g. a project's own `docs/decisions/` record) may establish a more specific order for a given case; absent that, the sequence above is authoritative.
+
+## Independent Review Discipline
+
+**Give the unbiased auditor the map, not the path.**
+
+An independent reviewer (Codex, Frank, or any future auditor role) should receive:
+
+- The objective.
+- The approved requirements.
+- The architecture boundaries.
+- The acceptance criteria.
+- The relevant diff and live repository state.
+
+The reviewer should **not** be handed the author's full reasoning path, debugging method, preferred diagnosis, or a checklist designed to reproduce the author's own assumptions — a method handed over is a lens handed over, and it caps the reviewer's ceiling at the author's.
+
+Independence means more than different agent identities. Reviewers using the same corrupted source or inherited assumptions as the author are not independent — N reviewers sharing one input is one review, not N. The author may provide factual orientation and repository context, but must not constrain the auditor to the author's method. Findings must be verified against live files, current git state, primary sources, raw data, and reproducible tests — not trusted because a prior pass reported them.
+
+## Git and Review Workflow
+
+- Bootstrap commits may already exist directly on `main` — that's expected for initial repository setup.
+- New implementation work uses focused branches and pull requests.
+- Direct implementation pushes to `main` are not allowed after bootstrap, unless Danny explicitly authorizes an exception.
+- Every pull request is tied to an approved intake, specification, milestone, or recorded decision — not opened speculatively.
+- Claude Code authors the implementation on its branch.
+- Codex reviews the complete diff independently against the approved specification (see Independent Review Discipline above).
+- Confirmed Codex findings are fixed through focused, traceable commits on the same branch.
+- Frank's final binding forge gate evaluates the corrected final branch state — not the pre-correction diff.
+- Required checks and tests must pass before merge.
+- Danny provides final merge approval.
+- No force-pushing shared or reviewed branches, unless Danny explicitly directs it.
+- Merge strategy (squash / merge commit / rebase) remains human-controlled until separately decided and recorded in [docs/decisions/](decisions/).
 
 ## Architecture and scope decisions
 
