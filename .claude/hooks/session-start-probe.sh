@@ -15,12 +15,17 @@ import sys
 
 probe_output = sys.argv[1]
 context = (
-    "GROUND-TRUTH PROBE (ran automatically, before any memory/LORE priming — "
-    "signpost/not-pillar discipline, see CLAUDE.md Session Start Behaviour). "
-    "This reflects what is verifiably true right now. Prior-session memory "
-    "and docs are the signpost; this is the pillar. Do not assert a status "
-    "claim that contradicts this output without re-checking.\n\n"
+    "GROUND-TRUTH PROBE OUTPUT (script-generated git/docs state only — this "
+    "is NOT memory priming and does NOT satisfy CLAUDE.md's Session Start "
+    "Behaviour step). It reflects what is verifiably true right now about "
+    "the repo; prior-session memory and docs are the signpost, this is the "
+    "pillar you verify them against — but it does not replace them.\n\n"
     + probe_output
+    + "\n\n"
+    "ACTION REQUIRED BEFORE YOUR FIRST REPLY: call search_knowledge per "
+    "CLAUDE.md's Session Start Behaviour section now, if you have not "
+    "already done so this session. This probe output being present is not "
+    "evidence that step happened — it is a separate, still-pending step."
 )
 print(json.dumps({
     "hookSpecificOutput": {
