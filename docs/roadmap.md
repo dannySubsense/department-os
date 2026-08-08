@@ -27,6 +27,7 @@ This roadmap tracks what is documented, what is next, and what is deferred. Per 
 | Replaceable agent-runtime support | Documented — first tested by Problem Department MVP runtime evaluation |
 | Evaluation and learning loops (models, prompts, tools, skills, costs, latency, quality) | Documented |
 | Packaged workflows (individually or as a suite purchasable) | Documented |
+| Multi-channel Seed Capture — ingest low-friction human-curiosity signals from heterogeneous personal channels (bookmarks, saves, browser history, notes, messages, email), preserve provenance, deduplicate/enrich, surface recurring themes, and promote selected items into seed ideas for Signal Foundry / Personal Pull / Problem Department. Capture must preserve first and evaluate second — a low-value-looking item today may only become meaningful once it cross-pollinates with unrelated items later. Not designed; explicitly out of scope for the Problem Department MVP. | Documented |
 
 ## Modules (documented, sequencing TBD)
 
