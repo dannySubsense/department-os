@@ -23,6 +23,17 @@ Markdown Setext headings, contradicting its own acceptance criterion; (3) the ru
 path with a directory component could never be flagged by anything. All four are fixed below, not
 softened or partially addressed.
 
+Revision note 3: this revision fixes a contradiction Danny's review found in Section 2's framing
+of `required-status-reference` and `canonical-reference`. Prior wording ("implemented only after
+...", "deferred") was ambiguous between "implemented but off by default" and "not built in v1" —
+but Section 7's acceptance criteria and the CLI's explicit `--rule` invocation contract both only
+make sense if these two rules are actually implemented, fixture-tested, and runnable in v1. This
+revision states unambiguously, everywhere the tier is described: all six rules are implemented and
+tested in v1; four are enabled by default; `required-status-reference` and `canonical-reference`
+are implemented but disabled by default because they are less battle-tested, and either is run via
+explicit `--rule` invocation or by setting `enabled: true` in config. This is a naming/framing fix
+only — the two rules' contracts (Section 4.4, 4.6) are unchanged.
+
 ---
 
 ## 1. Purpose and Non-Goals
@@ -56,28 +67,31 @@ This tool is explicitly **not**:
 
 ---
 
-## 2. Scope Tiers (v1 Required vs. Deferred)
+## 2. Scope Tiers (Default-Enabled vs. Disabled-by-Default)
 
-Six rule classes are specified in Section 4. Not all six ship enabled in the first
-implementation.
+Six rule classes are specified in Section 4. **All six are implemented and tested in v1** (see
+Section 7's acceptance criteria, which require fixtures and defined runtime behavior for every one
+of them). They differ only in whether they run by default.
 
-**Required for v1** — deterministic, mechanically precise, no free-text inference:
+**Default-enabled tier** — deterministic, mechanically precise, no free-text inference;
+`enabled: true` by default:
 - `canonical-count`
 - `forbidden-literal`
 - `stray-artifact`
 - `required-files`
 
-**Deferred — implemented only after this document's configuration contracts for them are
-exercised and confirmed sufficient in practice; not enabled by default in the first release:**
+**Disabled-by-default tier** — implemented, tested, and fully available in v1; `enabled: false` by
+default because they are the newest and least battle-tested contracts in this document, not
+because their design or implementation is incomplete or deferred to a later release:
 - `required-status-reference`
 - `canonical-reference`
 
-Both deferred rules are still fully specified below (Section 4.4, 4.6) with deterministic,
+Both disabled-by-default rules are fully specified below (Section 4.4, 4.6) with deterministic,
 configuration-driven contracts — the prior draft's free-text/heuristic inference is removed
-entirely, not softened. They are deferred because they are the newest and least battle-tested
-contracts in this document, not because their design is left open. A future revision that ships
-them does so by flipping their default `enabled` flag in the config schema (Section 3) — no
-redesign implied.
+entirely, not softened. A doc-set author runs either rule in one of two ways, both available from
+v1 day one and requiring no further implementation work: setting its config `enabled: true` flag
+(Section 3), or invoking it explicitly via `--rule <name>` regardless of its config `enabled`
+value (Section 3, CLI Contract).
 
 ---
 
@@ -164,11 +178,12 @@ Config file: `spec-doc-checker.yml`, expected by default at the root of the targ
   "unknown rule" diagnostic).
 - **Default value of `enabled` when omitted:** every rule subtree accepts an `enabled: bool` key.
   If a rule's config block is present under `rules:` but omits the `enabled` key entirely, the
-  default is `true` for the four v1-required-tier rules (`canonical-count`, `forbidden-literal`,
-  `stray-artifact`, `required-files`) and `false` for the two deferred-tier rules
-  (`required-status-reference`, `canonical-reference`) — matching each rule's Section 2 scope-tier
-  default. The complete v1 example below sets `enabled` explicitly on every rule for clarity;
-  doing so is not required, and omitting it is equivalent to writing the default shown here.
+  default is `true` for the four v1-default-enabled-tier rules (`canonical-count`,
+  `forbidden-literal`, `stray-artifact`, `required-files`) and `false` for the two
+  disabled-by-default-tier rules (`required-status-reference`, `canonical-reference`) — matching
+  each rule's Section 2 scope-tier default. The complete v1 example below sets `enabled` explicitly
+  on every rule for clarity; doing so is not required, and omitting it is equivalent to writing the
+  default shown here.
 - **Built-in patterns (stray-artifact default pattern list, Section 4.3): can they be disabled,
   and how.** Yes. `rules.stray-artifact.builtin_patterns: false` (default `true`) disables the
   shipped default pattern list entirely for that doc set, leaving only whatever is listed under
@@ -227,7 +242,7 @@ rules:
     heading_match: "exact"              # "exact" is the only value in v1 — see 4.5
 
   required-status-reference:
-    enabled: false                      # deferred tier (Section 2) — schema is normative even while disabled
+    enabled: false                      # disabled-by-default tier (Section 2) — implemented and schema-normative even while disabled
     checks:
       - name: "review-confirms-intake-approved"
         source: "05-REVIEW.md"
@@ -235,7 +250,7 @@ rules:
         pattern: 'INTAKE\.md.*APPROVED'   # matched against source file's text; violation if no match found
 
   canonical-reference:
-    enabled: false                      # deferred tier (Section 2) — schema is normative even while disabled
+    enabled: false                      # disabled-by-default tier (Section 2) — implemented and schema-normative even while disabled
     checks:
       - name: "roadmap-points-at-requirements-ac-count"
         claiming_file: "04-ROADMAP.md"
@@ -279,9 +294,11 @@ python3 scripts/check-spec-docs.py <path> [--config <path>] [--rule <name>]... [
   exist, this **is** an error — exit code 2 (Section 7, "missing explicit `--config` file").
 - `--rule <name>` (optional, repeatable) — run only the named rule(s) instead of all enabled
   rules. An unrecognized rule name passed to `--rule` is a config error, exit code 2 (same
-  unrecognized-rule-name behavior as Section 3's schema validation). `--rule` may name a rule
-  that is `enabled: false` in the config — an explicit `--rule` invocation runs it regardless of
-  its config `enabled` flag, since the flag governs default-run membership, not availability.
+  unrecognized-rule-name behavior as Section 3's schema validation). `--rule` may name either of
+  the two disabled-by-default-tier rules (`required-status-reference`, `canonical-reference`) or
+  any rule that is otherwise `enabled: false` in the config — since both are fully implemented in
+  v1, an explicit `--rule` invocation runs the named rule regardless of its config `enabled` flag,
+  as the flag governs default-run membership, not availability.
 - `--format text|json` (optional, default `text`) — output format, see Section 5.
 - `--strict` (optional) — treat suppressed violations as failures too (see Section 6). Off by
   default so suppressions behave as intended (visible, non-blocking).
@@ -291,7 +308,8 @@ python3 scripts/check-spec-docs.py <path> [--config <path>] [--rule <name>]... [
 ## 4. Rule Catalog (v1, Normative)
 
 Six rule classes, each grounded in an actual defect class encountered in the
-problem-department-mvp spec sequence. Scope tier (required vs. deferred) is defined in Section 2.
+problem-department-mvp spec sequence. All six are implemented and tested in v1; scope tier
+(default-enabled vs. disabled-by-default) is defined in Section 2.
 
 ### 4.1 Canonical enumeration/count consistency (`canonical-count`)
 
@@ -402,7 +420,7 @@ Config additions under `patterns:` are **additive** to this built-in list by def
 list entirely with only the configured `patterns:` entries. There is no per-builtin-pattern
 opt-out — only the all-or-nothing switch.
 
-### 4.4 Required status assertion presence (`required-status-reference`) — deferred tier
+### 4.4 Required status assertion presence (`required-status-reference`) — disabled-by-default tier
 
 **Defect grounding:** a document's own header `Status` line (e.g. `**Status**: APPROVED`) can
 drift out of sync with what a sibling document claims about it. This rule does **not** detect
@@ -462,7 +480,7 @@ but setting it to anything other than `"exact"` in v1 is a config error, exit co
 resolves the prior draft's "exact or configurable fuzzy/case-insensitive" alternative in favor of
 exact match only.
 
-### 4.6 Cross-document references to canonical definitions (`canonical-reference`) — deferred tier
+### 4.6 Cross-document references to canonical definitions (`canonical-reference`) — disabled-by-default tier
 
 **Defect grounding:** the pattern this repo's workflow now prefers (per `04-ROADMAP.md`'s
 Output Verification correctly pointing at `01-REQUIREMENTS.md` instead of restating the AC count)
@@ -713,17 +731,21 @@ One minimal fixture spec-doc-set per rule class, under
 Six rule classes → minimum twelve fixture doc sets (six `fail/` + six `pass/`), each
 self-contained and small enough to read in full in one sitting — deliberately not reusing the
 real problem-department-mvp docs as fixtures, so fixture behavior stays decoupled from that doc
-set's own evolution.
+set's own evolution. This applies equally to all six rules, including the two disabled-by-default
+rules (`required-status-reference`, `canonical-reference`) — being off by default does not exempt
+them from fixture coverage; their fixtures are exercised directly via `--rule` (Section 3).
 
 ### Acceptance criteria (v1, complete)
 
 "The checker works" means, at minimum, all of the following pass:
 
 **Core rule behavior:**
-1. Each of the six rules has at least one `fail/` fixture that produces exactly the expected
+1. Each of the six rules — including the two disabled-by-default rules, exercised via explicit
+   `--rule` invocation — has at least one `fail/` fixture that produces exactly the expected
    violation (rule name, check_name where applicable, file, and line match expectation) and exit
    code `1`.
-2. Each of the six rules has at least one `pass/` fixture that produces zero violations for that
+2. Each of the six rules — including the two disabled-by-default rules, exercised via explicit
+   `--rule` invocation — has at least one `pass/` fixture that produces zero violations for that
    rule and exit code `0`.
 3. `canonical-count` `fail/` fixtures cover both failure shapes distinctly: (a) canonical declared
    count agrees with a downstream restatement but disagrees with the mechanically enumerated
