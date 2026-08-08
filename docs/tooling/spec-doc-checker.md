@@ -1,7 +1,6 @@
-# Spec-Doc Mechanical Checker — Tooling Spec (PROPOSAL, awaiting Danny's review/lock)
+# Spec-Doc Mechanical Checker — Tooling Spec
 
-Status: DRAFT — not yet reviewed or locked. Do not begin implementation against this document
-until Danny has reviewed and locked it.
+Status: LOCKED — reviewed and locked by Danny. Implementation may proceed against this document.
 
 Scope note: this is bounded internal tooling, not a Department OS product vertical slice. It does
 not go through Intake → Interview → North Star → Requirements → Architecture → UI → Roadmap →
