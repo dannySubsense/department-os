@@ -7,6 +7,12 @@ Scope note: this is bounded internal tooling, not a Department OS product vertic
 not go through Intake → Interview → North Star → Requirements → Architecture → UI → Roadmap →
 Review → Gate. This single document is the entire spec artifact for this tool.
 
+Revision note: this revision resolves the "illustrative / configurable / deferred to
+implementation time" gaps found in Danny's independent review after the prior Frank pass PASSed
+an earlier draft. Every contract below is a decision, not an alternative. Where the prior draft
+offered "A or B (config permitting)," this revision picks one and moves the other, if worth
+keeping at all, to Section 9 as a named future extension.
+
 ---
 
 ## 1. Purpose and Non-Goals
@@ -36,70 +42,195 @@ This tool is explicitly **not**:
   them undetected, not a substitute for their review.
 - A general-purpose linter, spellchecker, or prose-quality tool.
 - A gate with binding authority of its own. It has no PASS/FAIL/HALT verdict semantics — see
-  Section 7.
+  Section 8.
 
 ---
 
-## 2. Inputs, Configuration, and CLI Contract
+## 2. Scope Tiers (v1 Required vs. Deferred)
+
+Six rule classes are specified in Section 4. Not all six ship enabled in the first
+implementation.
+
+**Required for v1** — deterministic, mechanically precise, no free-text inference:
+- `canonical-count`
+- `forbidden-literal`
+- `stray-artifact`
+- `required-files`
+
+**Deferred — implemented only after this document's configuration contracts for them are
+exercised and confirmed sufficient in practice; not enabled by default in the first release:**
+- `status-consistency`
+- `canonical-reference`
+
+Both deferred rules are still fully specified below (Section 4.4, 4.6) with deterministic,
+configuration-driven contracts — the prior draft's free-text/heuristic inference is removed
+entirely, not softened. They are deferred because they are the newest and least battle-tested
+contracts in this document, not because their design is left open. A future revision that ships
+them does so by flipping their default `enabled` flag in the config schema (Section 3) — no
+redesign implied.
+
+---
+
+## 3. Inputs, Configuration, and CLI Contract
 
 ### Input
 
 A directory of markdown spec documents — e.g. `docs/specs/<sprint-slug>/`. The tool discovers all
-`*.md` files in that directory (non-recursive by default; a `--recursive` flag may extend this,
-see Section 8) and treats them as one doc set to be checked against each other and against rule
-definitions.
+`*.md` files directly inside that directory. Discovery is **non-recursive** in v1: files in
+subdirectories are not visited. There is no `--recursive` flag in v1 — it is not part of the CLI
+contract in Section 3. Recursive discovery is a named future extension (Section 9), not a v1
+option under any name.
 
-### Configuration
+### Configuration schema (normative, v1, complete)
 
-**Judgment call:** configuration is a YAML file, not CLI-flags-only. Rationale: the rule
-inputs this tool needs (canonical-source file paths, forbidden-literal lists, required-files
-lists, per-rule enable/disable, suppression allowlists) are structured, doc-set-specific, and
-intended to be checked into the repo alongside the spec they govern (so a future reviewer can see
-exactly what was checked, without reconstructing a CLI invocation from history). CLI flags remain
-available for one-off overrides (e.g. running a single rule ad hoc) but are not the primary
-configuration surface.
+Configuration is a YAML file, not CLI-flags-only. Rationale: the rule inputs this tool needs
+(canonical-source file paths, forbidden-literal lists, required-files lists, per-rule
+enable/disable, suppression allowlists) are structured, doc-set-specific, and intended to be
+checked into the repo alongside the spec they govern, so a future reviewer can see exactly what
+was checked without reconstructing a CLI invocation from history.
 
 Config file: `spec-doc-checker.yml`, expected by default at the root of the target spec directory
 (e.g. `docs/specs/<sprint-slug>/spec-doc-checker.yml`), overridable via `--config`.
 
-Config shape (illustrative, not exhaustive — exact schema finalized at implementation time):
+**Top-level keys (v1, exhaustive):**
+
+| Key | Required | Type | Default if omitted |
+|---|---|---|---|
+| `version` | yes | integer | — (missing `version` is a config error, exit 2) |
+| `rules` | yes | mapping | — (missing `rules` is a config error, exit 2) |
+| `suppression_allowlist` | no | list of allowlist entries | `[]` |
+
+- `version: 1` is the only value accepted in v1. Any other value (including absent) is a
+  config error, exit code 2. This exists so a future v2 schema change can be detected and
+  rejected cleanly rather than silently misparsed.
+- **Unknown top-level keys are a config error**, exit code 2. v1 does not silently ignore
+  unrecognized keys — an unrecognized key is far more likely to be a typo (e.g. `rule:` instead
+  of `rules:`) than an intentional forward-compatible extension.
+- **Unknown keys inside any rule's config subtree are likewise a config error**, exit code 2,
+  for the same reason. There is no "additive/unknown keys are ignored" behavior anywhere in this
+  schema.
+- **Path resolution:** every file path in the config (`canonical_source`, `restated_in[].file`,
+  `files`, `source`, `target`, allowlist `file`, etc.) is resolved relative to the target spec
+  directory given on the CLI (`<path>` positional argument) — never relative to the config file's
+  own location, and never as an absolute path. An absolute path, or a relative path that resolves
+  (via `..` or symlink) outside the target spec directory, is a config error, exit code 2, at
+  config-load time — it is caught and rejected the same way any other malformed path in this
+  schema is (see the "path does not exist" case immediately below), not surfaced as a doc-set
+  violation, since the config itself is what is malformed. A path that does not exist after
+  resolution is likewise a config error, exit code 2, at config-load time for rules that require
+  the file to exist up front (`canonical_source`, `required-files.files`, `status-consistency`
+  `source`/`target`, `canonical-reference` `claiming_file`); rules that merely scan "all files in
+  the doc set" do not pre-declare paths and are unaffected. `canonical-reference`'s
+  `target_reference` is deliberately **excluded** from this load-time list: per Section 4.6's
+  filename/anchor discriminator, `target_reference` may be either a `.md` filename (existence
+  checked at rule-runtime — a missing file is a doc-set violation, exit code 1, not a config
+  error) or an anchor string (never path-resolved, no existence check performed at all). Its
+  existence semantics depend on that discriminator and are therefore rule-runtime, not
+  config-load-time — see Section 4.6, check 2 ("Existence"), for the authoritative definition.
+- **Regex syntax:** every `pattern` value in this schema is a Python 3 `re` module pattern,
+  evaluated with `re.MULTILINE` always on and no other flags implied by default. A pattern may
+  opt into case-insensitivity or `DOTALL` etc. only via inline flag syntax (`(?i)`, `(?s)`, ...)
+  inside the pattern string itself — there is no separate `flags:` config key in v1. An invalid
+  regex (fails `re.compile`) is a config error, exit code 2, reported with the offending rule
+  name, check name, and the pattern string.
+- **Duplicate rule/check names:** `rules` is a mapping keyed by the six rule names in Section 4
+  (`canonical-count`, `forbidden-literal`, `stray-artifact`, `status-consistency`,
+  `required-files`, `canonical-reference`) — YAML mapping semantics make a literal duplicate key
+  a YAML parse error already, which the tool surfaces as a config error, exit code 2, not a
+  silent last-write-wins. Within a rule's own `checks:` list (`canonical-count`,
+  `status-consistency`, `canonical-reference`), each check entry must have a unique `name:`
+  field; a duplicate `name:` within the same rule's `checks:` list is a config error, exit code 2.
+- **Unrecognized rule name:** a key under `rules:` that is not one of the six names above is a
+  config error, exit code 2 (this doubles as the "unknown rule name" acceptance case in Section
+  7 — it is caught at config-load time, not silently ignored and not deferred to a runtime
+  "unknown rule" diagnostic).
+- **Default value of `enabled` when omitted:** every rule subtree accepts an `enabled: bool` key.
+  If a rule's config block is present under `rules:` but omits the `enabled` key entirely, the
+  default is `true` for the four v1-required-tier rules (`canonical-count`, `forbidden-literal`,
+  `stray-artifact`, `required-files`) and `false` for the two deferred-tier rules
+  (`status-consistency`, `canonical-reference`) — matching each rule's Section 2 scope-tier
+  default. The complete v1 example below sets `enabled` explicitly on every rule for clarity;
+  doing so is not required, and omitting it is equivalent to writing the default shown here.
+- **Built-in patterns (stray-artifact default pattern list, Section 4.3): can they be disabled,
+  and how.** Yes. `rules.stray-artifact.builtin_patterns: false` (default `true`) disables the
+  shipped default pattern list entirely for that doc set, leaving only whatever is listed under
+  `rules.stray-artifact.patterns`. There is no per-builtin-pattern opt-out in v1 — it is
+  all-or-nothing at the list level. This is the only "disable a built-in" mechanism in v1; no
+  other rule ships with implicit built-in behavior beyond its documented default.
+
+**Complete v1 example (every key that exists in the schema, all six rules present so the shape
+is unambiguous — `status-consistency` and `canonical-reference` are shown with `enabled: false`
+by default per the Section 2 scope tiers):**
 
 ```yaml
+version: 1
+
 rules:
   canonical-count:
     enabled: true
     checks:
       - name: "acceptance-criteria-count"
+        mode: "compare"                 # "enumerate" | "compare" — see 4.1
         canonical_source: "01-REQUIREMENTS.md"
-        canonical_pattern: "..."      # how to extract the true count from the canonical doc
+        id_pattern: '^AC-(\d+)\b'       # one capture group = the item ID; matched per-line
         restated_in:
           - file: "04-ROADMAP.md"
-            pattern: "..."            # how to extract the restated count
+            restated_pattern: '(\d+)\s+acceptance criteria'   # one capture group = the restated count
+
   forbidden-literal:
     enabled: true
     literals:
       - literal: "problem-statement"
         forbidden_near: ["NegativeFinding", "negatable"]
         proximity_lines: 5
+      - literal: "TODO-REMOVE-BEFORE-LOCK"
+        forbidden_near: []              # empty list = global ban, forbidden everywhere in doc set
+
   stray-artifact:
     enabled: true
+    builtin_patterns: true              # true = keep shipped defaults (see 4.3); false = only `patterns:` below
     patterns:
-      - "</content>"
-      - "</invoke>"
-      - "[REPLACE_MARKER]"
-      - "<<<<<<<"
-      - "======="
-      - ">>>>>>>"
-  status-consistency:
-    enabled: true
+      - '</content>'
+      - '</invoke>'
+      - '\[REPLACE_MARKER\]'
+
   required-files:
     enabled: true
     files: ["01-REQUIREMENTS.md", "02-ARCHITECTURE.md", "04-ROADMAP.md", "05-REVIEW.md"]
     required_headings:
       "01-REQUIREMENTS.md": ["Acceptance Criteria", "Out of Scope"]
+    heading_match: "exact"              # "exact" is the only value in v1 — see 4.5
+
+  status-consistency:
+    enabled: false                      # deferred tier (Section 2) — schema is normative even while disabled
+    checks:
+      - name: "review-confirms-intake-approved"
+        source: "05-REVIEW.md"
+        target: "INTAKE.md"
+        pattern: 'INTAKE\.md.*APPROVED'   # matched against source file's text; violation if no match found
+
   canonical-reference:
-    enabled: true
+    enabled: false                      # deferred tier (Section 2) — schema is normative even while disabled
+    checks:
+      - name: "roadmap-points-at-requirements-ac-count"
+        claiming_file: "04-ROADMAP.md"
+        target_reference: "01-REQUIREMENTS.md"   # literal string that must appear in claiming_file
+        forbidden_restatement_pattern: '\b\d+\s+acceptance criteria\b'   # optional; omit key to skip this check
+
+suppression_allowlist:
+  - rule: "stray-artifact"
+    file: "examples/99-EXAMPLE-ONLY.md"   # illustrative — not a real file; no such file exists in this repo; exempt-by-construction as a subdirectory-path allowlist entry (Section 6 / AC 22)
+    line_range: [88, 92]
+    reason: "illustrative example only, showing the shape of a suppressed stray-artifact finding — not a real suppression"
 ```
+
+Every key shown above is the complete v1 key set for its rule — there is no config key for any
+rule beyond what is shown in this example and described in that rule's own definition in
+Section 4.
+
+Note: an allowlist `file` value must name a file within the discovered (non-recursive, top-level)
+set — see Section 6, "Unused, malformed, and unknown-rule suppressions," for what happens to
+entries that don't.
 
 ### CLI Contract
 
@@ -108,204 +239,414 @@ python3 scripts/check-spec-docs.py <path> [--config <path>] [--rule <name>]... [
 ```
 
 - `<path>` (required, positional) — directory of spec docs to check.
-- `--config <path>` (optional) — override default config file location.
-- `--rule <name>` (optional, repeatable) — run only the named rule(s) instead of all
-  enabled rules. Rule names correspond to the top-level keys in Section 3.
-- `--format text|json` (optional, default `text`) — output format, see Section 4.
-- `--strict` (optional) — treat suppressed violations as failures too (see Section 5). Off by
+- `--config <path>` (optional) — path to the config file. If omitted, the tool looks for
+  `<path>/spec-doc-checker.yml`. If neither `--config` nor a default-location file exists, this
+  is **not** an error: the tool runs with the shipped built-in defaults only (Section 7,
+  acceptance criteria — "missing default config"). Built-in defaults are: `stray-artifact`
+  enabled with `builtin_patterns: true` and no user `patterns:`; all five other rules disabled
+  (they all require doc-set-specific config — `canonical_source`, `literals`, `files`, etc. —
+  that cannot be inferred). If `--config <path>` is given explicitly and that path does not
+  exist, this **is** an error — exit code 2 (Section 7, "missing explicit `--config` file").
+- `--rule <name>` (optional, repeatable) — run only the named rule(s) instead of all enabled
+  rules. An unrecognized rule name passed to `--rule` is a config error, exit code 2 (same
+  unrecognized-rule-name behavior as Section 3's schema validation). `--rule` may name a rule
+  that is `enabled: false` in the config — an explicit `--rule` invocation runs it regardless of
+  its config `enabled` flag, since the flag governs default-run membership, not availability.
+- `--format text|json` (optional, default `text`) — output format, see Section 5.
+- `--strict` (optional) — treat suppressed violations as failures too (see Section 6). Off by
   default so suppressions behave as intended (visible, non-blocking).
 
 ---
 
-## 3. Initial Rule Catalog
+## 4. Rule Catalog (v1, Normative)
 
 Six rule classes, each grounded in an actual defect class encountered in the
-problem-department-mvp spec sequence.
+problem-department-mvp spec sequence. Scope tier (required vs. deferred) is defined in Section 2.
 
-### 3.1 Canonical enumeration/count consistency (`canonical-count`)
+### 4.1 Canonical enumeration/count consistency (`canonical-count`)
 
 **Defect grounding:** the AC-count-drift history referenced in `05-REVIEW.md` — a total
-acceptance-criteria count (e.g. "35") restated in one document had to match a recount performed
-against the canonical source document, and prior passes had let these drift.
+acceptance-criteria count restated in one document was compared only against another asserted
+count, not against the actual enumerated items, so "all documents say 34" could pass review even
+if the canonical source actually enumerates 33 uniquely-identified items.
 
-**Rule definition:** for each configured check, the tool extracts a count (or enumerated list) from
-a designated *canonical source* file using a configured extraction pattern, then extracts the
-*restated* value from one or more *other* files using their own configured patterns, and compares.
-A mismatch is a violation. The preferred remediation the tool encourages (see 3.6) is for
-downstream docs to *point at* the canonical doc rather than restate the number — but this rule
-class exists for the interim/legacy case where restatement is still present and must at least be
-correct.
+**Two distinct modes, both mechanical, no free-text count inference:**
 
-**Judgment call:** extraction is pattern-based (regex or line-range with a labeled anchor), not a
-general markdown-table parser, to keep the tool dependency-light and its behavior auditable from
-the config file alone.
+- **`mode: enumerate`** — the tool scans `canonical_source` line by line, applying `id_pattern`
+  (a regex with exactly one capture group identifying an item ID, e.g. `^AC-(\d+)\b`) to every
+  line. Every match's captured ID is collected. The computed enumeration result is:
+  `{unique_ids: set, duplicate_ids: [ids appearing >1x], malformed_ids: [captured strings that
+  don't match a well-formed-ID shape — see below], count: len(unique_ids)}`.
+  - A **well-formed ID** is any string matched by the capture group as-is; "malformed" applies
+    only when `id_pattern` itself has an optional secondary validation clause — v1 keeps this
+    simple: any string the capture group matches is well-formed by definition, EXCEPT an empty
+    string capture, which is always malformed (violation).
+  - **Duplicate IDs are a violation** in their own right (`canonical-count` reports one violation
+    per duplicated ID, citing all line numbers it appears on), independent of any `compare`
+    check — this exists to catch a canonical source that mislabels two different items with the
+    same ID.
+  - A doc-set config need not have any `restated_in` entries for an `enumerate`-mode check to be
+    useful: `enumerate` alone (no `compare`) is valid and simply reports duplicates/malformed IDs
+    in the canonical source with no downstream comparison.
+- **`mode: compare`** — requires an `enumerate` result as its baseline (computed the same way,
+  from the same `canonical_source`/`id_pattern` on the same check entry) and one or more
+  `restated_in` entries. For each `restated_in` entry, the tool applies `restated_pattern` (a
+  regex with exactly one capture group, matched against the whole text of that file) to extract
+  the restated number as an integer. If the restated integer does not equal the `enumerate`
+  baseline's `count`, that is a violation, reported with both values (restated vs. mechanically
+  enumerated) and the canonical source's own duplicate/malformed findings if any — so a reviewer
+  sees immediately whether the canonical source itself is inconsistent (33 unique + 1 duplicate
+  labeled #34) rather than just "34 ≠ 33."
+- A `checks:` entry must set `mode:` explicitly to either `"enumerate"` or `"compare"` — there is
+  no default mode and no mode inferred from the presence/absence of `restated_in`.
 
-### 3.2 Forbidden or deprecated literals (`forbidden-literal`)
+**Extraction method:** regex against `canonical_source`'s raw lines (`id_pattern`) and regex
+against a restating file's raw text (`restated_pattern`) — line-based for ID enumeration
+(matching this repo's convention of one ID per line, e.g. an AC table row or a bulleted `AC-NN`
+line), single-capture-group regex for restated totals. There is no line-range extraction mode in
+v1 (the prior draft's "regex or line-range" alternative is resolved in favor of regex only) and
+no general markdown-table parser — both are named future extensions (Section 9) if a doc set's
+canonical source shape doesn't fit a per-line regex.
+
+### 4.2 Forbidden or deprecated literals (`forbidden-literal`)
 
 **Defect grounding:** the string `'problem-statement'` appeared in a context where it had been
 explicitly excluded (near `NegativeFinding`/`negatable` semantics), and this reintroduction was
 not caught by prose review.
 
 **Rule definition:** for each configured `{literal, forbidden_near, proximity_lines}` entry, the
-tool scans each file for occurrences of `literal`. For each occurrence, it checks whether any
-string in `forbidden_near` appears within `proximity_lines` lines (above or below) of that
-occurrence. If so, that occurrence is a violation.
+tool scans each file for occurrences of `literal` (plain substring match, not regex). For each
+occurrence, it checks whether any string in `forbidden_near` appears within `proximity_lines`
+lines (above or below, inclusive) of that occurrence's line. If so, that occurrence is a
+violation. `proximity_lines` is required per-literal-entry when `forbidden_near` is non-empty —
+there is no tool-wide default value in v1; an entry with non-empty `forbidden_near` and no
+`proximity_lines` key is a config error, exit code 2. (This resolves the prior draft's
+unspecified-default problem by removing the default rather than inventing an unsourced number.)
+A literal with `forbidden_near: []` is a global ban — forbidden anywhere in the doc set,
+`proximity_lines` not applicable/not required for that entry.
 
-**Judgment call:** proximity-based (line-window) matching, not same-sentence or same-paragraph
-matching, because spec docs are structured with headers/tables where "context" is better expressed
-in line distance than prose-sentence boundaries. `proximity_lines` is configurable per-literal and
-its default (if omitted) is a tool default — that default itself needs to be marked PROVISIONAL
-with a named owner in the tool's own config schema documentation once implemented, per this repo's
-no-unsourced-numbers discipline. A literal with no `forbidden_near` entries is simply forbidden
-everywhere in the doc set (global ban), covering the simpler case (e.g. a literal known to be fully
-deprecated).
-
-### 3.3 Stray editing/tool artifacts (`stray-artifact`)
+### 4.3 Stray editing/tool artifacts (`stray-artifact`)
 
 **Defect grounding:** literal strings such as `</content>` and `</invoke>` — leftover fragments
 from an agent's own tool-call syntax — were left in committed spec files.
 
-**Rule definition:** flat, global (not proximity-scoped) string/regex match against a configured
-list of known artifact patterns. Any match anywhere in any file in the doc set is a violation. This
-is the simplest rule class — no canonical source, no context window — because these strings should
-never legitimately appear in a spec document's prose. Default pattern list ships with the tool
-(covering common tool-call fragments and unresolved git conflict markers) and is extensible via
-config, not replaced by it (config additions are additive to the built-in list unless a doc set
-opts out per-pattern).
+**Rule definition:** flat, global (not proximity-scoped) match against a configured list of
+artifact patterns, each an unanchored regex, checked against every line of every file in the doc
+set. Any match anywhere is a violation.
 
-### 3.4 Stale or contradictory document statuses (`status-consistency`)
+**Built-in default pattern list (v1, exhaustive), each with its matching mode:**
+
+| Pattern | Match mode |
+|---|---|
+| `</content>` | unanchored substring, anywhere on the line |
+| `</invoke>` | unanchored substring, anywhere on the line |
+| `\[REPLACE_MARKER\]` | unanchored substring, anywhere on the line |
+| `^<<<<<<<.*$` | **anchored: full line**, line must start with `<<<<<<<` |
+| `^=======$` | **anchored: full line**, line must be exactly `=======` (nothing else) |
+| `^>>>>>>>.*$` | **anchored: full line**, line must start with `>>>>>>>` |
+
+This resolves the known non-blocking note from the prior Frank pass: the unanchored `=======`
+pattern false-positives on markdown setext-heading underlines (`Heading\n=======`) and table
+horizontal rules of the same width. Anchoring the three git-conflict-marker patterns to
+line-start-and-full-line (for `=======`) or line-start (for `<<<<<<<`/`>>>>>>>`, which always
+carry trailing ref text a full-line match would wrongly exclude) removes that false-positive
+class while still catching every real unresolved conflict marker, since a genuine conflict
+marker always occupies its own line starting at column 1.
+
+Config additions under `patterns:` are **additive** to this built-in list by default
+(`builtin_patterns: true`); setting `builtin_patterns: false` (Section 3) replaces the built-in
+list entirely with only the configured `patterns:` entries. There is no per-builtin-pattern
+opt-out — only the all-or-nothing switch.
+
+### 4.4 Stale or contradictory document statuses (`status-consistency`) — deferred tier
 
 **Defect grounding:** a document's own header `Status` line (e.g. `**Status**: APPROVED`) can
-drift out of sync with what a sibling document claims about it, or a stated PASS/FAIL claim can
-fail to match a referenced gate log.
+drift out of sync with what a sibling document claims about it.
 
-**Rule definition:** two sub-checks:
-1. **Self-status extraction** — each file's own status line (matched via a configured pattern,
-   e.g. `**Status**: (.*)`) is extracted and indexed by filename.
-2. **Cross-reference check** — any other file that references another file's status by name (e.g.
-   "INTAKE.md — Status: APPROVED") is checked against the indexed value from (1); mismatches are
-   violations. Where a gate-log file is configured (e.g. `GATE-LOG.md`), a PASS/FAIL claim in a
-   review doc is checked against the corresponding entry in that log the same way.
+**Rule definition (v1, fully deterministic — no free-text inference):** each `checks:` entry is
+an explicit, configured assertion:
 
-**Judgment call:** this rule requires the most doc-set-specific configuration (patterns for where
-status lines live and how cross-references are phrased) because status-line conventions are not
-yet standardized across this repo's doc templates. Ships with sensible defaults matching this
-repo's current `**Status**:` convention; doc sets using a different convention must configure it.
+```yaml
+checks:
+  - name: "review-confirms-intake-approved"
+    source: "05-REVIEW.md"
+    target: "INTAKE.md"
+    pattern: 'INTAKE\.md.*APPROVED'
+```
 
-### 3.5 Required files and headings (`required-files`)
+The tool searches the full text of `source` for a match against `pattern` (a regex, `re.MULTILINE`,
+no other implicit flags — same regex contract as Section 3). If no match is found anywhere in
+`source`, that check is a violation: `source` was configured to assert something about `target`'s
+status and does not contain the asserted text. `target` must exist (path-existence checked at
+config-load time per Section 3); the rule does **not** independently re-derive `target`'s actual
+status line and compare it to the pattern's asserted value — that would require the free-text
+status-extraction inference the prior draft relied on. v1's contract is narrower and fully
+mechanical: does `source` contain the configured assertion string/pattern, yes or no. Detecting
+that the assertion is *true* (i.e. that `INTAKE.md` really is `APPROVED`) is out of scope for
+this rule in v1; a human or Frank still judges truth. This rule only catches the case where a
+sibling document was supposed to carry a status assertion and doesn't (e.g. a stale/removed
+assertion), not the case where the assertion is present but false.
 
-**Defect grounding:** distinct from the historical defects above but named by Danny as part of the
-same mechanical-check category — a sprint doc set silently missing an expected file (e.g. no
+There is no discovery of status references from unrestricted prose anywhere in this rule. Every
+check is authored by a human/agent editing the config file, naming exactly which file asserts
+what about which other file.
+
+### 4.5 Required files and headings (`required-files`)
+
+**Defect grounding:** a sprint doc set silently missing an expected file (e.g. no
 `05-REVIEW.md`) or a file missing an expected section (e.g. `01-REQUIREMENTS.md` with no "Out of
 Scope" heading) is a structural gap that prose review can also silently pass over.
 
 **Rule definition:** for each file in a configured `files` list, verify it exists in the target
-directory (violation if missing). For each file with a configured `required_headings` list, verify
-each heading string appears as a markdown heading (line starting with one or more `#` followed by
-that exact text, or a configurable fuzzy/case-insensitive match — exact match is the default) in
-that file.
+directory (violation if missing). For each file with a configured `required_headings` list,
+verify each heading string appears as a markdown heading line: a line matching
+`^#{1,6}\s+<heading text, exact string, case-sensitive>\s*$` after trimming trailing whitespace.
+`heading_match: "exact"` is the only value accepted in v1 (the key exists in the schema so a
+future `"case-insensitive"` or `"fuzzy"` value can be added without a schema-shape change, but
+setting it to anything other than `"exact"` in v1 is a config error, exit code 2). This resolves
+the prior draft's "exact or configurable fuzzy/case-insensitive" alternative in favor of exact
+match only.
 
-### 3.6 Cross-document references to canonical definitions (`canonical-reference`)
+### 4.6 Cross-document references to canonical definitions (`canonical-reference`) — deferred tier
 
 **Defect grounding:** the pattern this repo's workflow now prefers (per `04-ROADMAP.md`'s
 Output Verification correctly pointing at `01-REQUIREMENTS.md` instead of restating the AC count)
-is that downstream docs *reference* a canonical count/list rather than restate it. This rule class
-checks that such a reference, where claimed, is real and resolvable — not merely a restatement
-dressed up as a pointer.
+is that downstream docs *reference* a canonical count/list rather than restate it.
 
-**Rule definition:** for each configured `{claiming_file, claim_pattern, target_file}` triple, the
-tool scans `claiming_file` for text matching `claim_pattern` (e.g. a phrase like "see 01 for the
-canonical count" or "recomputed from source"), and verifies that (a) `target_file` exists and is
-the file actually named/linked in that claim, and (b) the claim is not immediately followed
-(within a configured line window) by a restated literal number/list that duplicates the same
-information the pointer claims to defer to — since a restatement adjacent to a "see canonical
-source" claim indicates the pointer is decorative, not real. A claim with no resolvable target, or
-a claim contradicted by an adjacent restatement, is a violation.
+**Rule definition (v1, narrowed to deterministic checks only — no nearby-number/list
+inference):** each `checks:` entry is:
 
-**Judgment call:** this rule is the least mechanically precise of the six (it is inferring intent
-from phrasing), so it ships as best-effort pattern matching, is expected to need the most tuning,
-and is called out in Section 8 as the rule most likely to need registry-pattern iteration.
+```yaml
+checks:
+  - name: "roadmap-points-at-requirements-ac-count"
+    claiming_file: "04-ROADMAP.md"
+    target_reference: "01-REQUIREMENTS.md"
+    forbidden_restatement_pattern: '\b\d+\s+acceptance criteria\b'   # optional
+```
+
+The tool performs exactly two (optionally three) checks per entry, all deterministic:
+
+1. **Presence:** `claiming_file`'s full text contains the literal substring `target_reference`
+   (plain substring match, not regex).
+2. **Existence:** `target_reference` is resolved as either a filename or an explicit anchor
+   string, per the discriminator below; if it names a filename, that file (resolved per Section 3
+   path rules) must exist in the doc set. If not, violation: the reference points at something
+   that isn't there. This existence check is a rule-runtime check, not a config-load-time check —
+   a missing target file is reported as an ordinary doc-set violation (exit code 1), not a config
+   error (Section 3's load-time path-existence list deliberately excludes `target_reference` for
+   this reason). If `target_reference` is an anchor string (not a filename, per the discriminator
+   below), this existence check does not apply — there is no file to check for existence, and
+   only the presence check (1) and optional restatement check (3) run.
+   - **Filename-vs-anchor-string discriminator (normative, v1):** `target_reference` is treated
+     as a filename if and only if it ends in `.md` — the only file extension used anywhere else
+     in this document's own path conventions (every `file`, `canonical_source`, `source`,
+     `target`, `claiming_file`, and allowlist `file` value elsewhere in this schema is a `.md`
+     path). Any `target_reference` value not ending in `.md` is treated as an explicit anchor
+     string: an opaque literal the tool checks for presence (1) only, with no existence check
+     and no path resolution attempted against it.
+3. **Optional forbidden-restatement check:** if `forbidden_restatement_pattern` is present in the
+   config, the tool checks whether it matches anywhere in `claiming_file`. If it matches,
+   violation: the claiming file both references the canonical target and also restates the
+   literal value the reference exists to avoid restating. If `forbidden_restatement_pattern` is
+   omitted from the check entry, this third check is skipped entirely — it is not inferred or
+   defaulted from `target_reference`.
+
+There is no proximity-window inference, no "nearby number or list looks like a restatement"
+heuristic, and no attempt to distinguish a "decorative" pointer from a "real" one by any means
+other than checks 1–3 above. A doc set that wants to catch restatement must configure
+`forbidden_restatement_pattern` explicitly.
 
 ---
 
-## 4. Expected Diagnostics and Exit Codes
+## 5. Expected Diagnostics and Exit Codes
 
 ### Output format
 
-Human-readable text is the default and the only format required for v1 (`--format text`). Each
-violation reports: rule name, file, line number(s), and a one-line description of what was
-expected vs. found.
+Human-readable text is the default (`--format text`). Each violation reports: rule name, file,
+line number(s), and a one-line description of what was expected vs. found.
 
-Example (illustrative):
+Example:
 ```
 [forbidden-literal] docs/specs/foo/03-UI.md:142: 'problem-statement' found within 5 lines of 'negatable' (forbidden proximity)
-[canonical-count] docs/specs/foo/04-ROADMAP.md:88: restated AC count '34' does not match canonical count '35' in 01-REQUIREMENTS.md
+[canonical-count] docs/specs/foo/04-ROADMAP.md:88: restated AC count '34' does not match mechanically enumerated count '33' from 01-REQUIREMENTS.md (1 duplicate ID found: AC-12 on lines 40, 47)
 ```
 
-**Judgment call:** JSON output (`--format json`) is specced now, not deferred, because this tool is
-explicitly a candidate for future CI/pre-gate wiring (Section 8) and retrofitting structured output
-onto a text-only tool later is needless rework. JSON output is not, however, wired into anything
-blocking in v1 (Section 7) — it exists so that future integration doesn't require a rewrite of the
-diagnostic layer, not because CI wiring is happening now.
+### JSON diagnostic schema (normative, v1, complete)
 
-JSON shape (illustrative):
-```json
-{
-  "violations": [
-    {"rule": "forbidden-literal", "file": "...", "line": 142, "message": "..."}
-  ],
-  "suppressed": [
-    {"rule": "...", "file": "...", "line": 0, "message": "...", "suppression_reason": "..."}
-  ],
-  "summary": {"files_checked": 5, "rules_run": 6, "violations": 1, "suppressed": 1}
+`--format json` writes exactly one JSON object to stdout and nothing else to stdout (diagnostics
+about the tool's own execution — e.g. "config not found, using built-in defaults" — go to
+stderr, never to stdout, so stdout stays machine-parseable in all cases including exit code 2).
+
+```typescript
+interface CheckerOutput {
+  violations: Violation[];
+  suppressed: SuppressedViolation[];
+  summary: {
+    files_checked: number;
+    rules_run: string[];       // rule names actually run this invocation
+    violation_count: number;   // == violations.length
+    suppressed_count: number;  // == suppressed.length
+  };
+}
+
+interface Violation {
+  rule: string;             // one of the six rule names in Section 4, OR one of the two
+                             // suppression-diagnostic pseudo-rule names emitted by Section 6:
+                             // "suppression-malformed" | "suppression-unused"
+  check_name: string | null; // the `name:` of the specific check entry, if the rule has sub-checks (canonical-count, status-consistency, canonical-reference); null for stray-artifact/forbidden-literal/required-files, and always null for suppression-malformed/suppression-unused (they are not sub-checks of a rule)
+  severity: "error";         // v1 has exactly one severity level; field exists for forward compatibility
+  path: string;              // file path, relative to the target spec directory (the <path> CLI argument)
+  start_line: number;        // 1-indexed; for file-level violations (e.g. required-files missing-file) this is 0
+  end_line: number;          // 1-indexed; equals start_line for single-line violations
+  message: string;           // one-line human-readable description, same content as the text-format line
+}
+
+interface SuppressedViolation extends Violation {
+  suppression_reason: string;   // non-empty; from the inline marker or allowlist entry that suppressed it
+  suppression_source: "inline" | "allowlist";
 }
 ```
+
+**Config-originated violations (`path`/`start_line`/`end_line` semantics):** when a violation
+originates from the config file itself — specifically, a `suppression-unused` violation (Section
+6) whose offending entry is an allowlist entry under `suppression_allowlist`, rather than an
+inline marker in a spec doc — `path` is the config file's own path: absolute, if `--config` was
+given explicitly and resolves outside the target spec directory; otherwise relative to the target
+spec directory, per the normal rule above. `start_line` and `end_line` are both the line number of
+the offending allowlist entry within the config file (its `- rule:` line). This applies only to
+allowlist-entry-originated violations; a `suppression-malformed` or `suppression-unused` violation
+originating from an inline marker within a spec doc uses that spec doc's own path and marker line,
+per the normal rule, unchanged.
+
+**Deterministic result ordering:** `violations` and `suppressed` are each sorted by
+`(path, start_line, rule, check_name ?? "")` ascending, `path` compared as a plain string. This
+ordering is stable across runs on an unchanged doc set/config and is required so that
+`--format json` output is diffable and CI-safe once/if this tool is later wired into anything
+that compares runs (Section 9) — not because that wiring exists in v1.
 
 ### Exit codes
 
 - `0` — clean run, zero non-suppressed violations.
 - `1` — one or more violations found (the tool ran correctly and found real problems).
-- `2` — tool error (bad config, unreadable path, malformed pattern, etc.) — distinguished from `1`
-  so that a caller (human or future CI step) can tell "the doc set has problems" apart from "the
-  tool itself couldn't run."
+- `2` — tool error: bad/malformed config, invalid regex, unrecognized rule/config key, missing
+  explicit `--config` file, a config path resolving outside the target spec directory (Section 3,
+  "Path resolution"), an unreadable target directory, or any other condition that means the tool
+  could not complete a run — distinguished from `1` so a caller can tell "the doc set has
+  problems" apart from "the tool itself couldn't run." An **empty target directory** (exists,
+  readable, contains zero `.md` files) is not a tool error — it is exit code `0` with
+  `files_checked: 0`, since an empty doc set trivially has zero violations.
 
 ---
 
-## 5. False-Positive / Suppression Behavior
+## 6. False-Positive / Suppression Behavior
 
 A rule must be locally suppressible for a legitimate exception without disabling it doc-set-wide.
 
-**Mechanism:** an inline suppression marker comment in the markdown source, e.g.:
+### Inline marker (v1, exact contract)
 
 ```
-<!-- spec-doc-checker: ignore forbidden-literal reason="intentional historical reference, see DDR-0007" -->
+<!-- spec-doc-checker: ignore RULE-NAME reason="non-empty justification text" -->
 ```
 
-placed on the line immediately preceding (or, alternatively, on the same line as, config
-permitting) the flagged content. The marker names the specific rule being suppressed at that
-location — a bare `ignore` with no rule name suppresses only rules that would otherwise fire on
-that exact line, not the whole file.
+- **`RULE-NAME` is required.** There is no bare `ignore` form in v1 — the prior draft's
+  ambiguity between "names a specific rule" and "allows a bare ignore" is resolved by removing
+  the bare form entirely, since it makes broad accidental suppression too easy. A marker with no
+  rule name is a malformed-suppression diagnostic (see "Unused, malformed, and unknown-rule
+  suppressions" below), not a valid suppression of
+  anything.
+- **`reason="..."` is required and must be non-empty** after trimming whitespace. A marker
+  missing `reason=` or with an empty string is a malformed-suppression diagnostic.
+- **Binding: preceding-line only.** A marker placed on its own line binds to the **immediately
+  following line only** (line N binds to line N+1; if line N+1 itself has findings, all of them
+  for the named `RULE-NAME` on that line are suppressed; findings on line N+2 or later are not).
+  This resolves the prior draft's unspecified multi-finding/nearby-line ambiguity.
+- **Same-line marker is also allowed, as a fixed v1 behavior, not a config option.** A marker
+  appended after content on the same line binds to that same line only. There is no config key
+  that turns this on or off — both forms (preceding-line and same-line) are always available, and
+  which one an author uses is a per-marker authoring choice, not a doc-set configuration choice.
+- A marker naming a rule that produces no finding on its bound line is **not** an error by
+  itself at the marker level — see "unused suppression" handling below, which is where this is
+  actually diagnosed.
+- **Suppressions can target built-in patterns.** A `stray-artifact` built-in pattern match is
+  suppressible by the same inline-marker mechanism as any config-defined pattern — there is no
+  distinction between built-in and configured rule content for suppression purposes.
 
-A secondary, coarser mechanism — a config-file allowlist entry (`{rule, file, line_range, reason}`)
-— is also supported for cases where inline markers are impractical (e.g. suppressing a rule across
-a whole frozen/archival file such as a `.gate-snapshots/` directory, matching this sprint's own
-precedent that frozen snapshots are not live specs). Every allowlist entry requires a `reason`
-field; entries without one are a tool config error (exit code 2), not silently accepted.
+### Config-file allowlist (coarser, file/range-scoped)
 
-**Non-negotiable:** a suppression is never silent. In text output, suppressed violations are
-listed in a separate "Suppressed" section with their reason, not simply omitted from output. In
-JSON output, they appear under `suppressed`, structurally distinct from `violations`. Exit code 0
-requires zero *non-suppressed* violations; `--strict` (Section 2) makes suppressed violations count
-toward a non-zero exit too, for use in a mode where "yes, but justify it to a human" isn't good
-enough (e.g. a hypothetical future stricter CI gate — not used in v1's default invocation).
+```yaml
+suppression_allowlist:
+  - rule: "stray-artifact"
+    file: "examples/99-EXAMPLE-ONLY.md"   # illustrative — not a real file; no such file exists in this repo; exempt-by-construction as a subdirectory-path allowlist entry (Section 6 / AC 22)
+    line_range: [88, 92]
+    reason: "illustrative example only, showing the shape of a suppressed stray-artifact finding — not a real suppression"
+```
+
+- `rule`, `file`, `line_range` (`[start, end]`, both 1-indexed inclusive), and `reason` are all
+  required keys on every allowlist entry. `reason` must be non-empty (same rule as inline
+  markers). Any entry missing a required key, or with an empty `reason`, is a config error, exit
+  code 2, at load time — not a silently-accepted no-op.
+- `rule` must name one of the six rule names in Section 4 (an unrecognized rule name here is the
+  same "unrecognized rule name" config error as elsewhere).
+- **`file` must name a file within the discovered (non-recursive, top-level) set to ever match a
+  real finding.** Since discovery is strictly non-recursive (Section 3), a file inside a
+  subdirectory of the target spec directory is never visited by any rule, so no rule can ever
+  produce a finding there. An allowlist entry whose `file` names a **subdirectory path** (contains
+  a path separator, e.g. `sub/notes.md`) is therefore **exempt from `suppression-unused`** (below)
+  — it is inert by construction, not a stale/typo'd suppression, and is not reported as a
+  violation of any kind. This exemption is scoped **only** to subdirectory paths.
+  A `file` value that is a bare top-level filename that does not match any discovered top-level
+  `.md` file (e.g. a typo'd `05-REVEIW.md`) is **not** exempt — it is treated as
+  `suppression-unused` (see "Unused, malformed, and unknown-rule suppressions" below), since it
+  can never match a real finding and is very likely a typo worth surfacing every run, the same as
+  any other unused suppression. An allowlist entry's `file` should still name a real, discovered
+  top-level file whenever the intent is to actually suppress a finding; the subdirectory
+  exemption exists only to prevent a structurally-impossible-to-match subdirectory reference from
+  being flagged as `suppression-unused`, not to encourage authoring such entries.
+
+### Unused, malformed, and unknown-rule suppressions
+
+- **Malformed inline marker** (missing rule name, missing/empty reason, or unparseable
+  attribute syntax): reported as its own diagnostic category — `stray-artifact`-style content
+  violation is not raised in its place, but a `[suppression-malformed]` violation is, at the
+  marker's own line, with `rule: "suppression-malformed"` in JSON output. This makes a broken
+  marker visible in the same violations list rather than silently doing nothing.
+- **Unknown-rule marker** (names a `RULE-NAME` that is not one of the six rule names in Section
+  4): same treatment — a `[suppression-malformed]` violation, since a marker naming a
+  nonexistent rule can never suppress anything and is very likely a typo.
+- **Unused suppression** — reported as a `[suppression-unused]` violation at the marker's/entry's
+  own location. This category covers two distinct shapes, both real violations in v1's default
+  (non-strict) mode:
+  - (a) a well-formed marker or allowlist entry naming a real rule, bound to a real line/range
+    within the discovered file set, but that rule produces no finding there to suppress; or
+  - (b) an allowlist entry whose top-level `file` does not match any file in the discovered
+    (non-recursive, top-level) set — see "Config-file allowlist" above for the boundary between
+    this case and the subdirectory exemption.
+
+  In either shape, an unused suppression is either stale configuration (the defect it once
+  covered was fixed, or the target file was renamed/removed, and the marker wasn't removed) or a
+  typo in the target rule/file/line, and both are worth surfacing every run, not just under
+  `--strict`. This does **not** apply to an allowlist entry whose `file` names a subdirectory path
+  (see "Config-file allowlist" above) — such an entry is exempt by construction, not unused
+  suppression.
+
+### Non-negotiable suppression semantics
+
+A suppression is never silent. In text output, suppressed violations are listed in a separate
+"Suppressed" section with their reason, not simply omitted from output. In JSON output, they
+appear under `suppressed`, structurally distinct from `violations` (Section 5). Exit code 0
+requires zero non-suppressed violations (note: `suppression-malformed` and `suppression-unused`
+findings are themselves ordinary, non-suppressed violations under `violations` — they count
+toward exit code `1` in default mode, since a broken suppression is a real problem, not a
+suppressed one). `--strict` makes entries under `suppressed` count toward a non-zero exit too.
 
 ---
 
-## 6. Test Fixtures and Acceptance Criteria
+## 7. Test Fixtures and Acceptance Criteria
 
 ### Fixture strategy
 
-One minimal fixture spec-doc-set per rule class, under (e.g.) `scripts/tests/fixtures/spec-doc-checker/<rule-name>/`, each containing:
+One minimal fixture spec-doc-set per rule class, under
+`scripts/tests/fixtures/spec-doc-checker/<rule-name>/`, each containing:
 
 - A `fail/` variant: a minimal doc set (2-4 short markdown files, not full spec docs) that
   intentionally contains exactly the one defect the rule targets, and nothing else that would
@@ -313,33 +654,98 @@ One minimal fixture spec-doc-set per rule class, under (e.g.) `scripts/tests/fix
 - A `pass/` variant: the same minimal doc set with that defect corrected, and otherwise identical,
   proving the rule doesn't false-positive on the clean version.
 
-Six rule classes → minimum twelve fixture doc sets (six `fail/` + six `pass/`), each self-contained
-and small enough to read in full in one sitting — deliberately not reusing the real
-problem-department-mvp docs as fixtures, so fixture behavior stays decoupled from that doc set's
-own evolution.
+Six rule classes → minimum twelve fixture doc sets (six `fail/` + six `pass/`), each
+self-contained and small enough to read in full in one sitting — deliberately not reusing the
+real problem-department-mvp docs as fixtures, so fixture behavior stays decoupled from that doc
+set's own evolution.
 
-### Acceptance criteria
+### Acceptance criteria (v1, complete)
 
-"The checker works" means, at minimum:
+"The checker works" means, at minimum, all of the following pass:
 
+**Core rule behavior:**
 1. Each of the six rules has at least one `fail/` fixture that produces exactly the expected
-   violation (rule name, file, and line match expectation) and exit code `1`.
+   violation (rule name, check_name where applicable, file, and line match expectation) and exit
+   code `1`.
 2. Each of the six rules has at least one `pass/` fixture that produces zero violations for that
    rule and exit code `0`.
-3. The suppression mechanism (Section 5) has its own fixture pair: a suppressed violation must
-   appear in the "Suppressed" output section (not absent, not counted toward exit code `1` in
-   default mode) and must count toward exit code `1` when run with `--strict`.
-4. A malformed-config fixture produces exit code `2`, not `1` or `0`.
-5. Running the tool against the real `docs/specs/problem-department-mvp/` doc set (once
-   configured for it) produces a specific, stated result that is recorded at implementation
-   time — the exact expected result is not knowable until the tool and that doc set's config
-   exist, but producing and recording *some* deterministic result against that real doc set is
-   part of acceptance, precisely because that doc set is the one known to have contained the
-   defects this tool exists to catch.
+3. `canonical-count` `fail/` fixtures cover both failure shapes distinctly: (a) canonical declared
+   count agrees with a downstream restatement but disagrees with the mechanically enumerated
+   count (e.g. all documents say "34" but only 33 unique IDs are enumerable) — this must be
+   caught by `mode: compare` against the `enumerate` baseline, not by any restated-vs-restated
+   comparison; and (b) the canonical source itself contains duplicate IDs, reported as violations
+   independent of any downstream comparison.
+4. A `canonical-count` fixture with a malformed ID (empty capture) produces a violation
+   distinguishable from a duplicate-ID violation.
+
+**Config/CLI edge cases:**
+5. Running with no `--config` flag and no `spec-doc-checker.yml` present in `<path>` runs with
+   built-in defaults (stray-artifact only) and does not error.
+6. Running with an explicit `--config <path>` where `<path>` does not exist produces exit code
+   `2`.
+7. A config with an unrecognized top-level key, an unrecognized rule name, or an unrecognized
+   key inside a rule's subtree each independently produce exit code `2`.
+8. A config with an invalid regex in any pattern-bearing field produces exit code `2`, citing the
+   offending rule/check/pattern.
+9. A config path (`canonical_source`, `files` entry, etc.) that resolves outside the target spec
+   directory (via `..` or absolute path) produces a config error, exit code 2, identifying the
+   offending path and rule/check — not a silent follow, and not a crash.
+10. Running against a target directory that does not exist, or exists but is unreadable
+    (permissions), produces exit code `2`.
+11. Running against a target directory that exists, is readable, and contains zero `.md` files
+    produces exit code `0` with `files_checked: 0`.
+
+**Output contract:**
+12. `--format json` writes a single JSON object to stdout matching the schema in Section 5, and
+    nothing else to stdout, for both a clean run and a run with violations, suppressions, and a
+    tool error (exit code 2) — stderr may carry additional detail in all three cases.
+13. Given the same doc set and config, two consecutive runs produce byte-identical `violations`
+    and `suppressed` ordering in JSON output (deterministic ordering, Section 5).
+
+**Suppression:**
+14. A well-formed inline marker naming a real rule with a non-empty reason, bound to a line with
+    a real finding for that rule, moves that finding from `violations` to `suppressed` in default
+    mode, and back into the failing set under `--strict`.
+15. A same-line marker variant of (14) behaves identically.
+16. A marker with no rule name, or an empty `reason=`, produces a `suppression-malformed`
+    violation (not a silently-ignored marker, and not a suppression of the content it was meant
+    to suppress).
+17. A marker naming a rule not in the six-rule set produces a `suppression-malformed` violation.
+18. A well-formed marker bound to a line/rule pair with no actual finding produces a
+    `suppression-unused` violation.
+19. A `suppression_allowlist` entry missing any required key, or with an empty `reason`, produces
+    exit code `2` at config-load time.
+20. `stray-artifact`'s built-in `=======` pattern does not fire on a markdown setext-heading
+    underline (`Heading\n=======`) or a Markdown table separator row of the same character/width
+    that is not itself a full line of exactly `=======` — covered by a dedicated `pass/` fixture
+    for `stray-artifact` alongside its conflict-marker `fail/` fixture.
+21. A `stray-artifact` fixture where a built-in pattern (e.g. `</content>`) is present in a file
+    and `rules.stray-artifact.builtin_patterns: false` is configured, with a separately configured
+    custom pattern (under `patterns:`) also present somewhere in the same file: the run must NOT
+    report the built-in-pattern occurrence, while the custom-pattern occurrence still IS reported
+    as a violation — proving `builtin_patterns: false` is all-or-nothing at the built-in-list
+    level (Section 3, Section 4.3) and does not affect user-configured `patterns:` entries.
+22. A `suppression_allowlist` entry whose `file` names a subdirectory path (never discovered
+    per Section 3's non-recursive discovery) does not produce a `suppression-unused` violation —
+    covered by a dedicated fixture proving the exemption in Section 6, "Config-file allowlist."
+23. A `suppression_allowlist` entry whose `file` is a bare top-level filename that does not match
+    any file in the discovered (non-recursive, top-level) set (e.g. a typo'd `05-REVEIW.md` when
+    only `05-REVIEW.md` exists) **does** produce a `suppression-unused` violation, exit code `1`
+    — distinguishing this case from (22)'s subdirectory-path exemption, per Section 6,
+    "Config-file allowlist" and "Unused, malformed, and unknown-rule suppressions."
+
+**Real-doc-set run:**
+24. Running the tool against the real `docs/specs/problem-department-mvp/` doc set, once a
+    config is authored for it, produces a specific, stated result recorded in this repo (e.g. in
+    `PROGRESS.md` for the sprint that implements this tool) at implementation time — the exact
+    expected result is not knowable until the tool and that doc set's config exist, but
+    producing and recording *some* deterministic result against that real doc set is part of
+    acceptance, precisely because that doc set is the one known to have contained the defects
+    this tool exists to catch.
 
 ---
 
-## 7. Integration Boundary
+## 8. Integration Boundary
 
 This tool is **local/manual use only** for v1. Intended usage: a spec-sequence contributor (human
 or agent) runs it against a sprint's `docs/specs/<sprint-slug>/` directory before invoking Frank's
@@ -351,31 +757,49 @@ It is explicitly **not**:
 - Given any binding authority over Frank's or spec-reviewer's verdicts. A clean run does not
   constitute or imply a PASS from either.
 
-This is a **deliberate boundary**, not an oversight or a placeholder for "someday soon." The tool's
-own reliability (false-positive rate, coverage, config-authoring ergonomics) has not yet been
-proven across doc sets other than the fixtures and problem-department-mvp. Wiring it into anything
-blocking before that reliability is demonstrated over real use would recreate exactly the failure
-mode this whole effort exists to avoid — a mechanical-sounding check being trusted before it has
-earned that trust.
+This is a **deliberate boundary**, not an oversight or a placeholder for "someday soon." The
+tool's own reliability (false-positive rate, coverage, config-authoring ergonomics) has not yet
+been proven across doc sets other than the fixtures and problem-department-mvp. Wiring it into
+anything blocking before that reliability is demonstrated over real use would recreate exactly
+the failure mode this whole effort exists to avoid — a mechanical-sounding check being trusted
+before it has earned that trust.
 
 ---
 
-## 8. Future Extension Model
+## 9. Future Extension Model
 
-**New rules:** the six rules in Section 3 are implemented as independent, individually
-enable/disable-able units sharing a common interface (a "rule" takes the doc-set path plus its own
-config subtree, and returns a list of violations in the common schema from Section 4). This
+**New rules:** the six rules in Section 4 are implemented as independent, individually
+enable/disable-able units sharing a common interface (a "rule" takes the doc-set path plus its
+own config subtree, and returns a list of violations in the schema from Section 5). This
 registry-like structure is chosen so a seventh, eighth, etc. rule can be added later as a new
 self-contained unit without touching existing rule implementations — but no specific mechanism
-(plugin discovery, external rule packages, etc.) is committed to now; a simple in-repo module list
-is sufficient for the rule count this tool starts with.
+(plugin discovery, external rule packages, etc.) is committed to now; a simple in-repo module
+list is sufficient for the rule count this tool starts with.
 
-**Graduation path (not committed now):** if, after a period of real use, the tool demonstrates low
-false-positive rate and stable behavior across multiple spec sequences, it could graduate to:
+**Named future extensions (not committed, not scheduled, not designed beyond this one-line
+statement of intent):**
+- Recursive doc-set discovery (`--recursive` or equivalent) for spec directories with
+  subdirectories.
+- Line-range-based (rather than per-line-regex) canonical extraction for `canonical-count`, for
+  canonical sources whose ID list doesn't fit a one-match-per-line regex.
+- A general markdown-table-aware extraction mode for `canonical-count`.
+- Fuzzy/case-insensitive heading matching for `required-files` (the `heading_match` config key
+  exists specifically to accept this later without a schema-shape change).
+- `status-consistency` truth-checking (verifying the asserted status is actually correct, not
+  just present) — out of scope in v1 per Section 4.4.
+- Per-builtin-pattern opt-out for `stray-artifact` (v1 has only the all-or-nothing
+  `builtin_patterns` switch).
+- Anchor-string support for `canonical-reference` `target_reference` beyond the `.md`-extension
+  discriminator's plain presence/restatement checks (e.g. resolving an anchor string to a
+  specific heading or line within a file, rather than treating it as an opaque literal) — out of
+  scope in v1 per Section 4.6.
+
+**Graduation path (not committed now):** if, after a period of real use, the tool demonstrates
+low false-positive rate and stable behavior across multiple spec sequences, it could graduate to:
 - A required (but still non-blocking, warn-only) step surfaced automatically at spec-gate time.
 - Eventually, a blocking pre-gate check that Frank's gate refuses to run without.
 - A CI step on doc-set changes.
 
 None of these are decided or scheduled by this document. They are named here only so the JSON
-output format (Section 4) and rule-registry structure (above) are not accidentally designed in a
+output format (Section 5) and rule-registry structure (above) are not accidentally designed in a
 way that would block that future path if Danny later chooses it.
