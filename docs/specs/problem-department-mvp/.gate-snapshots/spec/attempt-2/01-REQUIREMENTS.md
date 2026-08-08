@@ -8,7 +8,7 @@ Enable a human to submit one or more source artifacts and receive one cited, aud
 
 This is the authoritative enumeration. Every other document in this sprint (02-ARCHITECTURE.md, 04-ROADMAP.md, 05-REVIEW.md) must reference this list by pointer, not restate it or a count.
 
-1. **Problem definition** — must contain a specific problem, or explicitly state that no specific problem could be established.
+1. **Problem definition** — must contain a specific problem.
 2. **Evidence** (labeled + contradicting) — must contain evidence, or explicitly state that adequate evidence was not found.
 3. **Demand evidence** (signal type + confidence — two fields, one element) — must record observed signal types or "none found," plus the resulting confidence classification.
 4. **Existing-solution landscape** — must report identified solutions, or explicitly record that none were found within the documented search scope.

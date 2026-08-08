@@ -263,17 +263,6 @@ including contradicting evidence (US-2, US-3).
   folded into Slice 8's R-4 fail-closed boundary) — this slice must never persist a `ClaimVersion`
   with zero evidence rows even transiently; if extraction cannot support a claim with ≥1 evidence
   item, the claim is not persisted as a `ClaimVersion` at all.
-- As with Slices 5 and 6, this slice does not itself persist `BriefVersion.negativeFindings` —
-  that array lives on `BriefVersion` and is assembled by Slice 9 (Brief Assembler) per
-  Architecture §3's fail-closed rule (G-1). This slice is the upstream owner of the absence
-  finding for **two** of the five negatable elements: `'problem-statement'` (when the Extraction
-  & Clustering Engine cannot establish any specific problem statement from the submitted/reachable
-  sources) and `'evidence'` (when adequate supporting evidence cannot be found for a candidate
-  problem statement). In either case, this slice's job is only to produce the correct absence
-  signal — a real, non-placeholder statement explaining what was searched and why nothing
-  qualified — surfaced from the Extraction & Clustering Engine's/Evidence Labeler's output for
-  that Investigation; it does not construct the `NegativeFinding` record itself. Slice 9 is the
-  sole slice that persists `NegativeFinding` rows.
 - This slice has no UI surface of its own yet — its output becomes visible in Slice 10's
   Investigation Screen — Completed State; do not build a standalone screen for it (avoids
   duplicating UI Spec's Out-of-Scope "no UI for browsing... beyond" boundary).
@@ -291,12 +280,6 @@ including contradicting evidence (US-2, US-3).
       the label field.
 - [ ] Given a correction to an existing `Claim`, a new `ClaimVersion` is created under the same
       `Claim.id`; the prior `ClaimVersion` is not edited.
-- [ ] Given reachable source material from which no specific problem statement can be established
-      (e.g. sources are on-topic but too vague/general to cluster into a concrete problem), the
-      Extraction & Clustering Engine persists zero `ProblemStatement` records and surfaces a
-      non-empty absence statement sufficient for Slice 9 (Brief Assembler) to construct a
-      `NegativeFinding` row with `element: 'problem-statement'` — not a workflow failure (Edge
-      Case row).
 
 **Done When:**
 - [ ] US-2 and US-3 acceptance criteria pass.
@@ -1014,14 +997,12 @@ records to compute dependent decisions)
       index-field exception to Brief immutability, and Slice 9's Done-When/tests do not assert
       stricter immutability against it (PR-review binding correction).
 - [x] `BriefVersion.negativeFindings`/`NegativeFinding` (Architecture §3 "Negative findings," G-1)
-      is wired concretely: Slices 4, 5 (`demand-signal-type`), and 6
+      is wired concretely: Slice 5 (`demand-signal-type`) and Slice 6
       (`existing-solution`/`gap-hypothesis`) surface absence data to Slice 9 rather than
-      constructing `NegativeFinding` rows themselves — Slice 4 is the upstream owner for
-      `'problem-statement'` and `'evidence'` (G-4 post-gate cleanup); Slice 9 (Brief Assembler) is
-      the sole slice that persists `NegativeFinding` rows and enforces the fail-closed rule
-      (non-empty id array OR a `NegativeFinding` row with a non-empty `statement`, per element) on
-      the same R-4 path as every other structured-output/citation validation; Slice 10 reads the
-      concrete `negativeFindings` array to drive `NegativeFindingNotice` rendering per element,
-      replacing the prior abstract "negative finding" language throughout.
+      constructing `NegativeFinding` rows themselves; Slice 9 (Brief Assembler) is the sole slice
+      that persists `NegativeFinding` rows and enforces the fail-closed rule (non-empty id array
+      OR a `NegativeFinding` row with a non-empty `statement`, per element) on the same R-4 path
+      as every other structured-output/citation validation; Slice 10 reads the concrete
+      `negativeFindings` array to drive `NegativeFindingNotice` rendering per element, replacing
+      the prior abstract "negative finding" language throughout.
 </content>
-</invoke>

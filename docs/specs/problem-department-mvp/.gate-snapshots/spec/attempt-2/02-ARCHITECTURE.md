@@ -1,8 +1,8 @@
 # Architecture: Problem Department — Vertical Slice MVP
 
-**Status**: Frank spec-gate: PASS (attempt 2/3, 2026-08-08) — all four PR-review blocking
-findings (bitemporal query, evidence-stance placement, ProblemBrief immutability, non-empty
-citation contract) and the resulting NegativeFinding gap independently re-verified fixed.
+**Status**: Frank spec-gate: PASS (attempt 1/3, 2026-08-08) — this document has since been
+revised per PR review findings (bitemporal query, evidence-stance placement, ProblemBrief
+immutability, non-empty citation contract); re-verification pending.
 **Date**: 2026-08-08
 **Feeds**: `01-REQUIREMENTS.md` (13 stories / see Acceptance Criteria section for current count)
 
@@ -765,10 +765,8 @@ function getInvestigation(investigationId: string): Promise<{
 // that can legitimately be empty (Problem Statement, Evidence, Demand Signal Type,
 // Existing-Solution Landscape, Gap Hypothesis) means EITHER its id array is non-empty OR a
 // NegativeFinding row for that element exists on this BriefVersion with a non-empty
-// statement, but not both — both empty/absent is a validation failure on the same R-4
-// fail-closed path as an out-of-schema enum value, and both populated (a non-empty id array
-// coexisting with a NegativeFinding row) is likewise invalid on that same path (G-1).
-// On failure, still persists a GenerationRun with
+// statement — both empty/absent is a validation failure on the same R-4 fail-closed path as
+// an out-of-schema enum value (G-1). On failure, still persists a GenerationRun with
 // outcome: 'failed' and briefVersionId: null (G-12), and moves the Investigation to
 // 'generation-failed' (sources were reachable) or leaves/sets it 'blocked' (no reachable
 // sources) as appropriate (G-13).
