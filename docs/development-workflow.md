@@ -4,10 +4,11 @@
 
 - **Danny** — product, requirements, architecture, scope, and final merge authority. All merges require his explicit approval.
 - **Claude Code** — the primary builder. Implements features and documentation per approved specs.
-- **Codex** — the independent engineering auditor and QC reviewer. Inspects the complete diff against the approved specification, adds or runs tests, and identifies confirmed issues for focused correction commits — independently of Claude Code, not as a rubber stamp.
-- **Frank** — the binding judgment gate. Evaluates specifications before implementation greenlight, and evaluates completed (and Codex-corrected) implementation before merge. Frank's verdict is PASS/FAIL/HALT — binding, no manual override.
+- **Codex** — an independent engineering auditor and QC reviewer. Inspects the complete diff against the approved specification, adds or runs tests, and identifies confirmed issues for focused correction commits — independently of Claude Code, not as a rubber stamp. Not yet wired into the GitHub PR workflow as of this revision; onboarding pending.
+- **Sol** (ChatGPT) — an independent reviewer, active in the GitHub PR workflow. Same independent-review discipline as Codex (see [Independent Review Discipline](#independent-review-discipline)) — different tooling, same standard: verified against live files and primary sources, not handed the author's method.
+- **Frank** — the binding judgment gate. Evaluates specifications before implementation greenlight, and evaluates completed (and reviewer-corrected) implementation before merge. Frank's verdict is PASS/FAIL/HALT — binding, no manual override.
 
-Codex and Frank are complementary, not interchangeable: Codex is a diff-level engineering audit; Frank is a binding go/no-go judgment gate applied to the specification and to the final implementation state. Doer and checker are deliberately different agents reading independently, not the same agent reviewing its own output — see [Independent Review Discipline](#independent-review-discipline) and the Research Data Integrity rules in [CONTRIBUTING.md](../CONTRIBUTING.md).
+Codex/Sol and Frank are complementary, not interchangeable: Codex and Sol are diff-level engineering audits; Frank is a binding go/no-go judgment gate applied to the specification and to the final implementation state. Multiple independent reviewers are additive, not redundant, as long as each reads from primary sources rather than a prior reviewer's summary — see [Independent Review Discipline](#independent-review-discipline). Doer and checker are deliberately different agents reading independently, not the same agent reviewing its own output — see the Research Data Integrity rules in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## How work moves
 
@@ -17,8 +18,8 @@ Codex and Frank are complementary, not interchangeable: Codex is a diff-level en
 4. **Frank's binding specification gate** — the spec must pass before implementation begins.
 5. **Human implementation greenlight** — Danny explicitly authorizes implementation to start.
 6. **Forge / slice-by-slice implementation** — Claude Code implements a complete vertical slice against the spec, per [principles.md](principles.md).
-7. **Codex independent review** — Codex reviews the complete diff against the approved specification, independently of Claude Code's reasoning path (see below).
-8. **Focused correction commits** — confirmed Codex findings are fixed through focused, traceable commits, not folded silently into the original change. This must happen *before* step 9, so the final gate evaluates the code that will actually be merged.
+7. **Independent review** — the active independent reviewer(s) for this PR (currently Sol; Codex once onboarded to the GitHub workflow) review the complete diff against the approved specification, independently of Claude Code's reasoning path (see below).
+8. **Focused correction commits** — confirmed findings are fixed through focused, traceable commits, not folded silently into the original change. This must happen *before* step 9, so the final gate evaluates the code that will actually be merged.
 9. **Frank's binding final forge gate** — evaluates the corrected, final branch state.
 10. **Human merge approval** — Danny merges.
 
@@ -28,7 +29,7 @@ Live repository process documentation (e.g. a project's own `docs/decisions/` re
 
 **Give the unbiased auditor the map, not the path.**
 
-An independent reviewer (Codex, Frank, or any future auditor role) should receive:
+An independent reviewer (Codex, Sol, Frank, or any future auditor role) should receive:
 
 - The objective.
 - The approved requirements.
@@ -47,8 +48,8 @@ Independence means more than different agent identities. Reviewers using the sam
 - Direct implementation pushes to `main` are not allowed after bootstrap, unless Danny explicitly authorizes an exception.
 - Every pull request is tied to an approved intake, specification, milestone, or recorded decision — not opened speculatively.
 - Claude Code authors the implementation on its branch.
-- Codex reviews the complete diff independently against the approved specification (see Independent Review Discipline above).
-- Confirmed Codex findings are fixed through focused, traceable commits on the same branch.
+- The active independent reviewer(s) (currently Sol; Codex once onboarded) review the complete diff independently against the approved specification (see Independent Review Discipline above).
+- Confirmed findings are fixed through focused, traceable commits on the same branch.
 - Frank's final binding forge gate evaluates the corrected final branch state — not the pre-correction diff.
 - Required checks and tests must pass before merge.
 - Danny provides final merge approval.
