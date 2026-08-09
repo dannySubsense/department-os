@@ -18,7 +18,7 @@ Codex/Sol and Frank are complementary, not interchangeable: Codex and Sol are di
 4. **Frank's binding specification gate** — the spec must pass before implementation begins.
 5. **Human implementation greenlight** — Danny explicitly authorizes implementation to start.
 6. **Forge / slice-by-slice implementation** — Claude Code implements a complete vertical slice against the spec, per [principles.md](principles.md).
-7. **Independent review** — the active independent reviewer(s) for this PR (currently Sol; Codex once onboarded to the GitHub workflow) review the complete diff against the approved specification, independently of Claude Code's reasoning path (see below).
+7. **Independent review** — each PR records its own active independent reviewer(s) from the Roles roster above; they review the complete diff against the approved specification, independently of Claude Code's reasoning path (see below).
 8. **Focused correction commits** — confirmed findings are fixed through focused, traceable commits, not folded silently into the original change. This must happen *before* step 9, so the final gate evaluates the code that will actually be merged.
 9. **Frank's binding final forge gate** — evaluates the corrected, final branch state.
 10. **Human merge approval** — Danny merges.
@@ -48,7 +48,7 @@ Independence means more than different agent identities. Reviewers using the sam
 - Direct implementation pushes to `main` are not allowed after bootstrap, unless Danny explicitly authorizes an exception.
 - Every pull request is tied to an approved intake, specification, milestone, or recorded decision — not opened speculatively.
 - Claude Code authors the implementation on its branch.
-- The active independent reviewer(s) (currently Sol; Codex once onboarded) review the complete diff independently against the approved specification (see Independent Review Discipline above).
+- Each PR records its own active independent reviewer(s) from the Roles roster above; they review the complete diff independently against the approved specification (see Independent Review Discipline above).
 - Confirmed findings are fixed through focused, traceable commits on the same branch.
 - Frank's final binding forge gate evaluates the corrected final branch state — not the pre-correction diff.
 - Required checks and tests must pass before merge.
