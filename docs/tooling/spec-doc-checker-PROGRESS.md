@@ -1,6 +1,6 @@
 # Progress: spec-doc-checker (lite forge)
 
-## Status: SLICES_COMPLETE — awaiting Frank binding forge-gate
+## Status: COMPLETE — Frank binding forge-gate PASSED (attempt 1/3, both layers, no PROVISIONAL)
 
 ## Slices
 - [x] Slice 1: Core scaffolding (CLI, config parsing, discovery, suppression engine, JSON output/exit codes) — COMPLETE (69/69 tests, QC PASS on re-verification)
