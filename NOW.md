@@ -1,9 +1,9 @@
 BUILD TARGET: Problem Department MVP
 PHASE: Forge
-CURRENT SLICE: 1/12 — Runtime & Storage Evaluation
+CURRENT SLICE: 2/12 — Core Persistence + Intake Service + Submission Screen
 PRODUCT CODE EXISTS: No
-LAST COMPLETED PRODUCT GATE: Spec Gate PASS (attempt 3/3, final, 2026-08-08)
+LAST COMPLETED PRODUCT GATE: Slice 1 DDR ACCEPTED (runtime: Claude Agent SDK / direct Anthropic API; storage: dedicated local Postgres for Department OS Core)
 LAST MERGED SIDE TOOL: spec-doc-checker (PR #5, 2026-08-10)
-NEXT PRODUCT CAPABILITY: runtime/storage decision (DDR) enabling Slice 2 — core persistence + Intake Service + Submission Screen
+NEXT PRODUCT CAPABILITY: a human can submit source artifacts and get a durable Investigation reference (US-1, Flow 1)
 
 Last updated: 2026-08-10 by Ledger
