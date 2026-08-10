@@ -90,5 +90,7 @@ unsuppressed finding. If a file or heading is genuinely optional for a doc set, 
 python3 -m pytest scripts/tests/ -v
 ```
 
-158 tests, covering all six rules' fixtures under `scripts/tests/fixtures/spec-doc-checker/`, plus
-config/CLI edge cases, output-contract, and suppression behavior.
+Covers all six rules' fixtures under `scripts/tests/fixtures/spec-doc-checker/`, plus config/CLI
+edge cases, output-contract, and suppression behavior (test count intentionally not stated here —
+it changes as coverage grows; see `python3 -m pytest scripts/tests/ --collect-only -q` for the
+current count).
