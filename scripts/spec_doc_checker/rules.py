@@ -1,4 +1,4 @@
-"""Rule implementations for the four default-enabled rules (Slice 2).
+"""Rule implementations for all six rules (Slice 2 + Slice 3).
 
 Normative source: docs/tooling/spec-doc-checker.md Section 4.
 
@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 from typing import Dict, List
 
-from .models import Violation
+from .models import RULE_NAMES, Violation
 
 STRAY_ARTIFACT_BUILTIN_PATTERNS = [
     r"</content>",
@@ -395,9 +395,159 @@ class RequiredFilesRule:
         return violations
 
 
+# --------------------------------------------------------------------------
+# required-status-reference (Section 4.4) -- disabled-by-default tier
+# --------------------------------------------------------------------------
+
+
+class RequiredStatusReferenceRule:
+    name = "required-status-reference"
+
+    def run(
+        self, files: List[Path], target_dir: Path, rule_config: dict
+    ) -> List[Violation]:
+        violations: List[Violation] = []
+        checks = rule_config.get("checks", [])
+        for check in checks:
+            check_name = check["name"]
+            source = check["source"]
+            target = check["target"]
+            pattern_str = check["pattern"]
+
+            source_path = target_dir / source
+            source_rel = _rel_path(source_path, target_dir)
+            text = source_path.read_text()
+            # N1 discipline: re.MULTILINE always on, no other implicit flags.
+            pattern = re.compile(pattern_str, re.MULTILINE)
+
+            if pattern.search(text) is None:
+                # target's existence is already validated at config-load
+                # time (config.py's resolve_and_check_path, must_exist=True
+                # for required-status-reference.target); this rule only
+                # checks that `source` contains the configured assertion --
+                # it never re-derives or checks `target`'s actual status.
+                violations.append(
+                    Violation(
+                        rule="required-status-reference",
+                        check_name=check_name,
+                        path=source_rel,
+                        start_line=0,
+                        end_line=0,
+                        message=(
+                            f"{source_rel!r} does not contain a match for "
+                            f"the configured assertion pattern {pattern_str!r} "
+                            f"about {target!r} (presence check only -- this "
+                            f"does not verify {target!r}'s actual status)"
+                        ),
+                    )
+                )
+        return violations
+
+
+# --------------------------------------------------------------------------
+# canonical-reference (Section 4.6) -- disabled-by-default tier
+# --------------------------------------------------------------------------
+
+
+class CanonicalReferenceRule:
+    name = "canonical-reference"
+
+    def run(
+        self, files: List[Path], target_dir: Path, rule_config: dict
+    ) -> List[Violation]:
+        violations: List[Violation] = []
+        checks = rule_config.get("checks", [])
+        for check in checks:
+            check_name = check["name"]
+            claiming_file = check["claiming_file"]
+            target_reference = check["target_reference"]
+            forbidden_restatement_pattern = check.get(
+                "forbidden_restatement_pattern"
+            )
+
+            claiming_path = target_dir / claiming_file
+            claiming_rel = _rel_path(claiming_path, target_dir)
+            text = claiming_path.read_text()
+
+            # 1. Presence: plain substring match, not regex.
+            if target_reference not in text:
+                violations.append(
+                    Violation(
+                        rule="canonical-reference",
+                        check_name=check_name,
+                        path=claiming_rel,
+                        start_line=0,
+                        end_line=0,
+                        message=(
+                            f"{claiming_rel!r} does not contain the required "
+                            f"reference {target_reference!r}"
+                        ),
+                    )
+                )
+
+            # 2. Existence: filename-vs-anchor discriminator -- a
+            # target_reference ending in .md is a filename (existence
+            # checked here, rule-runtime, per Section 3/4.6); anything else
+            # is an opaque anchor string, never path-resolved, no existence
+            # check performed at all.
+            if target_reference.endswith(".md"):
+                target_path = (target_dir / target_reference).resolve()
+                if not target_path.exists():
+                    violations.append(
+                        Violation(
+                            rule="canonical-reference",
+                            check_name=check_name,
+                            path=claiming_rel,
+                            start_line=0,
+                            end_line=0,
+                            message=(
+                                f"{claiming_rel!r} references "
+                                f"{target_reference!r}, which does not exist "
+                                "in the doc set"
+                            ),
+                        )
+                    )
+
+            # 3. Optional forbidden-restatement check -- only run if the key
+            # is present in the check config; never inferred or defaulted.
+            if forbidden_restatement_pattern is not None:
+                pattern = re.compile(
+                    forbidden_restatement_pattern, re.MULTILINE
+                )
+                m = pattern.search(text)
+                if m is not None:
+                    line_no = text.count("\n", 0, m.start()) + 1
+                    violations.append(
+                        Violation(
+                            rule="canonical-reference",
+                            check_name=check_name,
+                            path=claiming_rel,
+                            start_line=line_no,
+                            end_line=line_no,
+                            message=(
+                                f"{claiming_rel!r} both references "
+                                f"{target_reference!r} and restates content "
+                                "matching the forbidden restatement pattern "
+                                f"{forbidden_restatement_pattern!r}"
+                            ),
+                        )
+                    )
+        return violations
+
+
 RULES = {
     "canonical-count": CanonicalCountRule(),
     "forbidden-literal": ForbiddenLiteralRule(),
     "stray-artifact": StrayArtifactRule(),
     "required-files": RequiredFilesRule(),
+    "required-status-reference": RequiredStatusReferenceRule(),
+    "canonical-reference": CanonicalReferenceRule(),
 }
+
+# QC carry-forward (Slice 2 advisory): guard against a future key typo in
+# this dict silently making a rule unreachable -- every registered key must
+# be one of the six canonical rule names from models.py's RULE_NAMES.
+assert set(RULES.keys()) <= set(RULE_NAMES), (
+    f"rules.py RULES keys {sorted(RULES.keys())} must be a subset of "
+    f"models.RULE_NAMES {sorted(RULE_NAMES)}"
+)

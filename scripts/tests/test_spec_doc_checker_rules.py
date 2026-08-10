@@ -778,3 +778,402 @@ def test_suppression_allowlist_strict_mode_promotes_back_to_failing(tmp_path):
     )
     result = run_cli([str(tmp_path), "--format", "json", "--strict"])
     assert result.returncode == 1
+
+
+# --- required-status-reference (Slice 3, Section 4.4) -----------------------
+
+
+def test_required_status_reference_pass_pattern_found(tmp_path):
+    (tmp_path / "INTAKE.md").write_text("**Status**: APPROVED\n")
+    (tmp_path / "05-REVIEW.md").write_text(
+        "Review confirms INTAKE.md is APPROVED.\n"
+    )
+    (tmp_path / "spec-doc-checker.yml").write_text(
+        "version: 1\nrules:\n  required-status-reference:\n"
+        "    enabled: true\n    checks:\n"
+        "      - name: c1\n        source: 05-REVIEW.md\n"
+        "        target: INTAKE.md\n"
+        "        pattern: 'INTAKE\\.md.*APPROVED'\n"
+    )
+    result = run_cli(
+        [str(tmp_path), "--rule", "required-status-reference", "--format", "json"]
+    )
+    assert result.returncode == 0
+    out = json.loads(result.stdout)
+    assert out["violations"] == []
+
+
+def test_required_status_reference_fail_pattern_missing(tmp_path):
+    (tmp_path / "INTAKE.md").write_text("**Status**: APPROVED\n")
+    (tmp_path / "05-REVIEW.md").write_text("Review is complete.\n")
+    (tmp_path / "spec-doc-checker.yml").write_text(
+        "version: 1\nrules:\n  required-status-reference:\n"
+        "    enabled: true\n    checks:\n"
+        "      - name: c1\n        source: 05-REVIEW.md\n"
+        "        target: INTAKE.md\n"
+        "        pattern: 'INTAKE\\.md.*APPROVED'\n"
+    )
+    result = run_cli(
+        [str(tmp_path), "--rule", "required-status-reference", "--format", "json"]
+    )
+    assert result.returncode == 1
+    out = json.loads(result.stdout)
+    assert len(out["violations"]) == 1
+    v = out["violations"][0]
+    assert v["rule"] == "required-status-reference"
+    assert v["check_name"] == "c1"
+    assert v["path"] == "05-REVIEW.md"
+    # The message must only assert that `source` lacks the configured
+    # pattern -- never that `target`'s actual status is wrong/drifted. This
+    # rule performs presence-of-assertion checking only, per Section 4.4.
+    assert "does not contain a match" in v["message"]
+    assert "actual status" not in v["message"] or "does not verify" in v["message"]
+    assert "consistency" not in v["message"].lower()
+
+
+def test_required_status_reference_silent_on_target_content_drift(tmp_path):
+    # Section 4.4's core behavioral boundary: this rule does NOT verify
+    # target's actual status -- it only checks that `source` contains the
+    # configured assertion pattern. Here `pattern` matches in `source` (so
+    # no violation), but `target`'s real content directly CONTRADICTS what
+    # `source` asserts (target says REJECTED, source asserts APPROVED). The
+    # rule must stay completely silent on this contradiction -- zero
+    # violations -- because detecting source/target drift is explicitly out
+    # of scope for v1 (Section 4.4, Section 9).
+    (tmp_path / "INTAKE.md").write_text("**Status**: REJECTED\n")
+    (tmp_path / "05-REVIEW.md").write_text(
+        "Review confirms INTAKE.md is APPROVED.\n"
+    )
+    (tmp_path / "spec-doc-checker.yml").write_text(
+        "version: 1\nrules:\n  required-status-reference:\n"
+        "    enabled: true\n    checks:\n"
+        "      - name: c1\n        source: 05-REVIEW.md\n"
+        "        target: INTAKE.md\n"
+        "        pattern: 'INTAKE\\.md.*APPROVED'\n"
+    )
+    result = run_cli(
+        [str(tmp_path), "--rule", "required-status-reference", "--format", "json"]
+    )
+    assert result.returncode == 0
+    out = json.loads(result.stdout)
+    assert out["violations"] == []
+
+
+def test_required_status_reference_not_run_by_default_without_rule_flag(tmp_path):
+    # Section 2/3: disabled-by-default means truly unreachable in a normal
+    # (no --rule, no enabled: true) invocation. Config below has no
+    # top-level `enabled` key for required-status-reference (defaults to
+    # false per Section 3) and its one check WOULD be a violation if run
+    # (source lacks the asserted pattern) -- proving the rule is silently
+    # skipped, not merely defaulting to a pass.
+    (tmp_path / "INTAKE.md").write_text("**Status**: APPROVED\n")
+    (tmp_path / "05-REVIEW.md").write_text("Review is complete.\n")
+    (tmp_path / "spec-doc-checker.yml").write_text(
+        "version: 1\nrules:\n  required-status-reference:\n"
+        "    checks:\n"
+        "      - name: c1\n        source: 05-REVIEW.md\n"
+        "        target: INTAKE.md\n"
+        "        pattern: 'INTAKE\\.md.*APPROVED'\n"
+    )
+    result = run_cli([str(tmp_path), "--format", "json"])
+    assert result.returncode == 0
+    out = json.loads(result.stdout)
+    assert out["violations"] == []
+    assert "required-status-reference" not in out["summary"]["rules_run"]
+
+
+def test_required_status_reference_runnable_via_explicit_rule_despite_disabled_default(
+    tmp_path,
+):
+    # Section 2/3: required-status-reference is disabled by default; no
+    # top-level `enabled: true` is set here, only `--rule` is used.
+    (tmp_path / "INTAKE.md").write_text("**Status**: APPROVED\n")
+    (tmp_path / "05-REVIEW.md").write_text("Review is complete.\n")
+    (tmp_path / "spec-doc-checker.yml").write_text(
+        "version: 1\nrules:\n  required-status-reference:\n"
+        "    checks:\n"
+        "      - name: c1\n        source: 05-REVIEW.md\n"
+        "        target: INTAKE.md\n"
+        "        pattern: 'INTAKE\\.md.*APPROVED'\n"
+    )
+    result = run_cli(
+        [str(tmp_path), "--rule", "required-status-reference", "--format", "json"]
+    )
+    assert result.returncode == 1
+    out = json.loads(result.stdout)
+    assert len(out["violations"]) == 1
+    assert out["summary"]["rules_run"] == ["required-status-reference"]
+
+
+# --- canonical-reference (Slice 3, Section 4.6) ------------------------------
+
+
+def test_canonical_reference_pass_presence_and_existence(tmp_path):
+    (tmp_path / "01-REQUIREMENTS.md").write_text("AC-1 foo\n")
+    (tmp_path / "04-ROADMAP.md").write_text(
+        "Output verification points at 01-REQUIREMENTS.md.\n"
+    )
+    (tmp_path / "spec-doc-checker.yml").write_text(
+        "version: 1\nrules:\n  canonical-reference:\n"
+        "    enabled: true\n    checks:\n"
+        "      - name: c1\n        claiming_file: 04-ROADMAP.md\n"
+        "        target_reference: 01-REQUIREMENTS.md\n"
+    )
+    result = run_cli(
+        [str(tmp_path), "--rule", "canonical-reference", "--format", "json"]
+    )
+    assert result.returncode == 0
+    out = json.loads(result.stdout)
+    assert out["violations"] == []
+
+
+def test_canonical_reference_fail_presence_missing(tmp_path):
+    (tmp_path / "01-REQUIREMENTS.md").write_text("AC-1 foo\n")
+    (tmp_path / "04-ROADMAP.md").write_text(
+        "Output verification points at the requirements doc.\n"
+    )
+    (tmp_path / "spec-doc-checker.yml").write_text(
+        "version: 1\nrules:\n  canonical-reference:\n"
+        "    enabled: true\n    checks:\n"
+        "      - name: c1\n        claiming_file: 04-ROADMAP.md\n"
+        "        target_reference: 01-REQUIREMENTS.md\n"
+    )
+    result = run_cli(
+        [str(tmp_path), "--rule", "canonical-reference", "--format", "json"]
+    )
+    assert result.returncode == 1
+    out = json.loads(result.stdout)
+    assert len(out["violations"]) == 1
+    assert "does not contain the required reference" in out["violations"][0]["message"]
+
+
+def test_canonical_reference_filename_target_missing_is_existence_violation(tmp_path):
+    (tmp_path / "04-ROADMAP.md").write_text(
+        "Output verification points at 01-REQUIREMENTS.md.\n"
+    )
+    (tmp_path / "spec-doc-checker.yml").write_text(
+        "version: 1\nrules:\n  canonical-reference:\n"
+        "    enabled: true\n    checks:\n"
+        "      - name: c1\n        claiming_file: 04-ROADMAP.md\n"
+        "        target_reference: 01-REQUIREMENTS.md\n"
+    )
+    result = run_cli(
+        [str(tmp_path), "--rule", "canonical-reference", "--format", "json"]
+    )
+    assert result.returncode == 1
+    out = json.loads(result.stdout)
+    assert len(out["violations"]) == 1
+    assert "does not exist" in out["violations"][0]["message"]
+
+
+def test_canonical_reference_anchor_string_skips_existence_check(tmp_path):
+    # target_reference does not end in .md -> treated as an anchor string;
+    # present in claiming_file but never path-resolved -- proving no
+    # existence check is attempted even though no file of that name exists.
+    (tmp_path / "04-ROADMAP.md").write_text(
+        "Output verification points at Section 4.6 for details.\n"
+    )
+    (tmp_path / "spec-doc-checker.yml").write_text(
+        "version: 1\nrules:\n  canonical-reference:\n"
+        "    enabled: true\n    checks:\n"
+        "      - name: c1\n        claiming_file: 04-ROADMAP.md\n"
+        "        target_reference: 'Section 4.6'\n"
+    )
+    result = run_cli(
+        [str(tmp_path), "--rule", "canonical-reference", "--format", "json"]
+    )
+    assert result.returncode == 0
+    out = json.loads(result.stdout)
+    assert out["violations"] == []
+
+
+def test_canonical_reference_forbidden_restatement_matches_is_violation(tmp_path):
+    (tmp_path / "01-REQUIREMENTS.md").write_text("AC-1 foo\nAC-2 bar\n")
+    (tmp_path / "04-ROADMAP.md").write_text(
+        "Output verification points at 01-REQUIREMENTS.md, which enumerates "
+        "2 acceptance criteria.\n"
+    )
+    (tmp_path / "spec-doc-checker.yml").write_text(
+        "version: 1\nrules:\n  canonical-reference:\n"
+        "    enabled: true\n    checks:\n"
+        "      - name: c1\n        claiming_file: 04-ROADMAP.md\n"
+        "        target_reference: 01-REQUIREMENTS.md\n"
+        "        forbidden_restatement_pattern: '\\b\\d+\\s+acceptance criteria\\b'\n"
+    )
+    result = run_cli(
+        [str(tmp_path), "--rule", "canonical-reference", "--format", "json"]
+    )
+    assert result.returncode == 1
+    out = json.loads(result.stdout)
+    assert len(out["violations"]) == 1
+    assert "forbidden restatement pattern" in out["violations"][0]["message"]
+
+
+def test_canonical_reference_forbidden_restatement_omitted_key_not_inferred(tmp_path):
+    # Same content that WOULD match a restatement pattern if configured, but
+    # forbidden_restatement_pattern is omitted from the check entry entirely
+    # -- proving the third check is skipped, not inferred/defaulted.
+    (tmp_path / "01-REQUIREMENTS.md").write_text("AC-1 foo\nAC-2 bar\n")
+    (tmp_path / "04-ROADMAP.md").write_text(
+        "Output verification points at 01-REQUIREMENTS.md, which enumerates "
+        "2 acceptance criteria.\n"
+    )
+    (tmp_path / "spec-doc-checker.yml").write_text(
+        "version: 1\nrules:\n  canonical-reference:\n"
+        "    enabled: true\n    checks:\n"
+        "      - name: c1\n        claiming_file: 04-ROADMAP.md\n"
+        "        target_reference: 01-REQUIREMENTS.md\n"
+    )
+    result = run_cli(
+        [str(tmp_path), "--rule", "canonical-reference", "--format", "json"]
+    )
+    assert result.returncode == 0
+    out = json.loads(result.stdout)
+    assert out["violations"] == []
+
+
+def test_canonical_reference_not_run_by_default_without_rule_flag(tmp_path):
+    # Section 2/3: disabled-by-default means truly unreachable in a normal
+    # (no --rule, no enabled: true) invocation. Config below has no
+    # top-level `enabled` key for canonical-reference (defaults to false per
+    # Section 3) and its one check WOULD be a violation if run (claiming_file
+    # lacks the required reference) -- proving the rule is silently skipped,
+    # not merely defaulting to a pass.
+    (tmp_path / "01-REQUIREMENTS.md").write_text("AC-1 foo\n")
+    (tmp_path / "04-ROADMAP.md").write_text("no reference here\n")
+    (tmp_path / "spec-doc-checker.yml").write_text(
+        "version: 1\nrules:\n  canonical-reference:\n"
+        "    checks:\n"
+        "      - name: c1\n        claiming_file: 04-ROADMAP.md\n"
+        "        target_reference: 01-REQUIREMENTS.md\n"
+    )
+    result = run_cli([str(tmp_path), "--format", "json"])
+    assert result.returncode == 0
+    out = json.loads(result.stdout)
+    assert out["violations"] == []
+    assert "canonical-reference" not in out["summary"]["rules_run"]
+
+
+def test_canonical_reference_forbidden_restatement_reports_real_line_number(
+    tmp_path,
+):
+    # Regression: check 3 (forbidden_restatement_pattern) must report the
+    # actual matched line, not the file-level line-0 convention. Section 6's
+    # line-0 unsuppressibility carve-out is scoped to required-files only --
+    # a forbidden-restatement match is the presence of a specific line of
+    # real content, same as forbidden-literal/stray-artifact. Placing the
+    # match on line 4 (not line 1) makes a line-0 regression visibly wrong.
+    (tmp_path / "01-REQUIREMENTS.md").write_text("AC-1 foo\nAC-2 bar\n")
+    (tmp_path / "04-ROADMAP.md").write_text(
+        "line one\n"
+        "line two\n"
+        "line three\n"
+        "Output verification points at 01-REQUIREMENTS.md, which enumerates "
+        "2 acceptance criteria.\n"
+    )
+    (tmp_path / "spec-doc-checker.yml").write_text(
+        "version: 1\nrules:\n  canonical-reference:\n"
+        "    enabled: true\n    checks:\n"
+        "      - name: c1\n        claiming_file: 04-ROADMAP.md\n"
+        "        target_reference: 01-REQUIREMENTS.md\n"
+        "        forbidden_restatement_pattern: '\\b\\d+\\s+acceptance criteria\\b'\n"
+    )
+    result = run_cli(
+        [str(tmp_path), "--rule", "canonical-reference", "--format", "json"]
+    )
+    assert result.returncode == 1
+    out = json.loads(result.stdout)
+    assert len(out["violations"]) == 1
+    v = out["violations"][0]
+    assert v["start_line"] == 4
+    assert v["end_line"] == 4
+
+
+def test_canonical_reference_forbidden_restatement_suppressible_by_inline_marker(
+    tmp_path,
+):
+    # End-to-end consequence of the line-number bug: with the violation
+    # correctly pinned at its real line, an inline marker bound to that line
+    # must actually suppress it (rather than producing suppression-unused
+    # noise because the marker can never match a line-0 finding).
+    (tmp_path / "01-REQUIREMENTS.md").write_text("AC-1 foo\nAC-2 bar\n")
+    (tmp_path / "04-ROADMAP.md").write_text(
+        "line one\n"
+        "line two\n"
+        '<!-- spec-doc-checker: ignore canonical-reference reason="intentional restatement" -->\n'
+        "Output verification points at 01-REQUIREMENTS.md, which enumerates "
+        "2 acceptance criteria.\n"
+    )
+    (tmp_path / "spec-doc-checker.yml").write_text(
+        "version: 1\nrules:\n  canonical-reference:\n"
+        "    enabled: true\n    checks:\n"
+        "      - name: c1\n        claiming_file: 04-ROADMAP.md\n"
+        "        target_reference: 01-REQUIREMENTS.md\n"
+        "        forbidden_restatement_pattern: '\\b\\d+\\s+acceptance criteria\\b'\n"
+    )
+    result = run_cli(
+        [str(tmp_path), "--rule", "canonical-reference", "--format", "json"]
+    )
+    assert result.returncode == 0
+    out = json.loads(result.stdout)
+    assert out["violations"] == []
+    assert len(out["suppressed"]) == 1
+    s = out["suppressed"][0]
+    assert s["rule"] == "canonical-reference"
+    assert s["suppression_source"] == "inline"
+
+
+def test_canonical_reference_forbidden_restatement_suppressible_by_allowlist(
+    tmp_path,
+):
+    # Same end-to-end consequence via the config-file allowlist path:
+    # line_range must be a real, matchable line, which requires the
+    # violation itself to report a real (non-zero) line.
+    (tmp_path / "01-REQUIREMENTS.md").write_text("AC-1 foo\nAC-2 bar\n")
+    (tmp_path / "04-ROADMAP.md").write_text(
+        "line one\n"
+        "line two\n"
+        "line three\n"
+        "Output verification points at 01-REQUIREMENTS.md, which enumerates "
+        "2 acceptance criteria.\n"
+    )
+    (tmp_path / "spec-doc-checker.yml").write_text(
+        "version: 1\nrules:\n  canonical-reference:\n"
+        "    enabled: true\n    checks:\n"
+        "      - name: c1\n        claiming_file: 04-ROADMAP.md\n"
+        "        target_reference: 01-REQUIREMENTS.md\n"
+        "        forbidden_restatement_pattern: '\\b\\d+\\s+acceptance criteria\\b'\n"
+        "suppression_allowlist:\n"
+        "  - rule: 'canonical-reference'\n    file: '04-ROADMAP.md'\n"
+        "    line_range: [4, 4]\n    reason: 'intentional restatement'\n"
+    )
+    result = run_cli(
+        [str(tmp_path), "--rule", "canonical-reference", "--format", "json"]
+    )
+    assert result.returncode == 0
+    out = json.loads(result.stdout)
+    assert out["violations"] == []
+    assert len(out["suppressed"]) == 1
+    s = out["suppressed"][0]
+    assert s["rule"] == "canonical-reference"
+    assert s["suppression_source"] == "allowlist"
+
+
+def test_canonical_reference_runnable_via_explicit_rule_despite_disabled_default(
+    tmp_path,
+):
+    (tmp_path / "01-REQUIREMENTS.md").write_text("AC-1 foo\n")
+    (tmp_path / "04-ROADMAP.md").write_text("no reference here\n")
+    (tmp_path / "spec-doc-checker.yml").write_text(
+        "version: 1\nrules:\n  canonical-reference:\n"
+        "    checks:\n"
+        "      - name: c1\n        claiming_file: 04-ROADMAP.md\n"
+        "        target_reference: 01-REQUIREMENTS.md\n"
+    )
+    result = run_cli(
+        [str(tmp_path), "--rule", "canonical-reference", "--format", "json"]
+    )
+    assert result.returncode == 1
+    out = json.loads(result.stdout)
+    assert len(out["violations"]) == 1
+    assert out["summary"]["rules_run"] == ["canonical-reference"]

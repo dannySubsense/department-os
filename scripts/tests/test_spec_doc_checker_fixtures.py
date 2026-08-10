@@ -263,3 +263,99 @@ def test_required_files_missing_file_finding_unsuppressible_by_allowlist_fixture
     assert len(unused_violations) == 1
 
     assert out["suppressed"] == []
+
+
+# --- required-status-reference (Slice 3, AC1, AC2) ---------------------------
+
+
+def test_required_status_reference_pass_fixture():
+    result = run_cli(
+        FIXTURES / "required-status-reference" / "pass" / "basic",
+        ["--rule", "required-status-reference"],
+    )
+    assert result.returncode == 0
+    out = json.loads(result.stdout)
+    assert out["violations"] == []
+
+
+def test_required_status_reference_fail_fixture():
+    result = run_cli(
+        FIXTURES / "required-status-reference" / "fail" / "basic",
+        ["--rule", "required-status-reference"],
+    )
+    assert result.returncode == 1
+    out = json.loads(result.stdout)
+    assert len(out["violations"]) == 1
+    v = out["violations"][0]
+    assert v["rule"] == "required-status-reference"
+    assert v["path"] == "05-REVIEW.md"
+
+
+# --- canonical-reference (Slice 3, AC1, AC2) ---------------------------------
+
+
+def test_canonical_reference_pass_fixture():
+    result = run_cli(
+        FIXTURES / "canonical-reference" / "pass" / "basic",
+        ["--rule", "canonical-reference"],
+    )
+    assert result.returncode == 0
+    out = json.loads(result.stdout)
+    assert out["violations"] == []
+
+
+def test_canonical_reference_fail_fixture():
+    result = run_cli(
+        FIXTURES / "canonical-reference" / "fail" / "basic",
+        ["--rule", "canonical-reference"],
+    )
+    assert result.returncode == 1
+    out = json.loads(result.stdout)
+    assert len(out["violations"]) == 1
+    assert out["violations"][0]["rule"] == "canonical-reference"
+
+
+def test_canonical_reference_pass_anchor_fixture():
+    result = run_cli(
+        FIXTURES / "canonical-reference" / "pass" / "anchor",
+        ["--rule", "canonical-reference"],
+    )
+    assert result.returncode == 0
+    out = json.loads(result.stdout)
+    assert out["violations"] == []
+
+
+def test_canonical_reference_fail_missing_target_file_fixture():
+    result = run_cli(
+        FIXTURES / "canonical-reference" / "fail" / "missing-target-file",
+        ["--rule", "canonical-reference"],
+    )
+    assert result.returncode == 1
+    out = json.loads(result.stdout)
+    assert len(out["violations"]) == 1
+    assert "does not exist" in out["violations"][0]["message"]
+
+
+def test_canonical_reference_fail_restatement_fixture():
+    result = run_cli(
+        FIXTURES / "canonical-reference" / "fail" / "restatement",
+        ["--rule", "canonical-reference"],
+    )
+    assert result.returncode == 1
+    out = json.loads(result.stdout)
+    assert len(out["violations"]) == 1
+    assert "forbidden restatement pattern" in out["violations"][0]["message"]
+
+
+def test_canonical_reference_pass_restatement_omitted_fixture():
+    # F7 pairing: same content as fail/restatement, but
+    # forbidden_restatement_pattern is omitted from config entirely -- the
+    # matching content still exists in the doc, proving the check is not
+    # inferred/defaulted.
+    result = run_cli(
+        FIXTURES / "canonical-reference" / "pass" / "restatement-omitted",
+        ["--rule", "canonical-reference"],
+    )
+    assert result.returncode == 0
+    out = json.loads(result.stdout)
+    assert out["violations"] == []

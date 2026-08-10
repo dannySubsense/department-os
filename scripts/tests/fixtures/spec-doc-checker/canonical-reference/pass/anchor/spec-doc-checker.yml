@@ -1,0 +1,9 @@
+version: 1
+
+rules:
+  canonical-reference:
+    enabled: true
+    checks:
+      - name: "roadmap-points-at-anchor"
+        claiming_file: "04-ROADMAP.md"
+        target_reference: "Section 4.6"

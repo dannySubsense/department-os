@@ -1,0 +1,10 @@
+version: 1
+
+rules:
+  required-status-reference:
+    enabled: true
+    checks:
+      - name: "review-confirms-intake-approved"
+        source: "05-REVIEW.md"
+        target: "INTAKE.md"
+        pattern: 'INTAKE\.md.*APPROVED'

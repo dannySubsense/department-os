@@ -5,11 +5,11 @@
 ## Slices
 - [x] Slice 1: Core scaffolding (CLI, config parsing, discovery, suppression engine, JSON output/exit codes) — COMPLETE (69/69 tests, QC PASS on re-verification)
 - [x] Slice 2: Default-enabled rules (canonical-count, forbidden-literal, stray-artifact, required-files) — COMPLETE (131/131 tests, QC PASS on 5th re-verification)
-- [ ] Slice 3: Disabled-by-default rules (required-status-reference, canonical-reference) — PENDING
+- [x] Slice 3: Disabled-by-default rules (required-status-reference, canonical-reference) — COMPLETE (155/155 tests, QC PASS on 2nd re-verification)
 - [ ] Slice 4: Full acceptance pass (remaining ACs, real-doc-set run) — PENDING
 
 ## Current
-Slice: 2 COMPLETE, starting Slice 3
+Slice: 3 COMPLETE, starting Slice 4
 Step: Forge Advisor Final Check
 Last updated: 2026-08-10
 
@@ -18,10 +18,19 @@ Suppression-vs-real-rule-output was untested at Slice 1 close (RULE_REGISTRY emp
 Slice 2 populated the registry and exercised suppression against real violations (inline +
 allowlist, default + --strict) — resolved, no longer an open caveat.
 
-## Slice 2 Carry-Forward Note (for Slice 3)
-QC's advisory (non-blocking): nothing currently asserts `set(RULES) ⊆ RULE_NAMES`. Once Slice 3
-registers `required-status-reference`/`canonical-reference`, add that assertion so a future key
-typo in `rules.py` can't become silently unreachable.
+## Slice 2 Carry-Forward Note — RESOLVED in Slice 3
+`set(RULES) ⊆ RULE_NAMES` assertion added and QC-verified load-bearing (probed with a typo'd
+key, confirmed it actually raises).
+
+## Slice 4 Carry-Forward Notes
+- All six rules now registered — Slice 4's real-doc-set run (AC24) needs a config authored
+  against `docs/specs/problem-department-mvp/` covering all six rules (four default-enabled +
+  two explicitly invoked or enabled).
+- Two non-blocking advisories from Slice 3 QC, confirmed consistent with existing precedent,
+  no action required: `canonical-reference`'s `.md`-suffixed `target_reference` existence check
+  uses `.exists()` without accounting for non-recursive discovery (same shape as `required-files`,
+  already QC-approved in Slice 2); `cli.py`'s dead `continue` branch on a registry miss has a
+  stale comment referencing the now-resolved Slice 1 empty-registry state (cosmetic only).
 
 ## Fix Attempts
 | Test/File | Attempts | Last Error |
@@ -33,6 +42,7 @@ typo in `rules.py` can't become silently unreachable.
 | QC pass 2, Slice 2 (N1-N3) | 1 | N1 (blocking): restated_pattern compiled without re.MULTILINE, contradicting Section 3's normative regex contract; N2: F7 fixture pairing incomplete for canonical-count/pass and required-files/pass/missing-file; N3: stray-artifact still uses first-match-per-line (search), same class as F1 but unfixed there. |
 | QC pass 3, Slice 2 (N4-N5) | 1 | N4: forbidden-literal under-counts same-line repeated occurrences, same class as N3 but unfixed in the sibling rule (occurrence-counting axis not swept across all four rules); N5: required_headings key not in files silently never checked, no diagnostic. Danny-directed Section 3/4.5 spec amendment: orphan required_headings key is now a config error, exit 2. |
 | QC pass 4, Slice 2 (N6) | 1 | N6: circular import — models.py builds RULE_REGISTRY at module scope by importing rules.py, which imports models.py; `import spec_doc_checker.rules` directly fails with AttributeError. Invisible to all 126 tests since every test drives the CLI via subprocess, never imports the package directly. QC convergence judgment: rule-semantics axis (F1-N5) is closed, 7-3-2-1 findings per pass; N6 is a different, structural class. |
+| QC pass 1, Slice 3 | 1 | canonical-reference's forbidden_restatement_pattern violation reports start_line/end_line=0 (file-level convention) but it's a real line-anchored finding, not a file-level fact — makes it unsuppressible via either mechanism, contradicting Section 6's line-0 carve-out which is exclusive to required-files. |
 
 ## Notes
 - Spec: docs/tooling/spec-doc-checker.md (Status: LOCKED)

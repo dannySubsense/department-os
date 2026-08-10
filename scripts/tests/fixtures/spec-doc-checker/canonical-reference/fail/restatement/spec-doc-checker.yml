@@ -1,0 +1,10 @@
+version: 1
+
+rules:
+  canonical-reference:
+    enabled: true
+    checks:
+      - name: "roadmap-points-at-requirements-ac-count"
+        claiming_file: "04-ROADMAP.md"
+        target_reference: "01-REQUIREMENTS.md"
+        forbidden_restatement_pattern: '\b\d+\s+acceptance criteria\b'
