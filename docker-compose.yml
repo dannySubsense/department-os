@@ -1,0 +1,17 @@
+services:
+  deptos-core-db:
+    image: postgres:16-alpine
+    container_name: deptos-core-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: deptos
+      POSTGRES_PASSWORD: deptos
+      POSTGRES_DB: deptos_core
+    ports:
+      - "55432:5432"
+    volumes:
+      - deptos_core_pgdata:/var/lib/postgresql/data
+
+volumes:
+  deptos_core_pgdata:
+    name: deptos_core_pgdata
