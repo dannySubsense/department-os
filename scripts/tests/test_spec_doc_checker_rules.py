@@ -748,6 +748,44 @@ def test_suppression_inline_strict_mode_promotes_back_to_failing(tmp_path):
     assert len(out["suppressed"]) == 1
 
 
+def test_suppression_inline_same_line_marker_moves_real_violation_to_suppressed(
+    tmp_path,
+):
+    # AC15: the same-line marker variant of AC14 behaves identically -- here
+    # against a real rule finding (stray-artifact's built-in `</content>`
+    # pattern), not a synthetic marker-only scenario. The marker is appended
+    # after content on the SAME line as the finding it suppresses.
+    (tmp_path / "A.md").write_text(
+        'text\n</content> <!-- spec-doc-checker: ignore stray-artifact reason="known false positive" -->\nmore\n'
+    )
+    result = run_cli([str(tmp_path), "--format", "json"])
+    assert result.returncode == 0  # suppressed, non-blocking in default mode
+    out = json.loads(result.stdout)
+    assert out["violations"] == []
+    assert len(out["suppressed"]) == 1
+    s = out["suppressed"][0]
+    assert s["rule"] == "stray-artifact"
+    assert s["start_line"] == 2
+    assert s["suppression_source"] == "inline"
+    assert s["suppression_reason"] == "known false positive"
+
+
+def test_suppression_inline_same_line_marker_strict_mode_promotes_back_to_failing(
+    tmp_path,
+):
+    # AC15, --strict counterpart: the same-line marker's suppression is
+    # promoted back to a failing violation under --strict, exactly like the
+    # preceding-line variant (AC14).
+    (tmp_path / "A.md").write_text(
+        'text\n</content> <!-- spec-doc-checker: ignore stray-artifact reason="known false positive" -->\nmore\n'
+    )
+    result = run_cli([str(tmp_path), "--format", "json", "--strict"])
+    assert result.returncode == 1
+    out = json.loads(result.stdout)
+    assert out["violations"] == []
+    assert len(out["suppressed"]) == 1
+
+
 def test_suppression_allowlist_suppresses_real_violation(tmp_path):
     (tmp_path / "A.md").write_text("text\n</content>\nmore\n")
     (tmp_path / "spec-doc-checker.yml").write_text(

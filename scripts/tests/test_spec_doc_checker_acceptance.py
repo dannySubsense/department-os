@@ -358,6 +358,27 @@ def test_json_schema_run_with_violations(tmp_path):
     assert len(out["violations"]) >= 1
 
 
+def test_json_schema_run_with_violations_and_suppressions(tmp_path):
+    # AC12: the schema check must also be exercised on a single run that
+    # produces BOTH a non-empty `violations` list AND a non-empty
+    # `suppressed` list -- not just violations alone (covered above) or
+    # suppressions alone. One real stray-artifact finding is suppressed via
+    # inline marker (-> suppressed); a second, unrelated malformed marker
+    # produces an ordinary suppression-malformed violation (-> violations).
+    (tmp_path / "A.md").write_text(
+        'text\n<!-- spec-doc-checker: ignore stray-artifact reason="known fp" -->\n</content>\n'
+        '<!-- spec-doc-checker: ignore reason="missing rule name" -->\nmore\n'
+    )
+    result = run_cli([str(tmp_path), "--format", "json"])
+    assert result.returncode == 1
+    out = json.loads(result.stdout)
+    _assert_matches_checker_output_schema(out)
+    assert len(out["violations"]) >= 1
+    assert len(out["suppressed"]) >= 1
+    assert any(v["rule"] == "suppression-malformed" for v in out["violations"])
+    assert any(s["rule"] == "stray-artifact" for s in out["suppressed"])
+
+
 def test_json_schema_tool_error_run_emits_valid_empty_checker_output(tmp_path):
     # F5: a tool error is a distinct condition from a document-set
     # violation -- it is not encoded as a violation. The error message goes
