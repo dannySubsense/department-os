@@ -1,0 +1,403 @@
+"""Rule implementations for the four default-enabled rules (Slice 2).
+
+Normative source: docs/tooling/spec-doc-checker.md Section 4.
+
+Each rule implements the `Rule` protocol from models.py: `run(files,
+target_dir, rule_config) -> List[Violation]`. Rules must not apply
+suppression themselves -- that happens centrally in cli.py/suppression.py.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Dict, List
+
+from .models import Violation
+
+STRAY_ARTIFACT_BUILTIN_PATTERNS = [
+    r"</content>",
+    r"</invoke>",
+    r"\[REPLACE_MARKER\]",
+    r"^<<<<<<<.*$",
+    r"^>>>>>>>.*$",
+]
+
+
+def _rel_path(p: Path, target_dir: Path) -> str:
+    try:
+        return str(p.resolve().relative_to(target_dir.resolve()))
+    except ValueError:
+        return str(p)
+
+
+# --------------------------------------------------------------------------
+# canonical-count (Section 4.1)
+# --------------------------------------------------------------------------
+
+
+def _enumerate_ids(canonical_path: Path, id_pattern: str):
+    """Returns dict: unique_ids (set), duplicate_ids (dict id -> [lines]),
+    malformed_lines (list of (line_no,)), count (int)."""
+    pattern = re.compile(id_pattern, re.MULTILINE)
+    text = canonical_path.read_text()
+    lines = text.splitlines()
+
+    seen: Dict[str, List[int]] = {}
+    malformed_lines: List[int] = []
+
+    for idx, line in enumerate(lines):
+        line_no = idx + 1
+        for m in pattern.finditer(line):
+            captured = m.group(1)
+            if captured == "":
+                malformed_lines.append(line_no)
+                continue
+            seen.setdefault(captured, []).append(line_no)
+
+    unique_ids = set(seen.keys())
+    duplicate_ids = {k: v for k, v in seen.items() if len(v) > 1}
+    return {
+        "unique_ids": unique_ids,
+        "duplicate_ids": duplicate_ids,
+        "malformed_lines": malformed_lines,
+        "count": len(unique_ids),
+    }
+
+
+def _canonical_count_run(
+    files: List[Path], target_dir: Path, rule_config: dict
+) -> List[Violation]:
+    violations: List[Violation] = []
+    checks = rule_config.get("checks", [])
+    for check in checks:
+        check_name = check["name"]
+        canonical_source = check["canonical_source"]
+        canonical_path = target_dir / canonical_source
+        canonical_rel = _rel_path(canonical_path, target_dir)
+        id_pattern = check["id_pattern"]
+        mode = check["mode"]
+
+        enum_result = _enumerate_ids(canonical_path, id_pattern)
+
+        # Malformed IDs (empty capture) -- always a violation.
+        for line_no in enum_result["malformed_lines"]:
+            violations.append(
+                Violation(
+                    rule="canonical-count",
+                    check_name=check_name,
+                    path=canonical_rel,
+                    start_line=line_no,
+                    end_line=line_no,
+                    message=(
+                        f"malformed ID on line {line_no}: id_pattern matched "
+                        "an empty capture group"
+                    ),
+                )
+            )
+
+        # Duplicate IDs -- always a violation, independent of mode.
+        for dup_id, dup_lines in sorted(enum_result["duplicate_ids"].items()):
+            lines_str = ", ".join(str(l) for l in dup_lines)
+            violations.append(
+                Violation(
+                    rule="canonical-count",
+                    check_name=check_name,
+                    path=canonical_rel,
+                    start_line=dup_lines[0],
+                    end_line=dup_lines[-1],
+                    message=(
+                        f"duplicate ID {dup_id!r} in {canonical_rel} on "
+                        f"lines {lines_str}"
+                    ),
+                )
+            )
+
+        if mode == "compare":
+            for restated in check.get("restated_in", []):
+                restated_file = restated["file"]
+                restated_pattern = restated["restated_pattern"]
+                restated_path = target_dir / restated_file
+                restated_rel = _rel_path(restated_path, target_dir)
+                text = restated_path.read_text()
+                pattern = re.compile(restated_pattern, re.MULTILINE)
+                matches = list(pattern.finditer(text))
+                if not matches:
+                    # No restated count found at all -- treat as a mismatch
+                    # violation since restated_in was configured but produced
+                    # nothing to compare. File-level finding (no anchor
+                    # line), per Section 5's file-level convention.
+                    violations.append(
+                        Violation(
+                            rule="canonical-count",
+                            check_name=check_name,
+                            path=restated_rel,
+                            start_line=0,
+                            end_line=0,
+                            message=(
+                                f"restated_pattern found no match in "
+                                f"{restated_rel}; expected a restated count "
+                                f"to compare against enumerated count "
+                                f"{enum_result['count']} from {canonical_rel}"
+                            ),
+                        )
+                    )
+                    continue
+
+                # Every match in the restating file is collected and checked
+                # independently against the enumerated count (mirrors the
+                # id_pattern per-line collection above). This ensures a
+                # second, conflicting restatement later in the same file is
+                # not silently ignored -- each match stands on its own as a
+                # potential mismatch.
+                dup_note = ""
+                if enum_result["duplicate_ids"]:
+                    dup_note = (
+                        f" ({len(enum_result['duplicate_ids'])} duplicate "
+                        "ID(s) found in canonical source)"
+                    )
+                malformed_note = ""
+                if enum_result["malformed_lines"]:
+                    malformed_note = (
+                        f" ({len(enum_result['malformed_lines'])} malformed "
+                        "ID(s) found in canonical source)"
+                    )
+
+                for m in matches:
+                    restated_value = m.group(1)
+                    line_no = text.count("\n", 0, m.start()) + 1
+
+                    try:
+                        restated_int = int(restated_value)
+                    except ValueError:
+                        restated_int = None
+
+                    if restated_int != enum_result["count"]:
+                        violations.append(
+                            Violation(
+                                rule="canonical-count",
+                                check_name=check_name,
+                                path=restated_rel,
+                                start_line=line_no,
+                                end_line=line_no,
+                                message=(
+                                    f"restated count '{restated_value}' does "
+                                    f"not match mechanically enumerated "
+                                    f"count '{enum_result['count']}' from "
+                                    f"{canonical_rel}{dup_note}{malformed_note}"
+                                ),
+                            )
+                        )
+
+    return violations
+
+
+class CanonicalCountRule:
+    name = "canonical-count"
+
+    def run(
+        self, files: List[Path], target_dir: Path, rule_config: dict
+    ) -> List[Violation]:
+        return _canonical_count_run(files, target_dir, rule_config)
+
+
+# --------------------------------------------------------------------------
+# forbidden-literal (Section 4.2)
+# --------------------------------------------------------------------------
+
+
+class ForbiddenLiteralRule:
+    name = "forbidden-literal"
+
+    def run(
+        self, files: List[Path], target_dir: Path, rule_config: dict
+    ) -> List[Violation]:
+        violations: List[Violation] = []
+        literals = rule_config.get("literals", [])
+        for entry in literals:
+            literal = entry["literal"]
+            forbidden_near = entry.get("forbidden_near", [])
+            proximity_lines = entry.get("proximity_lines")
+
+            for path in files:
+                rel = _rel_path(path, target_dir)
+                text = path.read_text()
+                lines = text.splitlines()
+
+                for idx, line in enumerate(lines):
+                    line_no = idx + 1
+
+                    # Per Section 4.2, "for each occurrence of `literal`":
+                    # find every start index of `literal` as a substring
+                    # within this line, not just whether it is present.
+                    occurrence_starts: List[int] = []
+                    start = 0
+                    while True:
+                        pos = line.find(literal, start)
+                        if pos == -1:
+                            break
+                        occurrence_starts.append(pos)
+                        start = pos + 1
+                    if not occurrence_starts:
+                        continue
+
+                    if not forbidden_near:
+                        for _ in occurrence_starts:
+                            violations.append(
+                                Violation(
+                                    rule="forbidden-literal",
+                                    check_name=None,
+                                    path=rel,
+                                    start_line=line_no,
+                                    end_line=line_no,
+                                    message=(
+                                        f"forbidden literal {literal!r} found "
+                                        "(global ban)"
+                                    ),
+                                )
+                            )
+                        continue
+
+                    lo = max(0, idx - proximity_lines)
+                    hi = min(len(lines), idx + proximity_lines + 1)
+                    window = lines[lo:hi]
+                    for _ in occurrence_starts:
+                        for near in forbidden_near:
+                            if any(near in wline for wline in window):
+                                violations.append(
+                                    Violation(
+                                        rule="forbidden-literal",
+                                        check_name=None,
+                                        path=rel,
+                                        start_line=line_no,
+                                        end_line=line_no,
+                                        message=(
+                                            f"{literal!r} found within "
+                                            f"{proximity_lines} lines of "
+                                            f"{near!r} (forbidden proximity)"
+                                        ),
+                                    )
+                                )
+                                break
+        return violations
+
+
+# --------------------------------------------------------------------------
+# stray-artifact (Section 4.3)
+# --------------------------------------------------------------------------
+
+
+class StrayArtifactRule:
+    name = "stray-artifact"
+
+    def run(
+        self, files: List[Path], target_dir: Path, rule_config: dict
+    ) -> List[Violation]:
+        violations: List[Violation] = []
+        builtin_patterns = rule_config.get("builtin_patterns", True)
+        configured_patterns = rule_config.get("patterns", [])
+
+        pattern_strs: List[str] = []
+        if builtin_patterns:
+            pattern_strs.extend(STRAY_ARTIFACT_BUILTIN_PATTERNS)
+        pattern_strs.extend(configured_patterns)
+
+        compiled = [(p, re.compile(p, re.MULTILINE)) for p in pattern_strs]
+
+        for path in files:
+            rel = _rel_path(path, target_dir)
+            text = path.read_text()
+            lines = text.splitlines()
+            for idx, line in enumerate(lines):
+                line_no = idx + 1
+                for pat_str, pat in compiled:
+                    for _ in pat.finditer(line):
+                        violations.append(
+                            Violation(
+                                rule="stray-artifact",
+                                check_name=None,
+                                path=rel,
+                                start_line=line_no,
+                                end_line=line_no,
+                                message=(
+                                    f"stray artifact pattern {pat_str!r} "
+                                    "matched"
+                                ),
+                            )
+                        )
+        return violations
+
+
+# --------------------------------------------------------------------------
+# required-files (Section 4.5)
+# --------------------------------------------------------------------------
+
+HEADING_RE_TEMPLATE = r"^#{{1,6}}\s+{text}\s*$"
+
+
+class RequiredFilesRule:
+    name = "required-files"
+
+    def run(
+        self, files: List[Path], target_dir: Path, rule_config: dict
+    ) -> List[Violation]:
+        violations: List[Violation] = []
+        configured_files = rule_config.get("files", [])
+        required_headings = rule_config.get("required_headings", {})
+
+        for fname in configured_files:
+            candidate = (target_dir / fname).resolve()
+            if not candidate.exists():
+                violations.append(
+                    Violation(
+                        rule="required-files",
+                        check_name=None,
+                        path=fname,
+                        start_line=0,
+                        end_line=0,
+                        message=f"required file {fname!r} is missing",
+                    )
+                )
+                continue
+
+            headings = required_headings.get(fname)
+            if not headings:
+                continue
+
+            text = candidate.read_text()
+            lines = text.splitlines()
+            # Trim trailing whitespace per line before matching.
+            trimmed_lines = [l.rstrip() for l in lines]
+
+            for heading in headings:
+                found = False
+                pattern = re.compile(
+                    r"^#{1,6}\s+" + re.escape(heading) + r"\s*$", re.MULTILINE
+                )
+                for line in trimmed_lines:
+                    if pattern.match(line):
+                        found = True
+                        break
+                if not found:
+                    violations.append(
+                        Violation(
+                            rule="required-files",
+                            check_name=None,
+                            path=fname,
+                            start_line=0,
+                            end_line=0,
+                            message=(
+                                f"required heading {heading!r} not found in "
+                                f"{fname!r}"
+                            ),
+                        )
+                    )
+        return violations
+
+
+RULES = {
+    "canonical-count": CanonicalCountRule(),
+    "forbidden-literal": ForbiddenLiteralRule(),
+    "stray-artifact": StrayArtifactRule(),
+    "required-files": RequiredFilesRule(),
+}

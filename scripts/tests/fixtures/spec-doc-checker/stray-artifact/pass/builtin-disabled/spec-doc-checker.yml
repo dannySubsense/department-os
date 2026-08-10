@@ -1,0 +1,7 @@
+version: 1
+rules:
+  stray-artifact:
+    enabled: true
+    builtin_patterns: false
+    patterns:
+      - "CUSTOM_MARKER"

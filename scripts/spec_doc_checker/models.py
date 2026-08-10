@@ -94,9 +94,16 @@ class Rule(Protocol):
         ...
 
 
-# Registry of implemented rules, keyed by rule name. Empty in Slice 1 — no
-# rule logic is implemented yet (Slices 2/3 add entries here). A rule name
-# absent from this registry simply produces zero violations when run/enabled,
-# which is required end-to-end behavior for this slice (Section 7's "runs
-# with zero rules producing zero violations" case).
-RULE_REGISTRY: dict = {}
+# Registry of implemented rules, keyed by rule name. Slice 2 adds the four
+# default-enabled-tier rules (scripts/spec_doc_checker/rules.py); Slice 3
+# adds the two disabled-by-default-tier rules. A rule name absent from this
+# registry simply produces zero violations when run/enabled, which remains
+# required end-to-end behavior for any not-yet-implemented rule (Section 7's
+# "runs with zero rules producing zero violations" case).
+#
+# models.py is a lower-level module (data structures, shared types) and must
+# not import rules.py (a higher-level module implementing rule logic) at
+# module scope -- doing so previously created a circular import
+# (rules.py imports Violation from models.py). Callers that need the
+# registry should import rules.RULES directly (see cli.py) rather than
+# reaching into models.py for it.

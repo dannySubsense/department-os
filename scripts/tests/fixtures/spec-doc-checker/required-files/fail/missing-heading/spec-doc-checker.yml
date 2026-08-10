@@ -1,0 +1,8 @@
+version: 1
+rules:
+  required-files:
+    enabled: true
+    files: ["01-REQUIREMENTS.md"]
+    required_headings:
+      "01-REQUIREMENTS.md": ["Acceptance Criteria", "Out of Scope"]
+    heading_match: "exact"

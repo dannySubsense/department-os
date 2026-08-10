@@ -1,0 +1,6 @@
+version: 1
+rules:
+  required-files:
+    enabled: true
+    files: ["01-REQUIREMENTS.md", "02-ARCHITECTURE.md"]
+    heading_match: "exact"

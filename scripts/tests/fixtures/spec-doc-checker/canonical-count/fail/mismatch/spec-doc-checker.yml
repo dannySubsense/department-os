@@ -1,0 +1,14 @@
+version: 1
+rules:
+  canonical-count:
+    enabled: true
+    checks:
+      - name: "acceptance-criteria-count"
+        mode: "compare"
+        canonical_source: "REQUIREMENTS.md"
+        id_pattern: '^AC-(\d+)\b'
+        restated_in:
+          - file: "ROADMAP.md"
+            restated_pattern: '(\d+)\s+acceptance criteria'
+          - file: "REVIEW.md"
+            restated_pattern: '(\d+)\s+acceptance criteria'

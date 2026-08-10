@@ -1,0 +1,8 @@
+version: 1
+rules:
+  forbidden-literal:
+    enabled: true
+    literals:
+      - literal: "problem-statement"
+        forbidden_near: ["negatable"]
+        proximity_lines: 5

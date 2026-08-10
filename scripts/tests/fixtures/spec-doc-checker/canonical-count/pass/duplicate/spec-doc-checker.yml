@@ -1,0 +1,9 @@
+version: 1
+rules:
+  canonical-count:
+    enabled: true
+    checks:
+      - name: "acceptance-criteria-count"
+        mode: "enumerate"
+        canonical_source: "REQUIREMENTS.md"
+        id_pattern: '^AC-(\d+)\b'

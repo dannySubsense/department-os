@@ -16,8 +16,9 @@ from typing import List, Optional
 from . import config as config_mod
 from .config import ConfigError
 from .discovery import discover_files
-from .models import CheckerOutput, RULE_NAMES, RULE_REGISTRY, Summary, Violation
+from .models import CheckerOutput, RULE_NAMES, Summary, Violation
 from .output import format_json, format_text, sort_violations
+from .rules import RULES as RULE_REGISTRY
 from .suppression import (
     allowlist_entries_from_config,
     apply_suppressions,

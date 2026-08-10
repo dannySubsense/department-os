@@ -260,6 +260,18 @@ def _validate_required_files(rule_cfg: dict, target_dir: Path) -> dict:
             not isinstance(h, str) or h.strip() == "" for h in headings
         ):
             _err(f"{where} must be a list of non-empty strings")
+    # N5: a `required_headings` key that does not exactly match an entry in
+    # `files` is silently unreachable at rule-runtime (RequiredFilesRule only
+    # iterates required_headings for files it is also iterating from `files`)
+    # -- this must be a config-load-time error instead, identifying the
+    # offending orphan key.
+    orphan_keys = sorted(set(required_headings.keys()) - set(files))
+    if orphan_keys:
+        _err(
+            "rules.required-files.required_headings: key(s) "
+            f"{orphan_keys!r} do not match any entry in "
+            f"rules.required-files.files {list(files)!r}"
+        )
     heading_match = rule_cfg.get("heading_match", "exact")
     if heading_match != "exact":
         _err("rules.required-files.heading_match must be 'exact' in v1")
