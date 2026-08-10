@@ -1,0 +1,11 @@
+version: 1
+rules:
+  required-files:
+    enabled: true
+    files: ["01-REQUIREMENTS.md", "02-ARCHITECTURE.md"]
+    heading_match: "exact"
+suppression_allowlist:
+  - rule: "required-files"
+    file: "02-ARCHITECTURE.md"
+    line_range: [1, 1]
+    reason: "attempt to suppress a required-files missing-file finding -- per Section 6 this can never work, since the finding is start_line 0/end_line 0 and line_range must start at 1"

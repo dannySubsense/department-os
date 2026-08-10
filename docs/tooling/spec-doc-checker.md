@@ -33,6 +33,28 @@ are implemented but disabled by default because they are less battle-tested, and
 explicit `--rule` invocation or by setting `enabled: true` in config. This is a naming/framing fix
 only — the two rules' contracts (Section 4.4, 4.6) are unchanged.
 
+Revision note 4 (2026-08-09): this revision documents, per Danny's direction, existing v1 behavior
+discovered during Slice 2 implementation QC — a clarification, not a redesign or schema expansion.
+`required-files` file-level findings (missing file, missing heading — both reported with
+`start_line: 0`, `end_line: 0` per Section 5) cannot be suppressed via either the inline marker or
+the config-file allowlist, because the allowlist's `line_range` requires a real, 1-indexed range
+starting at 1 (Section 6, "Config-file allowlist"). This interaction was previously undocumented.
+Section 6 now states the resolution explicitly, and Section 4.5 cross-references it. No rule
+contract, schema key, or acceptance criterion changes as a result of this revision.
+
+Revision note 5 (2026-08-10): this revision closes a silent-hole config gap Danny's direction found
+during Slice 2 implementation QC, of the same class Revision note 2 item 4 already rejected
+elsewhere in this document (the subdirectory-path suppression-allowlist exemption): a
+`required-files.required_headings` key naming a file not present in that same rule's `files` list
+was previously inert and unreachable — no config-load-time error, no runtime diagnostic, the entry
+simply never checked. This repo's established position is that unreachable/inert config is a
+config error, not a silently-accepted no-op, so this revision makes every `required_headings` key
+required to exactly match an entry in `files`, validated at config-load time (Section 3), with
+Section 4.5 cross-referencing the rule where `required_headings` is defined. This does not redefine
+`required_headings` as an independent file declaration — runtime heading checks remain scoped to
+files declared in `files`, unchanged. No other rule contract, schema key, or acceptance criterion
+changes as a result of this revision.
+
 ---
 
 ## 1. Purpose and Non-Goals
@@ -175,6 +197,14 @@ Config file: `spec-doc-checker.yml`, expected by default at the root of the targ
   config error, exit code 2 (this doubles as the "unknown rule name" acceptance case in Section
   7 — it is caught at config-load time, not silently ignored and not deferred to a runtime
   "unknown rule" diagnostic).
+- **`required-files.required_headings` keys must exactly match `files` entries.**
+  `required_headings` (Section 4.5) is subordinate to `required-files`'s `files` declaration, not
+  an independent file declaration of its own. Every key in `required_headings` must exactly match
+  an entry in that same rule's `files` list — this is validated at config-load time. A
+  `required_headings` key naming a file not present in `files` is a config error, exit code 2,
+  identifying the offending orphan key/path — the same "unreachable config is an error, not a
+  silent no-op" position already applied elsewhere in this schema (see Revision note 5, and the
+  subdirectory-path suppression-allowlist rejection under "Config-file allowlist" in Section 6).
 - **Default value of `enabled` when omitted:** every rule subtree accepts an `enabled: bool` key.
   If a rule's config block is present under `rules:` but omits the `enabled` key entirely, the
   default is `true` for the four v1-default-enabled-tier rules (`canonical-count`,
@@ -473,11 +503,20 @@ catch). A missing required file is reported as an ordinary document-set violatio
 never a config error. For each file with a configured `required_headings` list, verify each
 heading string appears as a markdown heading line: a line matching
 `^#{1,6}\s+<heading text, exact string, case-sensitive>\s*$` after trimming trailing whitespace.
-`heading_match: "exact"` is the only value accepted in v1 (the key exists in the schema so a
-future `"case-insensitive"` or `"fuzzy"` value can be added later without a schema-shape change,
-but setting it to anything other than `"exact"` in v1 is a config error, exit code 2). This
-resolves the prior draft's "exact or configurable fuzzy/case-insensitive" alternative in favor of
-exact match only.
+`required_headings` is subordinate to `files`, not an independent declaration: every key in
+`required_headings` must exactly match an entry in this same rule's `files` list, validated at
+config-load time — a `required_headings` key naming a file not present in `files` is a config
+error, exit code 2 (Section 3). Runtime heading checks remain scoped to files declared in
+`files`, unchanged. `heading_match: "exact"` is the only value accepted in v1 (the key exists in
+the schema so a future `"case-insensitive"` or `"fuzzy"` value can be added later without a
+schema-shape change, but setting it to anything other than `"exact"` in v1 is a config error,
+exit code 2). This resolves the prior draft's "exact or configurable fuzzy/case-insensitive"
+alternative in favor of exact match only.
+
+Both of this rule's finding kinds — missing file and missing heading — are file-level, not
+line-level, and are reported with `start_line: 0`, `end_line: 0` (Section 5). **These findings
+cannot be suppressed** by either the inline marker or the config-file allowlist; see Section 6,
+"Suppression and `required-files` file-level findings," for the full rule and rationale.
 
 ### 4.6 Cross-document references to canonical definitions (`canonical-reference`) — disabled-by-default tier
 
@@ -642,6 +681,11 @@ A rule must be locally suppressible for a legitimate exception without disabling
 - **Suppressions can target built-in patterns.** A `stray-artifact` built-in pattern match is
   suppressible by the same inline-marker mechanism as any config-defined pattern — there is no
   distinction between built-in and configured rule content for suppression purposes.
+- **Inline markers cannot suppress `required-files` file-level findings.** A `required-files`
+  missing-file or missing-heading finding has no source line to bind an inline marker to (it is
+  reported at `start_line: 0`, `end_line: 0` — Section 5) and is therefore outside what the
+  preceding-line/same-line binding model above can address. See "Suppression and `required-files`
+  file-level findings" below for the full rule.
 
 ### Config-file allowlist (coarser, file/range-scoped)
 
@@ -677,6 +721,38 @@ suppression_allowlist:
   is very likely a typo worth surfacing every run, the same as any other unused suppression. An
   allowlist entry's `file` should name a real, discovered top-level file whenever the intent is to
   actually suppress a finding.
+- **`line_range` requires a real, 1-indexed range starting at 1** (`[start, end]`, `start ≥ 1`).
+  A `line_range` of `[0, 0]`, or any entry with `start < 1`, is not a valid allowlist entry shape
+  in v1. This is the load-bearing constraint behind "Suppression and `required-files` file-level
+  findings" immediately below.
+
+### Suppression and `required-files` file-level findings
+
+`required-files` missing-file and missing-heading findings (Section 4.5) are reported at
+`start_line: 0`, `end_line: 0` (Section 5) because they are structural, file-level facts, not
+findings anchored to a specific line of content — a missing file has no line to point at, and a
+missing heading is the absence of a line, not the presence of one. Neither suppression mechanism
+in this section can target them:
+
+- The **inline marker** has no line to bind to, preceding or same-line (see above).
+- The **config-file allowlist** requires `line_range` to be a real, 1-indexed range with
+  `start ≥ 1` (immediately above); `[0, 0]` is not an accepted `line_range` shape, so no allowlist
+  entry can express "suppress the file-level finding" either.
+
+An allowlist or inline-marker entry that attempts to suppress a `required-files` file-level
+finding therefore never actually suppresses it: since no valid suppression can bind to a
+`start_line: 0`/`end_line: 0` finding, any such entry remains unmatched against a real finding and
+is itself reported as `suppression-unused` (see "Unused, malformed, and unknown-rule suppressions"
+below), on top of the original `required-files` violation still being reported, unsuppressed.
+
+This is a deliberate v1 design decision, not a gap to be closed by a special-cased `[0, 0]`
+allowlist shape: these findings are structural contract failures (an expected file or heading is
+simply absent), not localized content exceptions that a line-anchored suppression model is built
+to express. Treating `[0, 0]` as a suppressible range would overload line ranges with non-line
+semantics while weakening a rule whose entire purpose is to be a hard requirement. If a file or
+heading is intentionally optional for a given doc set, the correct fix is to change the checker
+configuration — remove the entry from `required-files.files`, or from that file's
+`required_headings` list (Section 3) — rather than attempting to suppress the resulting violation.
 
 ### Unused, malformed, and unknown-rule suppressions
 

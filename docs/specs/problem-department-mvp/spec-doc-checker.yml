@@ -1,0 +1,81 @@
+version: 1
+
+# Config for spec-doc-checker (docs/tooling/spec-doc-checker.md) against the real doc set that
+# motivated this tool: the problem-department-mvp spec sequence's own review chain repeatedly
+# asserted "mechanical sweep complete" while stray-artifact / count-drift / forbidden-literal
+# defects survived 3+ such claims (see spec Section 1, Purpose). This config is AC24's real,
+# doc-set-specific config — not a fixture.
+#
+# canonical-count is deliberately NOT configured here: 01-REQUIREMENTS.md's Acceptance Criteria
+# section enumerates items as unlabeled checklist bullets grouped under per-story headers
+# (US-1..US-13), not individually-IDed items matching an `AC-NN` (or similar) scheme. The rule's
+# contract (Section 4.1) requires a single-capture-group `id_pattern` that extracts a real per-item
+# ID from the canonical source; there is no such ID token in this doc set's actual Acceptance
+# Criteria section to bind `id_pattern` to. Inventing one (e.g. capturing each bullet's full text
+# as its "ID") would misuse the rule for a false sense of coverage rather than reflect this doc
+# set's real structure. This doc set's own AC-count-drift defect (05-REVIEW.md line 136: "AC count
+# = 35") was in fact resolved by the workflow now preferring reference-not-restate, which
+# `canonical-reference` below checks directly.
+
+rules:
+  stray-artifact:
+    enabled: true
+    builtin_patterns: true   # built-in list (</content>, </invoke>, [REPLACE_MARKER], conflict
+                              # markers) is exactly the defect class Section 1 names; no doc-set
+                              # specific patterns needed beyond the shipped defaults.
+
+  forbidden-literal:
+    enabled: true
+    literals:
+      - literal: "problem-statement"
+        forbidden_near: ["NegativeFinding", "negatable"]
+        proximity_lines: 5   # matches Section 3's own worked example for this exact literal pair
+                              # (the literal/forbidden_near/proximity_lines triple is copied
+                              # verbatim from the spec's normative example, which was itself
+                              # modeled on this doc set's real defect — GATE-LOG.md's PASS-2
+                              # entry: 'problem-statement' incorrectly made negatable via the
+                              # NegativeFinding mechanism).
+
+  required-files:
+    enabled: true
+    files:
+      - "INTAKE.md"
+      - "INTERVIEW.md"
+      - "NORTH-STAR.md"
+      - "01-REQUIREMENTS.md"
+      - "02-ARCHITECTURE.md"
+      - "03-UI-SPEC.md"
+      - "04-ROADMAP.md"
+      - "05-REVIEW.md"
+    required_headings:
+      "01-REQUIREMENTS.md": ["Acceptance Criteria", "Out of Scope"]
+    heading_match: "exact"
+
+  required-status-reference:
+    enabled: true   # disabled-by-default tier (Section 2), enabled here deliberately: this doc
+                     # set's own workflow pattern (project CLAUDE.md) makes 05-REVIEW.md the
+                     # document that should confirm the sprint's Intake was approved before spec
+                     # work proceeded, so this is a real, meaningful assertion to check for.
+    checks:
+      - name: "review-confirms-intake-approved"
+        source: "05-REVIEW.md"
+        target: "INTAKE.md"
+        pattern: 'INTAKE\.md.*APPROVED'
+
+  canonical-reference:
+    enabled: true   # disabled-by-default tier (Section 2), enabled here deliberately: Section 4.6's
+                     # own defect grounding names this exact doc set's fix ("04-ROADMAP.md's Output
+                     # Verification correctly pointing at 01-REQUIREMENTS.md instead of restating
+                     # the AC count" — 05-REVIEW.md line 136) as the pattern this rule exists to
+                     # verify.
+    checks:
+      - name: "roadmap-points-at-requirements-ac-count"
+        claiming_file: "04-ROADMAP.md"
+        target_reference: "01-REQUIREMENTS.md"
+        # Guarded with a negative lookbehind for "US-": 04-ROADMAP.md's Done-When bullets contain
+        # phrases like "US-3 acceptance criteria" and "US-12 acceptance criteria" (referring to
+        # user-story numbers, not a restated total count). An unguarded `\b\d+\s+acceptance
+        # criteria\b` (the pattern shown in the spec's own Section 3/4.6 worked example) matches
+        # the trailing digits of those US-N references and false-positives on this real doc set;
+        # verified against the live file that the guarded pattern here has zero matches.
+        forbidden_restatement_pattern: '(?<!US-)\b\d+\s+acceptance criteria\b'
