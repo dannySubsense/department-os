@@ -88,8 +88,8 @@ export interface InvestigationSourceForDisplay {
 }
 
 /** Investigation Screen — Generating State — 03-UI-SPEC.md
- *  "Investigation Screen — Generating State". Every source shows status: 'unresolved' ("pending")
- *  in this slice — Source Resolver (Slice 3) is what populates the other three states. */
+ *  "Investigation Screen — Generating State". Per-source status is now live, sourced from
+ *  `getInvestigation` (Slice 3's Source Resolver populates the other three status values). */
 export function renderInvestigationGeneratingScreen(
   investigationId: string,
   status: string,
@@ -127,6 +127,82 @@ export function renderInvestigationGeneratingScreen(
     completes. No notification will be sent.
   </p>
   <p><a href="/investigations/new?investigationId=${encodeURIComponent(investigationId)}">Add another source to this Investigation</a></p>
+</body>
+</html>`;
+}
+
+/** Investigation Screen — Blocked State — 03-UI-SPEC.md "Investigation Screen — Blocked State".
+ *  Zero reachable sources: states plainly that no Brief could be generated because no submitted
+ *  source was reachable, lists each source's `failureReason`, and routes back to the Submission
+ *  Screen pre-associated with this `investigationId` — the correct remedy here, because zero
+ *  reachable sources genuinely requires a new/working source (G-13). */
+export function renderInvestigationBlockedScreen(
+  investigationId: string,
+  sources: InvestigationSourceForDisplay[],
+  statusReason?: string,
+): string {
+  const sourcesHtml = sources
+    .map((s) => {
+      const truncatedRaw = escapeHtml(s.raw.length > 120 ? `${s.raw.slice(0, 120)}…` : s.raw);
+      const reason = s.failureReason ? ` — ${escapeHtml(s.failureReason)}` : '';
+      return `<li><span class="source-type">[${escapeHtml(s.type)}]</span> ${truncatedRaw}${reason}</li>`;
+    })
+    .join('\n');
+
+  const reasonHtml = statusReason
+    ? escapeHtml(statusReason)
+    : 'No further detail was recorded for this run.';
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>No Brief could be generated</title>
+</head>
+<body>
+  <h1>No Brief could be generated — no source was reachable</h1>
+  <p class="investigation-reference">Investigation reference: <code>${escapeHtml(investigationId)}</code> — status: blocked</p>
+  <p class="reason-statement">Reason: ${reasonHtml}</p>
+  <h2>Submitted sources</h2>
+  <ul class="submitted-sources-list">
+    ${sourcesHtml}
+  </ul>
+  <p><a href="/investigations/new?investigationId=${encodeURIComponent(investigationId)}" id="add-source-link">Add another source to this Investigation</a></p>
+</body>
+</html>`;
+}
+
+/** Investigation Screen — Generation Failed State (G-13-derived) — 03-UI-SPEC.md "Investigation
+ *  Screen — Generation Failed State". Sources WERE reachable; the generation pipeline itself did
+ *  not complete. Copy is deliberately distinct from the Blocked state and — critically (G-13) —
+ *  NEVER frames the fix as "add a source": the recovery action routes to the same Submission
+ *  Screen as Blocked, but is labeled/explained as retry-by-resubmission, not "your sources were
+ *  the problem." This slice builds this component against a given/fixture `statusReason` — the
+ *  live pipeline that produces `generation-failed` does not exist until Slice 9. */
+export function renderInvestigationGenerationFailedScreen(
+  investigationId: string,
+  statusReason: string | undefined,
+): string {
+  const reasonHtml = statusReason
+    ? escapeHtml(statusReason)
+    : 'No further detail was recorded for this run.';
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Brief generation did not complete</title>
+</head>
+<body>
+  <h1>Sources were reachable, but Brief generation did not complete</h1>
+  <p class="investigation-reference">Investigation reference: <code>${escapeHtml(investigationId)}</code> — status: generation-failed</p>
+  <p class="reason-statement">Reason: ${reasonHtml}</p>
+  <p class="retry-note">
+    This is not a missing-source issue — your submitted sources were reachable. You may retry by
+    resubmitting sources to this Investigation, or investigate further via the generation run
+    record.
+  </p>
+  <p><a href="/investigations/new?investigationId=${encodeURIComponent(investigationId)}" id="retry-link">Add / resubmit sources to this Investigation</a></p>
 </body>
 </html>`;
 }

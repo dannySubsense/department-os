@@ -5,7 +5,7 @@
 ## Slices
 - [x] Slice 1: Runtime & Storage Evaluation — COMPLETE (2026-08-10). DDR-0001 ACCEPTED. Runtime: Claude Agent SDK / direct Anthropic API. Storage: dedicated local Postgres for Department OS Core (separate from LORE).
 - [x] Slice 2: Core Persistence + Intake Service + Submission Screen — COMPLETE (2026-08-10). 26/26 tests, QC PASS on 5th re-verification (5 rounds, 12 real defects found and fixed, converged via personal falsification testing).
-- [ ] Slice 3: Source Resolver + getInvestigation Read Path + Blocked/Generation-Failed States — PENDING
+- [x] Slice 3: Source Resolver + getInvestigation Read Path + Blocked/Generation-Failed States — COMPLETE (2026-08-10). 43/43 tests, QC PASS on 2nd re-verification.
 - [ ] Slice 4: Evidence/Claim Model + Extraction & Clustering Engine + Evidence Labeler — PENDING
 - [ ] Slice 5: Demand Analyzer + Personal Pull Extractor — PENDING
 - [ ] Slice 6: Landscape Researcher + Gap Hypothesis Generator — PENDING (Row 9 PROVISIONAL must be resolved before this slice begins — see DDR-0001)
@@ -17,9 +17,22 @@
 - [ ] Slice 12: Validity/Invalidation Service + Decision-History Banner — PENDING
 
 ## Current
-Slice: 2 COMPLETE, starting Slice 3
+Slice: 3 COMPLETE, starting Slice 4
 Step: @github-ops commit
 Last updated: 2026-08-10
+
+## Slice 4 Carry-Forward Notes (advisories from Slice 3's QC, non-blocking)
+- `server.ts` issues raw SQL from the web layer for the blocked/open status transition — a small
+  service function would keep layering consistent with the rest of the codebase.
+- Every POST to `/investigations` re-resolves ALL of an Investigation's sources, including
+  already-resolved ones — a transient failure could downgrade a prior `content-retrieved` source.
+  Worst case N×10s blocking the redirect. Worth addressing if resolution becomes a bottleneck.
+- `resolveSourceArtifact`'s abort/timeout branch has no dedicated test.
+
+## Fix Attempts (Slice 3)
+| Test/File | Attempts | Last Error |
+|-----------|----------|------------|
+| QC pass 1, Slice 3 | 1 | Blocking: blocked-to-open recovery never fires — server.ts's POST handler only sets status to 'blocked' when allUnreachable, never clears it back to 'open' when a newly-added source resolves successfully, live-verified via full HTTP flow (dead URL -> blocked -> add reachable source via the Blocked screen's own recovery link -> status stays 'blocked', screen still says no source was reachable while a retrieved source is listed). Breaks the only remedy Flow 2 offers. Advisory folded into same fix: Blocked view never renders statusReason though UI Spec names it as that screen's reason-statement data source and it's already being written. |
 
 ## Slice 3 Carry-Forward Notes (from Slice 2's QC)
 - `server.ts`'s ad-hoc `SELECT id, status FROM investigation` (line ~89) must be replaced by

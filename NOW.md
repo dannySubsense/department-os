@@ -1,9 +1,9 @@
 BUILD TARGET: Problem Department MVP
 PHASE: Forge
-CURRENT SLICE: 3/12 — Source Resolver + getInvestigation Read Path + Blocked/Generation-Failed States
-PRODUCT CODE EXISTS: Yes — persistence layer, submitSources service, Submission Screen, Investigation Screen (Generating state)
-LAST COMPLETED PRODUCT GATE: Slice 2 QC PASS (5th re-verification round)
+CURRENT SLICE: 4/12 — Evidence/Claim Model + Extraction & Clustering Engine + Evidence Labeler
+PRODUCT CODE EXISTS: Yes — persistence, submitSources, source resolution, getInvestigation, Generating/Blocked/Generation-Failed screens
+LAST COMPLETED PRODUCT GATE: Slice 3 QC PASS (2nd re-verification round)
 LAST MERGED SIDE TOOL: spec-doc-checker (PR #5, 2026-08-10)
-NEXT PRODUCT CAPABILITY: source URLs actually get resolved (fetched/checked), and a human sees Blocked or Generation-Failed states when appropriate instead of stuck Generating
+NEXT PRODUCT CAPABILITY: reachable sources actually get turned into structured, labeled evidence (the first real LLM-generation slice)
 
 Last updated: 2026-08-10 by Ledger

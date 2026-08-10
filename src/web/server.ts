@@ -3,10 +3,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pool } from '../db/pool.js';
 import { submitSources } from '../services/submitSources.js';
+import { resolveInvestigationSources } from '../services/resolveInvestigationSources.js';
+import { getInvestigation } from '../services/getInvestigation.js';
 import type { SourceArtifactType } from '../types/domain.js';
 import {
   renderSubmissionScreen,
   renderInvestigationGeneratingScreen,
+  renderInvestigationBlockedScreen,
+  renderInvestigationGenerationFailedScreen,
   type SubmissionFormRow,
   type InvestigationSourceForDisplay,
 } from './views.js';
@@ -62,7 +66,35 @@ app.post('/investigations', async (req, res) => {
       origin: 'human',
       artifacts,
     });
-    // Redirect target IS the Generating state — there is no separate confirmation screen (Q-7).
+
+    // Resolution trigger point (Slice 3 judgment call, no background-job infra exists in this
+    // codebase yet): resolve this Investigation's sources synchronously, right here, before
+    // redirecting — rather than truly asynchronously/backgrounded per 03-UI-SPEC.md Flow 1's
+    // "begins source resolution ... asynchronously" framing. This keeps the flow deterministic
+    // and testable without introducing a job queue for the MVP; it does mean the POST response
+    // is only sent once every submitted source has been fetched/checked. If `allUnreachable`,
+    // transition the Investigation to 'blocked' here — `resolveInvestigationSources` deliberately
+    // does not do this itself (Architecture §4 separation of concerns).
+    const { allUnreachable } = await resolveInvestigationSources(submission.investigationId);
+    if (allUnreachable) {
+      await pool.query(
+        `UPDATE investigation SET status = 'blocked', status_reason = $2 WHERE id = $1`,
+        [submission.investigationId, 'No submitted source was reachable.'],
+      );
+    } else {
+      // Blocked -> Open recovery (Slice 3 fix): at least one of this Investigation's sources is
+      // now reachable. Only the 'blocked' status is eligible for this transition — 'open' is a
+      // no-op, and 'generation-failed' / 'brief-generated' are unrelated states this logic must
+      // not touch (they are not reachability-driven).
+      await pool.query(
+        `UPDATE investigation SET status = 'open', status_reason = NULL
+         WHERE id = $1 AND status = 'blocked'`,
+        [submission.investigationId],
+      );
+    }
+
+    // Redirect target IS the Investigation Screen — there is no separate confirmation screen
+    // (Q-7). It renders whichever state (Generating/Blocked) the resolution above produced.
     res.redirect(303, `/investigations/${submission.investigationId}`);
   } catch (err) {
     res.status(500).send(
@@ -86,38 +118,43 @@ app.get('/investigations/:id', async (req, res) => {
   const investigationId = req.params.id;
 
   try {
-    const investigationResult = await pool.query<{ id: string; status: string }>(
-      'SELECT id, status FROM investigation WHERE id = $1',
-      [investigationId],
-    );
-    if (investigationResult.rowCount === 0) {
+    const { investigation, sourceArtifacts } = await getInvestigation(investigationId);
+
+    const sources: InvestigationSourceForDisplay[] = sourceArtifacts.map((artifact) => ({
+      type: artifact.type,
+      raw: artifact.raw,
+      status: artifact.resolution.status,
+      failureReason: artifact.resolution.failureReason,
+      noContentReason: artifact.resolution.noContentReason,
+    }));
+
+    switch (investigation.status) {
+      case 'open':
+        res.send(
+          renderInvestigationGeneratingScreen(investigationId, investigation.status, sources),
+        );
+        return;
+      case 'blocked':
+        res.send(
+          renderInvestigationBlockedScreen(investigationId, sources, investigation.statusReason),
+        );
+        return;
+      case 'generation-failed':
+        res.send(
+          renderInvestigationGenerationFailedScreen(investigationId, investigation.statusReason),
+        );
+        return;
+      case 'brief-generated':
+        // Live wiring (problemBriefId -> currentVersionId -> getBriefForReview) does not exist
+        // until Slice 9/10 — this branch is not exercised end-to-end yet (04-ROADMAP.md Slice 3).
+        res.status(501).send('Brief review surface is not implemented yet.');
+        return;
+    }
+  } catch (err) {
+    if (err instanceof Error && /does not exist$/.test(err.message)) {
       res.status(404).send('Investigation not found');
       return;
     }
-    const status = investigationResult.rows[0].status;
-
-    const sourcesResult = await pool.query<{
-      type: string;
-      raw: string;
-      resolution_status: InvestigationSourceForDisplay['status'];
-      resolution_failure_reason: string | null;
-      resolution_no_content_reason: string | null;
-    }>(
-      `SELECT type, raw, resolution_status, resolution_failure_reason, resolution_no_content_reason
-       FROM source_artifact WHERE investigation_id = $1 ORDER BY added_at ASC`,
-      [investigationId],
-    );
-
-    const sources: InvestigationSourceForDisplay[] = sourcesResult.rows.map((row) => ({
-      type: row.type,
-      raw: row.raw,
-      status: row.resolution_status,
-      failureReason: row.resolution_failure_reason ?? undefined,
-      noContentReason: row.resolution_no_content_reason ?? undefined,
-    }));
-
-    res.send(renderInvestigationGeneratingScreen(investigationId, status, sources));
-  } catch (err) {
     res.status(500).send('Internal server error.');
   }
 });
