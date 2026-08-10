@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 from typing import Dict, List
 
+from .config import read_text_or_raise
 from .models import RULE_NAMES, Violation
 
 STRAY_ARTIFACT_BUILTIN_PATTERNS = [
@@ -40,7 +41,7 @@ def _enumerate_ids(canonical_path: Path, id_pattern: str):
     """Returns dict: unique_ids (set), duplicate_ids (dict id -> [lines]),
     malformed_lines (list of (line_no,)), count (int)."""
     pattern = re.compile(id_pattern, re.MULTILINE)
-    text = canonical_path.read_text()
+    text = read_text_or_raise(canonical_path, "canonical_source")
     lines = text.splitlines()
 
     seen: Dict[str, List[int]] = {}
@@ -119,7 +120,7 @@ def _canonical_count_run(
                 restated_pattern = restated["restated_pattern"]
                 restated_path = target_dir / restated_file
                 restated_rel = _rel_path(restated_path, target_dir)
-                text = restated_path.read_text()
+                text = read_text_or_raise(restated_path, f"restated_in file {restated_rel!r}")
                 pattern = re.compile(restated_pattern, re.MULTILINE)
                 matches = list(pattern.finditer(text))
                 if not matches:
@@ -221,7 +222,7 @@ class ForbiddenLiteralRule:
 
             for path in files:
                 rel = _rel_path(path, target_dir)
-                text = path.read_text()
+                text = read_text_or_raise(path, f"discovered file {rel!r}")
                 lines = text.splitlines()
 
                 for idx, line in enumerate(lines):
@@ -306,7 +307,7 @@ class StrayArtifactRule:
 
         for path in files:
             rel = _rel_path(path, target_dir)
-            text = path.read_text()
+            text = read_text_or_raise(path, f"discovered file {rel!r}")
             lines = text.splitlines()
             for idx, line in enumerate(lines):
                 line_no = idx + 1
@@ -364,7 +365,7 @@ class RequiredFilesRule:
             if not headings:
                 continue
 
-            text = candidate.read_text()
+            text = read_text_or_raise(candidate, f"required file {fname!r}")
             lines = text.splitlines()
             # Trim trailing whitespace per line before matching.
             trimmed_lines = [l.rstrip() for l in lines]
@@ -416,7 +417,7 @@ class RequiredStatusReferenceRule:
 
             source_path = target_dir / source
             source_rel = _rel_path(source_path, target_dir)
-            text = source_path.read_text()
+            text = read_text_or_raise(source_path, f"source file {source_rel!r}")
             # N1 discipline: re.MULTILINE always on, no other implicit flags.
             pattern = re.compile(pattern_str, re.MULTILINE)
 
@@ -467,7 +468,7 @@ class CanonicalReferenceRule:
 
             claiming_path = target_dir / claiming_file
             claiming_rel = _rel_path(claiming_path, target_dir)
-            text = claiming_path.read_text()
+            text = read_text_or_raise(claiming_path, f"claiming_file {claiming_rel!r}")
 
             # 1. Presence: plain substring match, not regex.
             if target_reference not in text:

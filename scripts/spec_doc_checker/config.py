@@ -89,6 +89,23 @@ def _err(msg: str) -> None:
     raise ConfigError(msg)
 
 
+def read_text_or_raise(path: Path, where: str) -> str:
+    """Single shared file-read helper for every discovered/target/config
+    markdown file read after config-load time (rule implementations,
+    suppression-marker parsing). Converts BOTH `OSError` (unreadable /
+    permission / removed-after-discovery) and `UnicodeDecodeError` (invalid
+    UTF-8 content) into a `ConfigError` so the caller's normal exit-code-2 /
+    empty-JSON-stdout tool-error contract (F5) applies uniformly -- a read
+    failure here must never propagate as an uncaught traceback (exit 1) and
+    must never be silently skipped (Section 5's tool-error contract extends
+    to any condition that prevents the tool from completing a run, not just
+    an unreadable target *directory*)."""
+    try:
+        return path.read_text()
+    except (OSError, UnicodeDecodeError) as exc:
+        _err(f"could not read {where} ({path}): {exc}")
+
+
 def _require_mapping(value: Any, where: str) -> dict:
     if not isinstance(value, dict):
         _err(f"{where} must be a mapping")
@@ -113,6 +130,22 @@ def _compile_regex(pattern: str, where: str) -> "re.Pattern":
         return re.compile(pattern, re.MULTILINE)
     except re.error as exc:
         _err(f"{where}: invalid regex {pattern!r}: {exc}")
+
+
+def _compile_regex_with_one_group(pattern: str, where: str) -> "re.Pattern":
+    """Like _compile_regex, but additionally requires exactly one capture
+    group (Section 3: `id_pattern` and `restated_pattern` are the only two
+    pattern fields whose rule definitions extract via `m.group(1)` at
+    runtime -- Section 4.1's `canonical-count`. Zero groups or 2+ groups are
+    both config errors at load time rather than an uncaught IndexError (or
+    a silently wrong group(1)) at rule-runtime."""
+    compiled = _compile_regex(pattern, where)
+    if compiled.groups != 1:
+        _err(
+            f"{where}: must have exactly one capture group (found "
+            f"{compiled.groups}) -- {pattern!r}"
+        )
+    return compiled
 
 
 def _is_bare_top_level_filename(value: str) -> bool:
@@ -172,7 +205,7 @@ def _validate_canonical_count(rule_cfg: dict, target_dir: Path) -> dict:
             canonical_source, target_dir, f"{where}.canonical_source", must_exist=True
         )
         id_pattern = _require_nonempty_str(check.get("id_pattern"), f"{where}.id_pattern")
-        _compile_regex(id_pattern, f"{where}.id_pattern")
+        _compile_regex_with_one_group(id_pattern, f"{where}.id_pattern")
         restated_in = check.get("restated_in", [])
         if mode == "compare" and not restated_in:
             _err(f"{where}: mode 'compare' requires a non-empty restated_in list")
@@ -192,7 +225,7 @@ def _validate_canonical_count(rule_cfg: dict, target_dir: Path) -> dict:
                 pat = _require_nonempty_str(
                     entry.get("restated_pattern"), f"{ewhere}.restated_pattern"
                 )
-                _compile_regex(pat, f"{ewhere}.restated_pattern")
+                _compile_regex_with_one_group(pat, f"{ewhere}.restated_pattern")
     return rule_cfg
 
 
@@ -465,10 +498,7 @@ def load_config(
             )
             return default_config(), True, None
 
-    try:
-        raw_text = config_path.read_text()
-    except OSError as exc:
-        _err(f"could not read config file {config_path}: {exc}")
+    raw_text = read_text_or_raise(config_path, "config file")
 
     try:
         raw = yaml.load(raw_text, Loader=_UniqueKeyLoader)

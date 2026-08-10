@@ -81,6 +81,59 @@ def main(argv: Optional[List[str]] = None) -> int:
                 for name in RULE_NAMES
                 if config["rules"].get(name, {}).get("enabled", False)
             ]
+
+        discovered_rel_paths = [_display_path(p, target_dir) for p in files]
+
+        # F5/Finding 2: rule execution and suppression-marker parsing both
+        # read discovered markdown file content; a read failure here (an
+        # unreadable file, or one with invalid-UTF-8 content) is a tool
+        # error, not a document-set violation, and must produce the same
+        # exit-2/empty-JSON-stdout contract as config-load errors below --
+        # never an uncaught traceback (exit 1) and never a silent skip.
+        raw_violations: List[Violation] = []
+        for rule_name in rules_to_run:
+            rule = RULE_REGISTRY.get(rule_name)
+            if rule is None:
+                # Not implemented yet (Slice 1: registry is empty). Produces
+                # no violations -- this is required end-to-end behavior for
+                # this slice (zero rules -> zero violations, exit 0).
+                continue
+            rule_config = config["rules"].get(rule_name, {})
+            raw_violations.extend(rule.run(files, target_dir, rule_config))
+
+        markers = []
+        for path, rel in zip(files, discovered_rel_paths):
+            text = config_mod.read_text_or_raise(path, f"discovered file {rel!r}")
+            markers.extend(parse_inline_markers(rel, text))
+
+        allowlist_entries = allowlist_entries_from_config(config)
+
+        config_path_display = None
+        if config_path is not None:
+            config_path_display = _config_display_path(
+                config_path, args.config, target_dir
+            )
+
+        kept_violations, suppressed = apply_suppressions(
+            raw_violations,
+            markers,
+            allowlist_entries,
+            discovered_rel_paths,
+            config_path_display,
+        )
+
+        kept_violations = sort_violations(kept_violations)
+        suppressed = sort_violations(suppressed)
+
+        summary = Summary(
+            files_checked=len(files),
+            rules_run=rules_to_run,
+            violation_count=len(kept_violations),
+            suppressed_count=len(suppressed),
+        )
+        output = CheckerOutput(
+            violations=kept_violations, suppressed=suppressed, summary=summary
+        )
     except ConfigError as exc:
         print(f"spec-doc-checker: config error: {exc}", file=sys.stderr)
         if args.fmt == "json":
@@ -97,54 +150,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
             print(format_json(empty_output))
         return 2
-
-    discovered_rel_paths = [_display_path(p, target_dir) for p in files]
-
-    raw_violations: List[Violation] = []
-    for rule_name in rules_to_run:
-        rule = RULE_REGISTRY.get(rule_name)
-        if rule is None:
-            # Not implemented yet (Slice 1: registry is empty). Produces no
-            # violations — this is required end-to-end behavior for this
-            # slice (zero rules -> zero violations, exit 0).
-            continue
-        rule_config = config["rules"].get(rule_name, {})
-        raw_violations.extend(rule.run(files, target_dir, rule_config))
-
-    markers = []
-    for path, rel in zip(files, discovered_rel_paths):
-        try:
-            text = path.read_text()
-        except OSError:
-            continue
-        markers.extend(parse_inline_markers(rel, text))
-
-    allowlist_entries = allowlist_entries_from_config(config)
-
-    config_path_display = None
-    if config_path is not None:
-        config_path_display = _config_display_path(config_path, args.config, target_dir)
-
-    kept_violations, suppressed = apply_suppressions(
-        raw_violations,
-        markers,
-        allowlist_entries,
-        discovered_rel_paths,
-        config_path_display,
-    )
-
-    kept_violations = sort_violations(kept_violations)
-    suppressed = sort_violations(suppressed)
-
-    summary = Summary(
-        files_checked=len(files),
-        rules_run=rules_to_run,
-        violation_count=len(kept_violations),
-        suppressed_count=len(suppressed),
-    )
-    output = CheckerOutput(
-        violations=kept_violations, suppressed=suppressed, summary=summary
-    )
 
     if args.fmt == "json":
         print(format_json(output))

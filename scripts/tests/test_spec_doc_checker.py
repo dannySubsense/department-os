@@ -7,6 +7,7 @@ zero findings, or exercises config/suppression scaffolding directly.
 """
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -111,6 +112,7 @@ def test_json_stdout_is_single_object_on_config_error(tmp_path):
     assert "config error" in result.stderr
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permissions")
 def test_json_stdout_empty_output_on_unreadable_target_dir(tmp_path):
     target = tmp_path / "target"
     target.mkdir()
@@ -125,6 +127,76 @@ def test_json_stdout_empty_output_on_unreadable_target_dir(tmp_path):
         assert out["summary"]["files_checked"] == 0
     finally:
         target.chmod(0o755)
+
+
+def test_invalid_utf8_target_file_exit_2_json(tmp_path):
+    # Finding 2: invalid-UTF-8 content in a discovered file must not
+    # propagate as an uncaught UnicodeDecodeError (default exit 1) -- it
+    # must be a controlled tool error (exit 2, empty JSON on stdout, file
+    # identified on stderr), same as any other unreadable-file condition.
+    bad = tmp_path / "BAD.md"
+    with open(bad, "wb") as f:
+        f.write(b"# Heading\n\xff\xfe not valid utf-8\n")
+    result = run_cli([str(tmp_path), "--format", "json"])
+    assert result.returncode == 2
+    out = json.loads(result.stdout)
+    assert out["violations"] == []
+    assert out["suppressed"] == []
+    assert out["summary"] == {
+        "files_checked": 0,
+        "rules_run": [],
+        "violation_count": 0,
+        "suppressed_count": 0,
+    }
+    assert "BAD.md" in result.stderr
+
+
+def test_invalid_utf8_config_file_exit_2_json(tmp_path):
+    # 8th call site of the same defect class as
+    # test_invalid_utf8_target_file_exit_2_json above: invalid-UTF-8 content
+    # in the CONFIG FILE ITSELF (not a target doc-set markdown file) must
+    # also be a controlled tool error (exit 2, empty JSON on stdout, file
+    # identified on stderr) -- not an uncaught UnicodeDecodeError (exit 1).
+    (tmp_path / "A.md").write_text("hello\n")
+    bad_config = tmp_path / "spec-doc-checker.yml"
+    with open(bad_config, "wb") as f:
+        f.write(b"version: 2\n\xff\xfe not valid utf-8\n")
+    result = run_cli([str(tmp_path), "--format", "json"])
+    assert result.returncode == 2
+    out = json.loads(result.stdout)
+    assert out["violations"] == []
+    assert out["suppressed"] == []
+    assert out["summary"] == {
+        "files_checked": 0,
+        "rules_run": [],
+        "violation_count": 0,
+        "suppressed_count": 0,
+    }
+    assert "spec-doc-checker.yml" in result.stderr
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permissions")
+def test_file_unreadable_after_discovery_exit_2_json(tmp_path):
+    # Finding 2: a file that exists (and is enumerated) at discovery time
+    # but is no longer readable when its content is actually read (e.g. a
+    # permission change mid-run) must produce the same controlled exit-2 /
+    # empty-JSON-stdout tool-error contract -- not a silent suppression-
+    # marker skip, and not an uncaught traceback.
+    target = tmp_path / "target"
+    target.mkdir()
+    unreadable = target / "UNREADABLE.md"
+    unreadable.write_text("hello\n")
+    unreadable.chmod(0o000)
+    try:
+        result = run_cli([str(target), "--format", "json"])
+        assert result.returncode == 2
+        out = json.loads(result.stdout)
+        assert out["violations"] == []
+        assert out["suppressed"] == []
+        assert out["summary"]["files_checked"] == 0
+        assert "UNREADABLE.md" in result.stderr
+    finally:
+        unreadable.chmod(0o644)
 
 
 def test_unrecognized_rule_flag_exit_2(tmp_path):
@@ -208,6 +280,75 @@ def test_load_config_invalid_regex(tmp_path):
     )
     with pytest.raises(ConfigError):
         config_mod.load_config(str(cfg_path), tmp_path)
+
+
+def _canonical_count_cfg_text(id_pattern, restated_pattern="'(\\d+)\\s+acceptance criteria'"):
+    return (
+        "version: 1\nrules:\n  canonical-count:\n    enabled: true\n"
+        "    checks:\n"
+        "      - name: 'acceptance-criteria-count'\n"
+        "        mode: 'compare'\n"
+        "        canonical_source: 'REQUIREMENTS.md'\n"
+        f"        id_pattern: {id_pattern}\n"
+        "        restated_in:\n"
+        "          - file: 'ROADMAP.md'\n"
+        f"            restated_pattern: {restated_pattern}\n"
+    )
+
+
+def _write_canonical_count_fixture(tmp_path, id_pattern, restated_pattern="'(\\d+)\\s+acceptance criteria'"):
+    (tmp_path / "REQUIREMENTS.md").write_text("AC-1\nAC-2\n")
+    (tmp_path / "ROADMAP.md").write_text("2 acceptance criteria\n")
+    cfg_path = tmp_path / "c.yml"
+    cfg_path.write_text(_canonical_count_cfg_text(id_pattern, restated_pattern))
+    return cfg_path
+
+
+def test_load_config_id_pattern_zero_capture_groups_is_config_error(tmp_path):
+    cfg_path = _write_canonical_count_fixture(tmp_path, id_pattern="'^AC-[0-9]+'")
+    with pytest.raises(ConfigError):
+        config_mod.load_config(str(cfg_path), tmp_path)
+
+
+def test_load_config_id_pattern_two_capture_groups_is_config_error(tmp_path):
+    cfg_path = _write_canonical_count_fixture(tmp_path, id_pattern="'^AC-(\\d)(\\d+)'")
+    with pytest.raises(ConfigError):
+        config_mod.load_config(str(cfg_path), tmp_path)
+
+
+def test_load_config_restated_pattern_zero_capture_groups_is_config_error(tmp_path):
+    cfg_path = _write_canonical_count_fixture(
+        tmp_path, id_pattern="'^AC-(\\d+)'", restated_pattern="'\\d+ acceptance criteria'"
+    )
+    with pytest.raises(ConfigError):
+        config_mod.load_config(str(cfg_path), tmp_path)
+
+
+def test_load_config_restated_pattern_two_capture_groups_is_config_error(tmp_path):
+    cfg_path = _write_canonical_count_fixture(
+        tmp_path, id_pattern="'^AC-(\\d+)'", restated_pattern="'(\\d)(\\d+) acceptance criteria'"
+    )
+    with pytest.raises(ConfigError):
+        config_mod.load_config(str(cfg_path), tmp_path)
+
+
+def test_cli_id_pattern_zero_capture_groups_exit_2_json(tmp_path):
+    _write_canonical_count_fixture(tmp_path, id_pattern="'^AC-[0-9]+'")
+    (tmp_path / "spec-doc-checker.yml").write_text(
+        _canonical_count_cfg_text(id_pattern="'^AC-[0-9]+'")
+    )
+    result = run_cli([str(tmp_path), "--format", "json"])
+    assert result.returncode == 2
+    out = json.loads(result.stdout)
+    assert out["violations"] == []
+    assert out["suppressed"] == []
+    assert out["summary"] == {
+        "files_checked": 0,
+        "rules_run": [],
+        "violation_count": 0,
+        "suppressed_count": 0,
+    }
+    assert "capture group" in result.stderr
 
 
 def test_load_config_path_outside_target_dir(tmp_path):
