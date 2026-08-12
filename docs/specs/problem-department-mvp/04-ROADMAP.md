@@ -228,6 +228,30 @@ Generation Failed states of the Investigation Screen.
 
 ---
 
+> **Roadmap correction (this revision) — Slice 4/5–7: ProblemStatement/candidate persistence
+> timing.** `ProblemStatement.briefVersionId` is required (Architecture §3), and `getBriefForReview`
+> returns `problemStatements: ProblemStatement[]` scoped to one specific `BriefVersion`
+> (Architecture §4) — so a `ProblemStatement` row can only legitimately exist once a `BriefVersion`
+> exists to own it. An earlier draft of this roadmap listed `ProblemStatement` persistence as a
+> Slice 4 deliverable, contradicting that constraint (Slice 4 runs long before any `BriefVersion`
+> exists). Danny's binding resolution: Slice 4 (and, by the same pattern, Slices 5–7 for their own
+> Brief-scoped entities — `DemandSignal`/`DemandConfidenceClassification`, `ExistingSolution`/
+> `GapHypothesis`, `UncertaintyStatement`/`Recommendation`, wherever those entities carry a
+> `briefVersionId`-required shape) produce a validated, in-memory/return-value **candidate** output
+> instead of persisting the Brief-scoped row directly. For Slice 4 specifically, this is a
+> `ProblemStatementCandidate` shape carrying `whoExperiencesIt`, `contextOrWorkflow`,
+> `consequenceOrFriction`, and `supportingClaimVersionIds` (exact `ClaimVersion` ids) — the same
+> fields as `ProblemStatement`, minus `id` and `briefVersionId`. Slice 4 continues to persist
+> `Claim`, `ClaimVersion`, `EvidenceItem`, and `ClaimVersionEvidence` directly — those are
+> explicitly Brief-independent, "shared across Briefs" (Architecture §3). Slice 9 (Brief Assembler)
+> remains the sole slice that persists `ProblemStatement` rows, doing so atomically with the
+> `BriefVersion` that owns them — preserving the existing "no `BriefVersion` on failure" guarantee
+> (R-4 fail-closed) unchanged. Slices 5–7 work out their own specific candidate-shape details when
+> each is reached; this note only establishes the general pattern so they aren't blocked by the
+> same ambiguity.
+
+---
+
 ### Slice 4: Evidence/Claim Model + Extraction & Clustering Engine + Evidence Labeler
 
 **Goal:** From reachable sources, produce clustered problem statements and labeled evidence,
@@ -236,10 +260,12 @@ including contradicting evidence (US-2, US-3).
 **Depends On:** Slice 3
 
 **Files:**
-- Persistence for `Claim`, `ClaimVersion`, `EvidenceItem`, `ClaimVersionEvidence`,
-  `ProblemStatement` (Architecture §3 "Evidence & Claims" — Q-4 stable-identity/immutable-version
-  split; PR-review binding correction — stance lives on the claim-evidence relationship, not on
-  `EvidenceItem`)
+- Persistence for `Claim`, `ClaimVersion`, `EvidenceItem`, `ClaimVersionEvidence` (Architecture
+  §3 "Evidence & Claims" — Q-4 stable-identity/immutable-version split; PR-review binding
+  correction — stance lives on the claim-evidence relationship, not on `EvidenceItem`). This slice
+  does **not** persist `ProblemStatement` rows (see roadmap correction note above, "Slice 4/5-7 —
+  ProblemStatement/candidate persistence timing") — it produces a validated, in-memory
+  `ProblemStatementCandidate` return-value shape instead, consumed by Slice 9.
 - Extraction & Clustering Engine implementation
 - Evidence Labeler implementation
 
@@ -279,6 +305,12 @@ including contradicting evidence (US-2, US-3).
   signal (mapping to `Investigation.status = 'generation-failed'` via the existing R-4 fail-closed
   mechanism), not an absence finding. Slice 9 enforces the resulting hard stop: no `BriefVersion`
   is persisted at all in that case.
+- **`ProblemStatementCandidate` output shape (roadmap correction, this revision):** the
+  Extraction & Clustering Engine's clustering step returns `ProblemStatementCandidate[]` —
+  `{ whoExperiencesIt, contextOrWorkflow, consequenceOrFriction, supportingClaimVersionIds }` — as
+  an in-memory return value, not a persisted row. No `ProblemStatement` table/collection write
+  happens in this slice. Slice 9 (Brief Assembler) is what turns an accepted candidate into a
+  persisted `ProblemStatement` row, atomically with the `BriefVersion` it belongs to.
 - This slice has no UI surface of its own yet — its output becomes visible in Slice 10's
   Investigation Screen — Completed State; do not build a standalone screen for it (avoids
   duplicating UI Spec's Out-of-Scope "no UI for browsing... beyond" boundary).
@@ -298,10 +330,11 @@ including contradicting evidence (US-2, US-3).
       `Claim.id`; the prior `ClaimVersion` is not edited.
 - [ ] Given reachable source material from which no specific problem statement can be established
       (e.g. sources are on-topic but too vague/general to cluster into a concrete problem), the
-      Extraction & Clustering Engine persists zero `ProblemStatement` records and surfaces an
-      explicit generation-failure signal (not a `NegativeFinding` — `'problem-statement'` is
+      Extraction & Clustering Engine produces zero `ProblemStatementCandidate` results and surfaces
+      an explicit generation-failure signal (not a `NegativeFinding` — `'problem-statement'` is
       non-negatable) sufficient for Slice 9 to fail the run and set
-      `Investigation.status = 'generation-failed'`, with no `BriefVersion` persisted.
+      `Investigation.status = 'generation-failed'`, with no `ProblemStatement` or `BriefVersion`
+      persisted.
 
 **Done When:**
 - [ ] US-2 and US-3 acceptance criteria pass.
@@ -608,8 +641,11 @@ that can legitimately record absence (Problem Definition is non-negatable — Q-
 **Depends On:** Slice 8
 
 **Files:**
-- Persistence for `ProblemBrief`, `BriefVersion`, `NegativeFinding` (Architecture §3 "Problem
-  Brief identity & versioning" / "Negative findings")
+- Persistence for `ProblemBrief`, `BriefVersion`, `ProblemStatement`, `NegativeFinding`
+  (Architecture §3 "Problem Brief identity & versioning" / "Evidence & Claims" / "Negative
+  findings") — this slice is the sole slice that persists `ProblemStatement` rows, writing each one
+  atomically with the `BriefVersion` that owns it, from an accepted `ProblemStatementCandidate`
+  produced by Slice 4 (roadmap correction, see note above Slice 4)
 - Brief Assembler implementation
 - `generateBriefVersion` service function (Architecture §4) — the single entrypoint orchestrating
   Slices 4–8 and producing the assembled version

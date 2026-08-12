@@ -32,6 +32,7 @@ describe('runMigrations', () => {
         '001_initial_schema.sql',
         '002_nullable_submission_id.sql',
         '003_source_artifact_resolved_content.sql',
+        '004_claims_and_evidence.sql',
       ]);
 
       const column = await db.query(
@@ -73,6 +74,76 @@ describe('runMigrations', () => {
     }
   });
 
+  it('creates the claim/claim_version/evidence_item/claim_version_evidence immutability triggers even when a same-named trigger already exists on an unrelated table (QC-caught tgrelid-scoping bug in 004)', async () => {
+    // Regression for the same defect class QC found and required fixing in
+    // 002_nullable_submission_id.sql: the 004 migration's trigger-existence guards originally
+    // checked `pg_trigger WHERE tgname = '<name>'` with no tgrelid scoping. Trigger names are
+    // unique per-table, not globally, so a same-named trigger on an unrelated table would make
+    // the unscoped EXISTS check falsely report "already exists" and silently skip creating the
+    // intended trigger on claim/claim_version/evidence_item/claim_version_evidence. This test
+    // plants exactly that collision before running the migration.
+    const schema = 'migrate_test_trigger_collision';
+    const db = await schemaPool(schema);
+    try {
+      // Plant an unrelated table in the SAME schema, each carrying a trigger whose name collides
+      // with one of the 004 immutability trigger names — reusing the same trigger function is
+      // fine, since Postgres trigger names only need to be unique per-table, not globally.
+      await db.query(`
+        CREATE OR REPLACE FUNCTION noop_trigger() RETURNS TRIGGER AS $$
+        BEGIN
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+      `);
+      await db.query(`CREATE TABLE unrelated_table (id UUID PRIMARY KEY DEFAULT gen_random_uuid())`);
+      for (const collidingName of [
+        'claim_immutable',
+        'claim_version_immutable',
+        'evidence_item_immutable',
+        'claim_version_evidence_immutable',
+      ]) {
+        await db.query(
+          `CREATE TRIGGER ${collidingName} BEFORE UPDATE OR DELETE ON unrelated_table
+             FOR EACH ROW EXECUTE FUNCTION noop_trigger()`,
+        );
+      }
+
+      const applied = await runMigrations(db);
+      expect(applied).toEqual([
+        '001_initial_schema.sql',
+        '002_nullable_submission_id.sql',
+        '003_source_artifact_resolved_content.sql',
+        '004_claims_and_evidence.sql',
+      ]);
+
+      // The intended triggers must exist on THEIR OWN tables — scoped via tgrelid resolved
+      // through the connection's search_path — despite the same-named triggers on
+      // unrelated_table. An unscoped `tgname`-only check would have skipped creating these.
+      const checks: [string, string][] = [
+        ['claim_immutable', 'claim'],
+        ['claim_version_immutable', 'claim_version'],
+        ['evidence_item_immutable', 'evidence_item'],
+        ['claim_version_evidence_immutable', 'claim_version_evidence'],
+      ];
+      for (const [triggerName, tableName] of checks) {
+        const trigger = await db.query(
+          `SELECT 1 FROM pg_trigger WHERE tgname = $1 AND tgrelid = $2::regclass`,
+          [triggerName, tableName],
+        );
+        expect(trigger.rowCount).toBe(1);
+      }
+
+      // Behavioral check: the immutability trigger actually fires on the correct table.
+      const claim = await db.query(`INSERT INTO claim (id) VALUES (gen_random_uuid()) RETURNING id`);
+      await expect(
+        db.query(`DELETE FROM claim WHERE id = $1`, [claim.rows[0].id]),
+      ).rejects.toThrow(/append-only table/);
+    } finally {
+      await db.query(`DROP SCHEMA "${schema}" CASCADE`);
+      await db.end();
+    }
+  });
+
   it('fixes a pre-existing database that only has migration 001 applied (the QC-reproduced bug scenario)', async () => {
     const schema = 'migrate_test_pre_fix';
     const db = await schemaPool(schema);
@@ -101,6 +172,7 @@ describe('runMigrations', () => {
       expect(applied).toEqual([
         '002_nullable_submission_id.sql',
         '003_source_artifact_resolved_content.sql',
+        '004_claims_and_evidence.sql',
       ]);
 
       const after = await db.query(

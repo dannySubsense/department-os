@@ -72,3 +72,80 @@ export type InvestigationStatus =
   | 'blocked' // zero reachable sources — no Brief can be generated
   | 'generation-failed' // sources reachable, but the pipeline failed to produce a usable Brief
   | 'brief-generated';
+
+// ---- Evidence & Claims (Slice 4) — copied exactly from 02-ARCHITECTURE.md Section 3
+// "Evidence & Claims" (Q-4 stable-identity/immutable-version split; PR-review binding correction
+// — stance lives on the claim-evidence relationship, not on EvidenceItem). ----
+
+/** Citation collections are required-and-non-empty by contract, not just by convention — enforced
+ *  at RUNTIME (Architecture §4 citation-enforcement note), because TypeScript's tuple-based
+ *  NonEmptyArray cannot statically prove length at every construction site (e.g. a spread from an
+ *  untrusted model output). */
+export type NonEmptyArray<T> = [T, ...T[]];
+
+export type EvidenceLabel = 'fact' | 'observation' | 'interpretation' | 'assumption' | 'unknown';
+
+/** Immutable once created. Shared — may be cited by any number of ClaimVersions across any number
+ *  of BriefVersions. Carries no `stance` field (PR-review binding correction): stance is not
+ *  intrinsic to the evidence — the same item may support one ClaimVersion, contradict another,
+ *  and be neutral/contextual to a third. Stance lives on ClaimVersionEvidence below. */
+export interface EvidenceItem {
+  id: string;
+  sourceArtifactId: string; // provenance — which source this evidence came from
+  excerptOrSummary: string;
+  label: EvidenceLabel; // exactly one — US-3 AC1
+  createdAt?: string; // provenance/debugging timestamp (F-4) — column exists in
+  // evidence_item since migration 004; not named in Architecture §3's schema, so kept
+  // optional here rather than widening the documented contract.
+}
+
+/** The claim-evidence relationship, not the evidence item, carries stance (PR-review binding
+ *  correction). Immutable once created (part of the immutable ClaimVersion it belongs to). */
+export interface ClaimVersionEvidence {
+  claimVersionId: string;
+  evidenceItemId: string;
+  stance: 'supporting' | 'contradicting' | 'neutral-context';
+  relevanceNote?: string; // optional relationship-specific rationale, distinct from the
+  // EvidenceItem's own excerptOrSummary
+}
+
+/** Stable identity only. No text, no status field — both live on ClaimVersion / StatusEvent.
+ *  Never mutated after creation. */
+export interface Claim {
+  id: string;
+  createdAt: string;
+}
+
+/** Immutable once created — a correction creates a new ClaimVersion under the same Claim.id, it
+ *  never edits this record (Q-4). */
+export interface ClaimVersion {
+  id: string;
+  claimId: string; // stable Claim identity this is a version of
+  versionNumber: number; // monotonic per claimId, starts at 1
+  createdAt: string;
+  text: string;
+  evidence: NonEmptyArray<ClaimVersionEvidenceRef>; // every major claim traces to source
+  // evidence, with an explicit stance for THIS claim — US-10 AC1; non-empty by contract
+  supersedesVersionId: string | null; // null for version 1 of this Claim
+}
+
+/** A single ClaimVersionEvidence row, denormalized onto the ClaimVersion that owns it for
+ *  single-fetch reads; evidenceItemId resolves to the shared, independently-retained
+ *  EvidenceItem. Persisted identically to ClaimVersionEvidence above — this is a read-shape
+ *  convenience, not a second source of truth. */
+export interface ClaimVersionEvidenceRef {
+  evidenceItemId: string;
+  stance: 'supporting' | 'contradicting' | 'neutral-context';
+  relevanceNote?: string;
+}
+
+/** Roadmap correction (Slice 4/5-7 — ProblemStatement/candidate persistence timing): this is the
+ *  in-memory/return-value shape produced by the Extraction & Clustering Engine — the same fields
+ *  as the eventual (Slice 9-persisted) `ProblemStatement`, minus `id` and `briefVersionId`. Never
+ *  persisted by this slice. */
+export interface ProblemStatementCandidate {
+  whoExperiencesIt: string;
+  contextOrWorkflow: string;
+  consequenceOrFriction: string;
+  supportingClaimVersionIds: NonEmptyArray<string>; // exact ClaimVersion ids — Q-4
+}

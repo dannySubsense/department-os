@@ -6,7 +6,7 @@
 - [x] Slice 1: Runtime & Storage Evaluation — COMPLETE (2026-08-10). DDR-0001 ACCEPTED. Runtime: Claude Agent SDK / direct Anthropic API. Storage: dedicated local Postgres for Department OS Core (separate from LORE).
 - [x] Slice 2: Core Persistence + Intake Service + Submission Screen — COMPLETE (2026-08-10). 26/26 tests, QC PASS on 5th re-verification (5 rounds, 12 real defects found and fixed, converged via personal falsification testing).
 - [x] Slice 3: Source Resolver + getInvestigation Read Path + Blocked/Generation-Failed States — COMPLETE (2026-08-10). 43/43 tests, QC PASS on 2nd re-verification.
-- [ ] Slice 4: Evidence/Claim Model + Extraction & Clustering Engine + Evidence Labeler — PENDING
+- [x] Slice 4: Evidence/Claim Model + Extraction & Clustering Engine + Evidence Labeler — COMPLETE (2026-08-12). 83/83 tests, QC PASS on 2nd re-verification (both blocking bugs confirmed via destructive testing, not just green tests). First slice calling the LLM (forced tool-use per DDR-0001).
 - [ ] Slice 5: Demand Analyzer + Personal Pull Extractor — PENDING
 - [ ] Slice 6: Landscape Researcher + Gap Hypothesis Generator — PENDING (Row 9 PROVISIONAL must be resolved before this slice begins — see DDR-0001)
 - [ ] Slice 7: Uncertainty Compiler + Recommendation Engine — PENDING
@@ -17,9 +17,14 @@
 - [ ] Slice 12: Validity/Invalidation Service + Decision-History Banner — PENDING
 
 ## Current
-Slice: 3 COMPLETE, starting Slice 4
+Slice: 4 COMPLETE, starting Slice 5
 Step: @github-ops commit
-Last updated: 2026-08-10
+Last updated: 2026-08-12
+
+## Fix Attempts (Slice 4, cont.)
+| Test/File | Attempts | Last Error |
+|-----------|----------|------------|
+| F-2 concurrency test, post-QC-PASS hardening | 2 | QC's second pass flagged the committed F-2 regression test as non-blocking-but-weak: it didn't actually force the race it claims to test (both concurrent calls created new claims instead of superseding the same one). Rewrote to target the real contended claim; falsification (test-runner) then found the rewrite still didn't reliably reproduce the race on real async timing (0/6 failures with the lock disabled) — narrow window, not a fix regression, since QC's own independent probe (with an artificial delay) had already proven the underlying advisory-lock fix sound. Added a production-safe test-only delay seam (three delay-placement strategies tried before finding one that actually forces the collision) — now 5/5 deterministic failures with the lock removed, 5/5 clean with it restored. |
 
 ## Checkpoint Correction (post-Slice-3, pre-Slice-4) — independent review findings
 Independent PR review (Sol) found 3 issues at the retrieval boundary Slice 4 depends on before
@@ -38,6 +43,20 @@ test cases (probed with addresses appearing nowhere in the suite), no new false 
 introduced. 64/64 tests. Two minor residual gaps logged, non-blocking, not exploitable in this
 MVP's scope: `febx::` link-local prefix variants beyond `fe80:`, NAT64 64:ff9b::/96 embedded
 IPv4. Checkpoint CLEARED — Slice 4 unblocked.
+
+## Fix Attempts (Slice 4)
+| Test/File | Attempts | Last Error |
+|-----------|----------|------------|
+| test-writer audit, Slice 4 | 1 | Two real coverage gaps found and closed: only 1 of 4 immutability triggers tested (same blind-spot shape as Slice 2's scoped-query history); R-4 repair-then-fail control flow never actually exercised (every existing test mocked callForcedTool itself). Real implementation bug found, not yet fixed: 004_claims_and_evidence.sql's trigger-existence guards query pg_trigger unscoped by table (tgrelid), same unscoped-catalog-query class as Slice 2's 002_nullable_submission_id.sql bug (which does scope correctly) — trigger names are unique per-table in Postgres, not globally, so a same-named trigger elsewhere could cause a guard to silently skip creating the intended one. |
+
+| QC pass 1, Slice 4 | 1 | Blocking: duplicate evidenceIndex within one claim (model citing the same excerpt with two stances, e.g. supporting+contradicting — explicitly invited by the prompt) violates the claim_version_evidence PK and crashes the WHOLE transaction unhandled, destroying every valid claim in the run, not just the bad one — violates per-entity fail-closed semantics. Blocking, same crash class: concurrent extraction runs on one Investigation race on version_number (existing-claims lookup outside the transaction), unhandled UNIQUE violation. Minor: non-LlmValidationError failures (API/rate-limit/DB errors) aren't converted to the generationFailed signal Slice 9 depends on; undeclared evidence_item.created_at column; unused Claim import. Observation (not blocking, documented not fixed): Claims/EvidenceItems from a failed run are still committed — legitimate since they're Brief-independent, but undocumented; prompt-injection surface via raw resolvedContent interpolation, flagged for Slice 6 (web research), not this slice. |
+
+## Slice 6 Carry-Forward Note (from Slice 4's QC)
+- `resolvedContent` is interpolated raw into the LLM prompt with no delimiter escaping — a
+  fetched page could close the pseudo-XML tag and inject instructions. Not exploitable yet
+  (Slice 4 only processes human-submitted/already-resolved sources), but Slice 6 (Landscape
+  Researcher, autonomous web retrieval) is where this becomes a real attack surface — address
+  before or as part of that slice.
 
 ## Slice 4 Carry-Forward Notes (advisories from Slice 3's QC, non-blocking)
 - `server.ts` issues raw SQL from the web layer for the blocked/open status transition — a small
