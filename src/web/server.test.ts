@@ -3,6 +3,10 @@ import type { AddressInfo } from 'node:net';
 import { createServer } from 'node:http';
 import { app } from './server.js';
 import { pool } from '../db/pool.js';
+import {
+  __allowPrivateNetworkHostForTests,
+  __resetPrivateNetworkTestAllowlist,
+} from '../services/resolveSourceArtifact.js';
 
 // Integration coverage for the Express routes (03-UI-SPEC.md "Screen: Submission Screen" and
 // "Investigation Screen — Generating State"). submitSources.test.ts covers the service layer;
@@ -34,11 +38,16 @@ beforeAll(async () => {
   await new Promise<void>((resolve) => fixtureServer.listen(0, resolve));
   const fixturePort = (fixtureServer.address() as AddressInfo).port;
   fixtureBaseUrl = `http://localhost:${fixturePort}`;
+  // These integration tests submit real fixture URLs on localhost through the full HTTP route ->
+  // resolveSourceArtifact chain. See resolveSourceArtifact.ts's `__allowPrivateNetworkHostForTests`
+  // doc comment for why this is a legitimate, deliberate opt-in rather than a bypass.
+  __allowPrivateNetworkHostForTests('localhost');
 });
 
 afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   await new Promise<void>((resolve) => fixtureServer.close(() => resolve()));
+  __resetPrivateNetworkTestAllowlist();
   await pool.end();
 });
 
@@ -241,5 +250,30 @@ describe('GET /investigations/:id — Generation Failed State (03-UI-SPEC.md, Fl
     // G-13: never share the Blocked state's "add a source" framing.
     expect(html).not.toContain('No Brief could be generated — no source was reachable');
     expect(html).not.toMatch(/add\s+(a|another)\s+source/i);
+  });
+});
+
+describe('POST /investigations — status transition guard (Sol review item 3)', () => {
+  it('does not revert a generation-failed Investigation to blocked when a follow-up submission is all-unreachable', async () => {
+    const investigation = await pool.query<{ id: string }>(
+      `INSERT INTO investigation (status, status_reason)
+       VALUES ('generation-failed', $1) RETURNING id`,
+      ['No valid Problem Statement could be established from the submitted material.'],
+    );
+    const investigationId = investigation.rows[0].id;
+
+    const deadUrl = 'http://this-host-does-not-exist.invalid/dead-3';
+    const postRes = await fetch(`${baseUrl}/investigations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `type=url&raw=${encodeURIComponent(deadUrl)}&investigationId=${investigationId}`,
+      redirect: 'manual',
+    });
+    expect(postRes.status).toBe(303);
+
+    const row = await pool.query('SELECT status FROM investigation WHERE id = $1', [
+      investigationId,
+    ]);
+    expect(row.rows[0].status).toBe('generation-failed');
   });
 });

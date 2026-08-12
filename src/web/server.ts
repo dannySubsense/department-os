@@ -1,10 +1,10 @@
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pool } from '../db/pool.js';
 import { submitSources } from '../services/submitSources.js';
 import { resolveInvestigationSources } from '../services/resolveInvestigationSources.js';
 import { getInvestigation } from '../services/getInvestigation.js';
+import { transitionInvestigationStatus } from '../services/transitionInvestigationStatus.js';
 import type { SourceArtifactType } from '../types/domain.js';
 import {
   renderSubmissionScreen,
@@ -77,20 +77,18 @@ app.post('/investigations', async (req, res) => {
     // does not do this itself (Architecture §4 separation of concerns).
     const { allUnreachable } = await resolveInvestigationSources(submission.investigationId);
     if (allUnreachable) {
-      await pool.query(
-        `UPDATE investigation SET status = 'blocked', status_reason = $2 WHERE id = $1`,
-        [submission.investigationId, 'No submitted source was reachable.'],
+      // Open -> Blocked (Sol review item 3 fix): guarded via transitionInvestigationStatus — only
+      // valid when current status is 'open'. A 'generation-failed' (or, once it exists,
+      // 'brief-generated') Investigation is never reverted to 'blocked' by a resolution pass.
+      await transitionInvestigationStatus(
+        submission.investigationId,
+        'blocked',
+        'No submitted source was reachable.',
       );
     } else {
-      // Blocked -> Open recovery (Slice 3 fix): at least one of this Investigation's sources is
-      // now reachable. Only the 'blocked' status is eligible for this transition — 'open' is a
-      // no-op, and 'generation-failed' / 'brief-generated' are unrelated states this logic must
-      // not touch (they are not reachability-driven).
-      await pool.query(
-        `UPDATE investigation SET status = 'open', status_reason = NULL
-         WHERE id = $1 AND status = 'blocked'`,
-        [submission.investigationId],
-      );
+      // Blocked -> Open recovery: at least one of this Investigation's sources is now reachable.
+      // Only the 'blocked' status is eligible for this transition.
+      await transitionInvestigationStatus(submission.investigationId, 'open', null);
     }
 
     // Redirect target IS the Investigation Screen — there is no separate confirmation screen

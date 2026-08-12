@@ -28,7 +28,11 @@ describe('runMigrations', () => {
     const db = await schemaPool(schema);
     try {
       const applied = await runMigrations(db);
-      expect(applied).toEqual(['001_initial_schema.sql', '002_nullable_submission_id.sql']);
+      expect(applied).toEqual([
+        '001_initial_schema.sql',
+        '002_nullable_submission_id.sql',
+        '003_source_artifact_resolved_content.sql',
+      ]);
 
       const column = await db.query(
         `SELECT is_nullable FROM information_schema.columns
@@ -94,7 +98,10 @@ describe('runMigrations', () => {
       expect(before.rows[0].is_nullable).toBe('NO');
 
       const applied = await runMigrations(db);
-      expect(applied).toEqual(['002_nullable_submission_id.sql']);
+      expect(applied).toEqual([
+        '002_nullable_submission_id.sql',
+        '003_source_artifact_resolved_content.sql',
+      ]);
 
       const after = await db.query(
         `SELECT is_nullable FROM information_schema.columns

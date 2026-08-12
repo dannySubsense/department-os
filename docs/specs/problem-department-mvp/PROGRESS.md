@@ -21,6 +21,24 @@ Slice: 3 COMPLETE, starting Slice 4
 Step: @github-ops commit
 Last updated: 2026-08-10
 
+## Checkpoint Correction (post-Slice-3, pre-Slice-4) — independent review findings
+Independent PR review (Sol) found 3 issues at the retrieval boundary Slice 4 depends on before
+Slice 4 began: resolved content was discarded (no durable snapshot for extraction to use), SSRF
+vulnerability in URL fetching (no protocol/private-network/size guards), unguarded status
+transitions (blocked-transition could overwrite generation-failed), plus a discriminator bug
+(non-text/url types silently fetched as URLs). All four fixed, 57/57 tests. QC's live-probe
+review then found a real, live-exploited bypass in the fix: IPv4-mapped IPv6 addresses
+(`[::ffff:7f00:1]`) bypass the private-IP check entirely — the dotted-form regex meant to catch
+this can never match, since WHATWG URL normalizes to compressed hex before the check runs. Live
+loopback fetch succeeded and persisted content through this path. Also flagged: several IP ranges
+(CGNAT 100.64.0.0/10, multicast 224.0.0.0/4, 240.0.0.0/4, 192.0.0.0/24) not blocked. Fixed:
+hex-form decoder added and independently verified live against a real loopback listener (2 QC
+rounds), all four ranges added and live-verified, decoder confirmed to generalize beyond its own
+test cases (probed with addresses appearing nowhere in the suite), no new false positives
+introduced. 64/64 tests. Two minor residual gaps logged, non-blocking, not exploitable in this
+MVP's scope: `febx::` link-local prefix variants beyond `fe80:`, NAT64 64:ff9b::/96 embedded
+IPv4. Checkpoint CLEARED — Slice 4 unblocked.
+
 ## Slice 4 Carry-Forward Notes (advisories from Slice 3's QC, non-blocking)
 - `server.ts` issues raw SQL from the web layer for the blocked/open status transition — a small
   service function would keep layering consistent with the rest of the codebase.

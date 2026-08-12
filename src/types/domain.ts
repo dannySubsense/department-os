@@ -31,6 +31,12 @@ export interface SourceArtifact {
   addedAt: string;
   origin: SourceArtifactOrigin; // distinguishes human-submitted material from material the
   // Landscape Researcher retrieved itself during independent web research (Decision 1.5)
+  /** Durable content snapshot captured at resolution time (Slice 3 fix — content was previously
+   *  fetched, classified, then discarded). Populated only when `resolution.status ===
+   *  'content-retrieved'`: the fetched body text for `type: 'url'` artifacts, or the raw pasted
+   *  text for `type: 'text'` artifacts. `undefined`/`NULL` otherwise. Consumed by Slice 4
+   *  (Evidence/Claim extraction), not by this slice. */
+  resolvedContent?: string;
 }
 
 /** 'submitted' is every artifact reachable via a Submission (all artifacts before this revision).

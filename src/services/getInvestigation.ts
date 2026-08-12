@@ -20,6 +20,7 @@ interface SourceArtifactRow {
   resolution_resolved_at: Date | null;
   resolution_failure_reason: string | null;
   resolution_no_content_reason: string | null;
+  resolved_content: string | null;
 }
 
 /** Investigation read model — Architecture §4, Q-7 (binding). This is the SINGLE durable-URL
@@ -56,7 +57,7 @@ export async function getInvestigation(investigationId: string): Promise<{
   const sourcesResult = await pool.query<SourceArtifactRow>(
     `SELECT id, investigation_id, type, raw, origin, added_at,
             resolution_status, resolution_resolved_at,
-            resolution_failure_reason, resolution_no_content_reason
+            resolution_failure_reason, resolution_no_content_reason, resolved_content
      FROM source_artifact WHERE investigation_id = $1 ORDER BY added_at ASC`,
     [investigationId],
   );
@@ -76,6 +77,7 @@ export async function getInvestigation(investigationId: string): Promise<{
       resolution,
       addedAt: r.added_at.toISOString(),
       origin: r.origin,
+      resolvedContent: r.resolved_content ?? undefined,
       // SourceArtifact & { resolution } per Architecture §4 — SourceArtifact already declares
       // `resolution`; the intersection is satisfied structurally by the single field above.
     };

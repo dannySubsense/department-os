@@ -4,6 +4,10 @@ import { createServer } from 'node:http';
 import { pool } from '../db/pool.js';
 import { submitSources } from './submitSources.js';
 import { resolveInvestigationSources } from './resolveInvestigationSources.js';
+import {
+  __allowPrivateNetworkHostForTests,
+  __resetPrivateNetworkTestAllowlist,
+} from './resolveSourceArtifact.js';
 
 let fixtureBaseUrl: string;
 let fixtureServer: ReturnType<typeof createServer>;
@@ -21,10 +25,14 @@ beforeAll(async () => {
   await new Promise<void>((resolve) => fixtureServer.listen(0, resolve));
   const port = (fixtureServer.address() as AddressInfo).port;
   fixtureBaseUrl = `http://localhost:${port}`;
+  // See resolveSourceArtifact.ts's `__allowPrivateNetworkHostForTests` doc comment — this suite's
+  // fixture servers legitimately run on localhost.
+  __allowPrivateNetworkHostForTests('localhost');
 });
 
 afterAll(async () => {
   await new Promise<void>((resolve) => fixtureServer.close(() => resolve()));
+  __resetPrivateNetworkTestAllowlist();
   await pool.end();
 });
 

@@ -1,3 +1,7 @@
+import dns from 'node:dns';
+import net from 'node:net';
+import http from 'node:http';
+import https from 'node:https';
 import { pool } from '../db/pool.js';
 import type { SourceResolution } from '../types/domain.js';
 
@@ -16,16 +20,46 @@ const MIN_CONTENT_LENGTH = 200;
  *  PROVISIONAL — unvalidated; owner: Ledger. */
 const FETCH_TIMEOUT_MS = 10_000;
 
+/** Response body size cap (Sol review item 2 — SSRF hardening): a malicious or misbehaving source
+ *  could otherwise stream an unbounded response into memory. 5 MB is a generous ceiling for the
+ *  plain-text/HTML content this MVP classifies (well above MIN_CONTENT_LENGTH, well below a
+ *  memory-exhaustion risk for a single request). PROVISIONAL — unvalidated against real-world
+ *  source sizes; owner: Ledger. Revisit if legitimate long-form sources are seen truncating. */
+const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+
+/** Redirect hop cap — bounds how long a redirect chain can be followed before giving up.
+ *  PROVISIONAL — unvalidated; owner: Ledger. */
+const MAX_REDIRECTS = 5;
+
 interface SourceArtifactRow {
   id: string;
   type: string;
   raw: string;
 }
 
+/** Test-only escape hatch (Sol review item 2 fix). Private/loopback-network blocking is applied
+ *  to every hostname by default, including `localhost`/`127.0.0.1` — necessary for the new SSRF
+ *  regression tests, which deliberately target loopback/private addresses to prove the guard
+ *  works. The pre-existing fixture-server-based tests in this file's `.test.ts` also legitimately
+ *  run their fixture HTTP servers on `localhost`; those tests opt that exact hostname into this
+ *  allowlist via `__allowPrivateNetworkHostForTests` in `beforeAll`/`beforeEach`, while the new
+ *  SSRF tests target raw IP literals (e.g. `127.0.0.1`, `169.254.169.254`) that are never added
+ *  here, so the guard is still exercised for real. Only ever called from `*.test.ts` files. */
+const allowedTestHosts = new Set<string>();
+
+export function __allowPrivateNetworkHostForTests(host: string): void {
+  allowedTestHosts.add(host.toLowerCase());
+}
+
+export function __resetPrivateNetworkTestAllowlist(): void {
+  allowedTestHosts.clear();
+}
+
 /** Source Resolver — Architecture §4. Fetches/checks a single SourceArtifact and classifies the
- *  result into the four-way `SourceResolution.status` (G-9), persisting the result back onto the
- *  `source_artifact` row. `type: 'text'` artifacts are already content — no network call is made;
- *  they resolve to `content-retrieved` immediately. */
+ *  result into the four-way `SourceResolution.status` (G-9), persisting the result — and, per
+ *  Sol review item 1, a durable content snapshot — back onto the `source_artifact` row.
+ *  `type: 'text'` artifacts are already content — no network call is made; they resolve to
+ *  `content-retrieved` immediately, with the pasted text itself as the resolved content. */
 export async function resolveSourceArtifact(sourceArtifactId: string): Promise<SourceResolution> {
   const artifactResult = await pool.query<SourceArtifactRow>(
     'SELECT id, type, raw FROM source_artifact WHERE id = $1',
@@ -36,71 +70,369 @@ export async function resolveSourceArtifact(sourceArtifactId: string): Promise<S
   }
   const artifact = artifactResult.rows[0];
 
-  const resolution: SourceResolution =
-    artifact.type === 'text'
-      ? { status: 'content-retrieved', resolvedAt: new Date().toISOString() }
-      : await resolveUrl(artifact.raw);
+  // Explicit branch on known types (Sol review item 4 fix) — SourceArtifactType is an open
+  // discriminator (Decision 1.1); any value other than the two known variants must NOT fall
+  // through into URL-fetching logic.
+  let resolution: SourceResolution;
+  let resolvedContent: string | null;
+  if (artifact.type === 'text') {
+    resolution = { status: 'content-retrieved', resolvedAt: new Date().toISOString() };
+    resolvedContent = artifact.raw;
+  } else if (artifact.type === 'url') {
+    const result = await resolveUrl(artifact.raw);
+    resolution = result.resolution;
+    resolvedContent = result.resolvedContent;
+  } else {
+    resolution = {
+      status: 'unreachable',
+      resolvedAt: new Date().toISOString(),
+      failureReason: `Unsupported source artifact type: '${artifact.type}'`,
+    };
+    resolvedContent = null;
+  }
 
-  await persistResolution(sourceArtifactId, resolution);
+  await persistResolution(sourceArtifactId, resolution, resolvedContent);
   return resolution;
 }
 
-async function resolveUrl(rawUrl: string): Promise<SourceResolution> {
+async function resolveUrl(
+  rawUrl: string,
+): Promise<{ resolution: SourceResolution; resolvedContent: string | null }> {
   const resolvedAt = new Date().toISOString();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
+  let url: URL;
   try {
-    const response = await fetch(rawUrl, { signal: controller.signal });
+    url = new URL(rawUrl);
+  } catch {
+    return {
+      resolution: { status: 'unreachable', resolvedAt, failureReason: `Invalid URL: ${rawUrl}` },
+      resolvedContent: null,
+    };
+  }
 
-    if (!response.ok) {
-      return {
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return {
+      resolution: {
         status: 'unreachable',
         resolvedAt,
-        failureReason: `HTTP ${response.status} ${response.statusText}`.trim(),
+        failureReason: `Unsupported URL protocol '${url.protocol}' — only http/https are allowed.`,
+      },
+      resolvedContent: null,
+    };
+  }
+
+  try {
+    const { statusCode, statusMessage, body } = await fetchWithGuards(url);
+
+    if (statusCode < 200 || statusCode >= 300) {
+      return {
+        resolution: {
+          status: 'unreachable',
+          resolvedAt,
+          failureReason: `HTTP ${statusCode} ${statusMessage}`.trim(),
+        },
+        resolvedContent: null,
       };
     }
 
-    const body = await response.text();
     const contentLength = body.trim().length;
 
     if (contentLength < MIN_CONTENT_LENGTH) {
       return {
-        status: 'reachable-no-content',
-        resolvedAt,
-        noContentReason:
-          'Response returned successfully but contained little or no extractable text — ' +
-          'likely a paywall, login wall, JS-only render, or empty page.',
+        resolution: {
+          status: 'reachable-no-content',
+          resolvedAt,
+          noContentReason:
+            'Response returned successfully but contained little or no extractable text — ' +
+            'likely a paywall, login wall, JS-only render, or empty page.',
+        },
+        resolvedContent: null,
       };
     }
 
-    return { status: 'content-retrieved', resolvedAt };
+    return { resolution: { status: 'content-retrieved', resolvedAt }, resolvedContent: body };
   } catch (err) {
     const isAbort = err instanceof Error && err.name === 'AbortError';
     return {
-      status: 'unreachable',
-      resolvedAt,
-      failureReason: isAbort
-        ? `Request timed out after ${FETCH_TIMEOUT_MS}ms`
-        : err instanceof Error
-          ? err.message
-          : 'Unknown fetch error',
+      resolution: {
+        status: 'unreachable',
+        resolvedAt,
+        failureReason: isAbort
+          ? `Request timed out after ${FETCH_TIMEOUT_MS}ms`
+          : err instanceof Error
+            ? err.message
+            : 'Unknown fetch error',
+      },
+      resolvedContent: null,
     };
-  } finally {
-    clearTimeout(timeout);
   }
+}
+
+/** IPv4 CIDR check via unsigned 32-bit int comparison — no extra dependency needed for the
+ *  four ranges this guard cares about. */
+function ipv4ToInt(ip: string): number | null {
+  const parts = ip.split('.');
+  if (parts.length !== 4) return null;
+  let n = 0;
+  for (const part of parts) {
+    const octet = Number(part);
+    if (!Number.isInteger(octet) || octet < 0 || octet > 255) return null;
+    n = (n << 8) | octet;
+  }
+  return n >>> 0;
+}
+
+function inIpv4Cidr(ip: string, base: string, prefixLen: number): boolean {
+  const ipInt = ipv4ToInt(ip);
+  const baseInt = ipv4ToInt(base);
+  if (ipInt === null || baseInt === null) return false;
+  const mask = prefixLen === 0 ? 0 : (0xffffffff << (32 - prefixLen)) >>> 0;
+  return (ipInt & mask) === (baseInt & mask);
+}
+
+/** WHATWG `URL` normalizes IPv4-mapped IPv6 addresses to COMPRESSED HEX form before hostname
+ *  ever reaches this guard — e.g. `http://[::ffff:127.0.0.1]/` becomes `hostname` `[::ffff:7f00:1]`,
+ *  never the dotted-quad form. A regex matching only the dotted form (`::ffff:a.b.c.d`) is
+ *  therefore dead code against any real URL-derived hostname and lets the entire mapped-address
+ *  class through unblocked (confirmed live: `http://[::ffff:7f00:1]/` reached a local loopback
+ *  listener). This decodes both hex-group forms Node's `URL` actually produces —
+ *  `::ffff:HHHH:HHHH` and the less-common `::ffff:0:HHHH:HHHH` — back to dotted-quad IPv4 so the
+ *  embedded address can be run through the existing IPv4 range check. Returns null if `ip` is not
+ *  a recognized IPv4-mapped IPv6 hex form. */
+function decodeMappedIpv4Hex(ip: string): string | null {
+  const match = ip.match(/^::ffff:(?:0:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (!match) return null;
+  const high = parseInt(match[1], 16);
+  const low = parseInt(match[2], 16);
+  if (Number.isNaN(high) || Number.isNaN(low)) return null;
+  return [
+    (high >> 8) & 0xff,
+    high & 0xff,
+    (low >> 8) & 0xff,
+    low & 0xff,
+  ].join('.');
+}
+
+/** Sol review item 2: blocks RFC 1918 private ranges, loopback, link-local (including the common
+ *  cloud-metadata-endpoint SSRF target 169.254.169.254), CGNAT (RFC 6598), multicast, reserved/
+ *  future-use, IETF protocol assignments, and IPv6 loopback/unique-local/link-local equivalents.
+ *  Applied to every IP a hostname resolves to, and to every redirect hop (see `fetchWithGuards`)
+ *  — not just the initial URL. */
+function isDisallowedIp(ip: string): boolean {
+  if (net.isIPv4(ip)) {
+    return (
+      inIpv4Cidr(ip, '10.0.0.0', 8) ||
+      inIpv4Cidr(ip, '172.16.0.0', 12) ||
+      inIpv4Cidr(ip, '192.168.0.0', 16) ||
+      inIpv4Cidr(ip, '127.0.0.0', 8) ||
+      inIpv4Cidr(ip, '169.254.0.0', 16) ||
+      inIpv4Cidr(ip, '0.0.0.0', 8) ||
+      inIpv4Cidr(ip, '100.64.0.0', 10) || // CGNAT (RFC 6598)
+      inIpv4Cidr(ip, '224.0.0.0', 4) || // multicast
+      inIpv4Cidr(ip, '240.0.0.0', 4) || // reserved/future use
+      inIpv4Cidr(ip, '192.0.0.0', 24) // IETF protocol assignments
+    );
+  }
+  if (net.isIPv6(ip)) {
+    const normalized = ip.toLowerCase();
+    if (normalized === '::1' || normalized === '::') return true;
+    if (normalized.startsWith('fe80:')) return true; // link-local
+    if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true; // unique local fc00::/7
+    // IPv4-mapped IPv6, dotted-quad form (::ffff:a.b.c.d) — retained defensively in case a
+    // hostname ever reaches this guard via a path other than WHATWG `URL` normalization.
+    const dottedMapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (dottedMapped) return isDisallowedIp(dottedMapped[1]);
+    // IPv4-mapped IPv6, compressed-hex form — the form `URL.hostname` actually produces.
+    const hexMapped = decodeMappedIpv4Hex(normalized);
+    if (hexMapped) return isDisallowedIp(hexMapped);
+    return false;
+  }
+  return true; // unrecognized format — fail closed
+}
+
+/** Custom `lookup` for `http.request`/`https.request`: validates the destination IP BEFORE the
+ *  socket connects (avoiding a DNS-resolve-then-separately-connect TOCTOU/rebinding gap), and is
+ *  invoked fresh for every redirect hop since each hop issues its own request through this same
+ *  option (Sol review item 2 — "must also apply to every redirect hop"). */
+function safeLookup(
+  hostname: string,
+  options: dns.LookupOneOptions,
+  callback: (err: NodeJS.ErrnoException | null, address: string, family: number) => void,
+): void {
+  if (allowedTestHosts.has(hostname.toLowerCase())) {
+    dns.lookup(hostname, options, callback);
+    return;
+  }
+
+  if (net.isIP(hostname)) {
+    if (isDisallowedIp(hostname)) {
+      callback(
+        Object.assign(new Error(`Blocked request to disallowed network address: ${hostname}`), {
+          code: 'EBLOCKEDHOST',
+        }),
+        '',
+        0,
+      );
+      return;
+    }
+    callback(null, hostname, net.isIPv6(hostname) ? 6 : 4);
+    return;
+  }
+
+  dns.lookup(hostname, { all: true }, (err, addresses) => {
+    if (err) {
+      callback(err, '', 0);
+      return;
+    }
+    if (!addresses || addresses.length === 0) {
+      callback(new Error(`DNS resolution for '${hostname}' returned no addresses`), '', 0);
+      return;
+    }
+    const blocked = addresses.find((a) => isDisallowedIp(a.address));
+    if (blocked) {
+      callback(
+        Object.assign(
+          new Error(
+            `Blocked request to disallowed network address: ${blocked.address} (resolved from '${hostname}')`,
+          ),
+          { code: 'EBLOCKEDHOST' },
+        ),
+        '',
+        0,
+      );
+      return;
+    }
+    const chosen = addresses[0];
+    callback(null, chosen.address, chosen.family);
+  });
+}
+
+interface FetchResult {
+  statusCode: number;
+  statusMessage: string;
+  body: string;
+}
+
+/** Performs the HTTP(S) request with SSRF guards: protocol was already validated by the caller;
+ *  this handles IP-safety (via `safeLookup`, applied per-hop), manual redirect-following with the
+ *  same guard re-applied at every hop, a request timeout, and a response-size cap enforced while
+ *  streaming (never buffers past `MAX_RESPONSE_BYTES`). */
+async function fetchWithGuards(startUrl: URL, redirectsLeft = MAX_REDIRECTS): Promise<FetchResult> {
+  const client = startUrl.protocol === 'https:' ? https : http;
+
+  // Node's `net`/`http` layer skips the custom `lookup` option entirely when the hostname is
+  // already a literal IP address (no DNS resolution is needed to connect) — so `safeLookup` alone
+  // never runs for IP-literal URLs like `http://127.0.0.1/...` or a redirect Location pointing at
+  // a raw IP. Validate IP literals explicitly, up front, before ever attempting to connect.
+  const bareHost = startUrl.hostname.replace(/^\[|\]$/g, ''); // strip IPv6 brackets, if present
+  if (net.isIP(bareHost) && !allowedTestHosts.has(bareHost.toLowerCase())) {
+    if (isDisallowedIp(bareHost)) {
+      throw new Error(`Blocked request to disallowed network address: ${bareHost}`);
+    }
+  }
+
+  return new Promise<FetchResult>((resolve, reject) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+    const req = client.request(
+      startUrl,
+      { signal: controller.signal, lookup: safeLookup as unknown as net.LookupFunction },
+      (res) => {
+        const statusCode = res.statusCode ?? 0;
+
+        // Redirect handling — validated at every hop, not just the initial URL.
+        if (statusCode >= 300 && statusCode < 400 && res.headers.location) {
+          res.resume(); // discard body
+          clearTimeout(timeout);
+          if (redirectsLeft <= 0) {
+            reject(new Error('Too many redirects'));
+            return;
+          }
+          let nextUrl: URL;
+          try {
+            nextUrl = new URL(res.headers.location, startUrl);
+          } catch {
+            reject(new Error(`Invalid redirect location: ${res.headers.location}`));
+            return;
+          }
+          if (nextUrl.protocol !== 'http:' && nextUrl.protocol !== 'https:') {
+            reject(
+              new Error(
+                `Redirect to unsupported URL protocol '${nextUrl.protocol}' — only http/https are allowed.`,
+              ),
+            );
+            return;
+          }
+          fetchWithGuards(nextUrl, redirectsLeft - 1).then(resolve, reject);
+          return;
+        }
+
+        const chunks: Buffer[] = [];
+        let receivedBytes = 0;
+        let exceeded = false;
+
+        res.on('data', (chunk: Buffer) => {
+          if (exceeded) return;
+          receivedBytes += chunk.length;
+          if (receivedBytes > MAX_RESPONSE_BYTES) {
+            exceeded = true;
+            clearTimeout(timeout);
+            res.destroy();
+            req.destroy();
+            reject(
+              new Error(`Response exceeded maximum size of ${MAX_RESPONSE_BYTES} bytes`),
+            );
+            return;
+          }
+          chunks.push(chunk);
+        });
+
+        res.on('end', () => {
+          if (exceeded) return;
+          clearTimeout(timeout);
+          resolve({
+            statusCode,
+            statusMessage: res.statusMessage ?? '',
+            body: Buffer.concat(chunks).toString('utf-8'),
+          });
+        });
+
+        res.on('error', (err) => {
+          if (exceeded) return;
+          clearTimeout(timeout);
+          reject(err);
+        });
+      },
+    );
+
+    req.on('error', (err: NodeJS.ErrnoException) => {
+      clearTimeout(timeout);
+      if (controller.signal.aborted) {
+        const abortErr = new Error('Request aborted');
+        abortErr.name = 'AbortError';
+        reject(abortErr);
+        return;
+      }
+      reject(err);
+    });
+
+    req.end();
+  });
 }
 
 async function persistResolution(
   sourceArtifactId: string,
   resolution: SourceResolution,
+  resolvedContent: string | null,
 ): Promise<void> {
   await pool.query(
     `UPDATE source_artifact
      SET resolution_status = $2,
          resolution_resolved_at = $3,
          resolution_failure_reason = $4,
-         resolution_no_content_reason = $5
+         resolution_no_content_reason = $5,
+         resolved_content = $6
      WHERE id = $1`,
     [
       sourceArtifactId,
@@ -108,6 +440,7 @@ async function persistResolution(
       resolution.resolvedAt ?? null,
       resolution.failureReason ?? null,
       resolution.noContentReason ?? null,
+      resolvedContent,
     ],
   );
 }
