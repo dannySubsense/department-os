@@ -149,3 +149,72 @@ export interface ProblemStatementCandidate {
   consequenceOrFriction: string;
   supportingClaimVersionIds: NonEmptyArray<string>; // exact ClaimVersion ids — Q-4
 }
+
+// ---- Demand (Slice 5) — copied exactly from 02-ARCHITECTURE.md Section 3 "Demand", plus the
+// same roadmap-corrected candidate-shape pattern applied above for ProblemStatementCandidate:
+// DemandSignal/DemandConfidenceClassification/PersonalPullNote all require `briefVersionId`, which
+// does not exist until Slice 9, so this slice returns candidate shapes (same fields minus `id` and
+// `briefVersionId`) instead of persisting rows directly. ----
+
+/** Closed nine-member union; extensibility to 'other' is provided by the
+ *  'other-observed-behavior' member plus otherTypeLabel, not by an open string. US-4 AC1. */
+export type DemandSignalType =
+  | 'recurring-complaints'
+  | 'workarounds'
+  | 'existing-spend'
+  | 'paid-labor'
+  | 'switching-behavior'
+  | 'willingness-to-pay'
+  | 'rfps'
+  | 'feature-requests'
+  | 'other-observed-behavior';
+
+/** Qualitative only — never a numeric score anywhere (Q-1). US-4 AC2/AC3. */
+export type DemandConfidenceLevel = 'Insufficient' | 'Emerging' | 'Substantiated';
+
+/** Candidate shape for `DemandSignal` (Architecture §3), minus `id`/`briefVersionId`. `localId` is
+ *  a synthetic identifier assigned by the Demand Analyzer for THIS run only — it exists because,
+ *  unlike `ClaimVersion` (already persisted with real ids by Slice 4 before Slice 5 ever runs),
+ *  `DemandSignal` itself has no real id until Slice 9 persists it. Without some stable per-signal
+ *  handle, `DemandConfidenceClassificationCandidate.citedDemandSignalIds` below would have nothing
+ *  concrete to reference. Slice 9 is expected to persist these candidates in order, capture the
+ *  real `DemandSignal.id` each one is assigned, and remap `citedDemandSignalIds` from `localId` to
+ *  that real id when it persists `DemandConfidenceClassification`. */
+export interface DemandSignalCandidate {
+  localId: string;
+  type: DemandSignalType;
+  otherTypeLabel?: string; // required when type === 'other-observed-behavior'
+  evidenceItemIds: NonEmptyArray<string>; // non-empty by contract — R-4 fail-closed, Section 4
+}
+
+/** Candidate shape for `DemandConfidenceClassification` (Architecture §3), minus `briefVersionId`.
+ *  `citedDemandSignalIds` references `DemandSignalCandidate.localId` values from THIS run (see
+ *  that type's doc comment) — Slice 9 remaps to real `DemandSignal.id`s at persistence time. */
+export interface DemandConfidenceClassificationCandidate {
+  level: DemandConfidenceLevel;
+  narrative: string; // must cite which signals/gaps drove the classification
+  citedDemandSignalIds: string[]; // sole named exception to non-empty-array enforcement —
+  // 'Insufficient' may legitimately cite zero signals (Section 4)
+  /** Populated if and only if zero `DemandSignalCandidate`s were found at all for this
+   *  Investigation AND the run did not fail (`generationFailed === false`) — never derived from
+   *  `level` or from `citedDemandSignalIds` being empty (Architecture §3 negativeFindingRef note,
+   *  PR-review re-review correction). Unset on every `generationFailed: true` path, since a failed
+   *  run has an unknown signal set, not a confirmed-empty one. Carries what Slice 9 (Brief Assembler) needs to construct a
+   *  `NegativeFinding` row with `element: 'demand-signal-type'`; this slice does not persist that
+   *  row itself. */
+  negativeFindingSignal?: {
+    statement: string;
+  };
+}
+
+/** Candidate shape for `PersonalPullNote` (Architecture §3), minus `id`/`briefVersionId`. `label`
+ *  is a literal type fixed to `'contextual-motivation'` — a type-level guarantee, not a
+ *  convention: no other string value is assignable to this field, so Personal Pull content cannot
+ *  be silently relabeled into a demand-signal-shaped field. Structurally separate from
+ *  `DemandSignalCandidate`/`DemandConfidenceClassificationCandidate` — never merged in, never
+ *  counted toward either (US-12, US-4 AC4). */
+export interface PersonalPullNoteCandidate {
+  sourceArtifactId: string;
+  text: string;
+  label: 'contextual-motivation';
+}

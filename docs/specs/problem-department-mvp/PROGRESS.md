@@ -7,7 +7,7 @@
 - [x] Slice 2: Core Persistence + Intake Service + Submission Screen — COMPLETE (2026-08-10). 26/26 tests, QC PASS on 5th re-verification (5 rounds, 12 real defects found and fixed, converged via personal falsification testing).
 - [x] Slice 3: Source Resolver + getInvestigation Read Path + Blocked/Generation-Failed States — COMPLETE (2026-08-10). 43/43 tests, QC PASS on 2nd re-verification.
 - [x] Slice 4: Evidence/Claim Model + Extraction & Clustering Engine + Evidence Labeler — COMPLETE (2026-08-12). 83/83 tests, QC PASS on 2nd re-verification (both blocking bugs confirmed via destructive testing, not just green tests). First slice calling the LLM (forced tool-use per DDR-0001).
-- [ ] Slice 5: Demand Analyzer + Personal Pull Extractor — PENDING
+- [x] Slice 5: Demand Analyzer + Personal Pull Extractor — COMPLETE (2026-08-13). 106/106 tests, QC PASS on 3rd re-verification (pass 1: F-1 through F-4 blocking, incl. a regression of Slice 4's F-3 pattern; pass 2: F-5, a stale doc comment left asserting the pre-fix contract; pass 3: PASS, all closed).
 - [ ] Slice 6: Landscape Researcher + Gap Hypothesis Generator — PENDING (Row 9 PROVISIONAL must be resolved before this slice begins — see DDR-0001)
 - [ ] Slice 7: Uncertainty Compiler + Recommendation Engine — PENDING
 - [ ] Slice 8: Provenance Recorder — PENDING
@@ -17,9 +17,20 @@
 - [ ] Slice 12: Validity/Invalidation Service + Decision-History Banner — PENDING
 
 ## Current
-Slice: 4 COMPLETE, starting Slice 5
-Step: @github-ops commit
-Last updated: 2026-08-12
+Slice: 6 starting — Landscape Researcher + Gap Hypothesis Generator
+Step: pre-slice — DDR-0001 Row 9 PROVISIONAL (web-search blocked-retrieval path) must be resolved before/during this slice
+Last updated: 2026-08-13
+
+## Fix Attempts (Slice 5)
+| Test/File | Attempts | Last Error |
+|-----------|----------|------------|
+| QC pass 1, Slice 5 | 1 | Blocking: Slice 4's F-3 fix (unhandled non-validation errors → generationFailed) regressed verbatim in both demandAnalyzer.ts and personalPullExtractor.ts — API/DB errors escape unhandled, live-reproduced. Blocking: all-signals-dropped (e.g. every signal has hallucinated/invalid evidence indices) produces a false, self-contradictory result — generationFailed:false, a real confidence level + narrative claiming demand exists, AND a negativeFindingSignal simultaneously claiming zero signals were found — live-reproduced with a mocked 2-signal response where both drop. Blocking: negativeFindingSignal is populated on failure paths (zero-evidence, LlmValidationError) even though its own doc comment restricts it to "zero signals found," not "run failed" — a failed run has an unknown signal set, not a confirmed-empty one. Blocking (test gap): the R-4 validator itself (validateRawDemandAnalysis/validateRawPersonalPullExtraction) is never executed by any test — both test files mock callForcedTool, so enum rejection, otherTypeLabel requirement, and non-empty evidenceIndices enforcement have zero real coverage. |
+| Fix round, Slice 5 | 1 | @code-executor fixed F-1/F-2/F-3 (outer try/catch mirroring extractClaimsAndEvidence.ts; all-dropped now generationFailed:true; negativeFindingSignal unset on all failure paths). @test-writer added F-4 coverage in two new sibling files (demandAnalyzer.validation.test.ts, personalPullExtractor.validation.test.ts) mocking @anthropic-ai/sdk below callForcedTool so the real R-4 validators execute; correctly declined to fabricate a "level=Insufficient with signals cited" test since no such rule exists in spec or code. |
+| Test-runner, round 1 | 1 | 105/106 passing — 1 stale test (demandAnalyzer.test.ts:245) asserting the pre-fix "negativeFindingSignal populated on zero-evidence path" behavior that F-3's fix deliberately removed. Not a regression — an intentionally-changed contract the test hadn't caught up to. |
+| Test-writer, stale assertion fix | 1 | Updated the one test to expect negativeFindingSignal undefined on the zero-evidence generationFailed:true path; renamed test description accordingly. |
+| QC pass 2, Slice 5 | 1 | F-1 through F-4 independently re-verified fixed (live-probed ECONNRESET/API errors, all-dropped scenario, negativeFindingSignal unset on 4 distinct failure sites). New finding F-5 (non-blocking to logic, blocking to gate): two doc comments (domain.ts:198, demandAnalyzer.ts:227) still asserted the pre-fix "iff zero signals found" contract, contradicting the fix — risk flagged specifically because Slice 9's Brief Assembler will read this contract later. |
+| Doc fix, F-5 | 1 | Orchestrator (Ledger) corrected both comments directly (comment-only, no logic change) to qualify "...AND generationFailed === false". |
+| QC pass 3, Slice 5 | 1 | PASS. F-1 through F-5 all closed, no new findings. 106/106 tests, tsc clean. |
 
 ## Fix Attempts (Slice 4, cont.)
 | Test/File | Attempts | Last Error |
