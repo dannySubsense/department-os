@@ -385,6 +385,262 @@ never a silently-shorter results array, and never more than one record per uniqu
 
 ---
 
+### 1.7 Landscape Researcher & Gap Hypothesis Generator — orchestration, candidate shapes, and
+evidence-extraction scoping (Slice 6, remaining two components; addition to close the roadmap's
+Slice 6 design gap — owner: Ledger)
+
+**Confirmation (no schema changes to `ExistingSolution`/`GapHypothesis`/`WebSearchQuery`/
+`WebSearchResult`/`QueryLimitation`)**: Section 3's existing shapes for these five types are
+sufficient as-is. Both `ExistingSolution.evidenceItemIds` and `GapHypothesis.evidenceItemIds` are
+already `NonEmptyArray<string>` (non-empty by contract, Section 4 citation-validation note,
+enforced by Slice 8's R-4 fail-closed boundary once persisted at Slice 9). Per the roadmap's
+established "Brief-scoped entities defer to a `*Candidate` in-memory shape until Slice 9"
+correction (already applied to `ProblemStatement`/`DemandSignal`/`DemandConfidenceClassification`/
+`PersonalPullNote`), `ExistingSolution` and `GapHypothesis` — both of which carry `briefVersionId`,
+which does not exist until Slice 9 — get the same treatment: this slice returns candidate shapes,
+never persists these two directly. `WebSearchQuery`/`WebSearchResult`/`QueryLimitation` are
+unaffected by this — Section 1.6 already established they are `investigationId`/
+`generationRunId`-scoped and persisted directly by `searchWeb` (already implemented).
+
+**New candidate types to add to `src/types/domain.ts`** (implementation step, not performed here —
+this document specifies the exact shapes; Forge adds them alongside the existing
+`DemandSignalCandidate`/`ProblemStatementCandidate` candidates in the same file):
+
+```typescript
+/** Candidate shape for `ExistingSolution` (Architecture §3), minus `id`/`briefVersionId`. `localId`
+ *  mirrors `DemandSignalCandidate.localId` — a synthetic per-run handle so
+ *  `GapHypothesisCandidate` (below) and Slice 9's persistence step can reference a specific
+ *  landscape entry before it has a real `ExistingSolution.id`. */
+export interface ExistingSolutionCandidate {
+  localId: string;
+  name: string;
+  whatItAddresses: string;
+  howPeopleCopeNow: string;
+  whereItsInadequate: string;
+  evidenceItemIds: NonEmptyArray<string>; // non-empty by contract — R-4 fail-closed, Section 4
+}
+
+export type GapCategory =
+  | 'capability' | 'usability' | 'price' | 'workflow-fit' | 'trust'
+  | 'integration' | 'accessibility' | 'distribution' | 'other';
+
+/** Candidate shape for `GapHypothesis` (Architecture §3), minus `id`/`briefVersionId`. */
+export interface GapHypothesisCandidate {
+  category: GapCategory;
+  otherCategoryLabel?: string; // required when category === 'other'
+  statement: string; // specific, falsifiable claim about what's missing
+  evidenceItemIds: NonEmptyArray<string>; // non-empty by contract — R-4 fail-closed, Section 4
+}
+```
+
+**Evidence-extraction scoping decision (the actual design gap this addition closes)**: `searchWeb`
+(implemented) creates new `SourceArtifact` rows (`origin: 'landscape-research'`) for every
+successfully retrieved result, but does not extract `EvidenceItem`s from them — that is
+`extractClaimsAndEvidence`'s job (Slice 4). `extractClaimsAndEvidence(investigationId)` as it
+exists today is **not safe to call a second time** after `searchWeb` runs: it reads *every*
+`content-retrieved` `SourceArtifact` for the Investigation (via `getInvestigation`) unconditionally,
+so a second call would re-run LLM extraction over sources already processed by Slice 4's own pass
+and persist duplicate `EvidenceItem` rows for the same content — silent data duplication, not
+data loss, but a correctness defect all the same, and exactly the kind of unexamined-assumption
+gap this project's Research Data Integrity discipline exists to catch before it ships.
+
+**Resolution**: refactor `extractClaimsAndEvidence.ts` to expose the existing pipeline body as a
+scoped operation, with the current export becoming a thin wrapper:
+
+```typescript
+// extractClaimsAndEvidence.ts — refactor, not a new file
+
+/** Extracts and persists EvidenceItem/Claim/ClaimVersion rows from EXACTLY the given
+ *  sourceArtifactIds (each must belong to investigationId and be 'content-retrieved') — the
+ *  existing extraction/persistence body, scoped by an explicit id set instead of "every usable
+ *  source for this Investigation." Existing-claim dedup/reuse logic (getExistingClaimsForInvestigation)
+ *  is unchanged: still reads the Investigation's full existing-claims set, so a claim restated in a
+ *  newly-scoped source still resolves to its existing Claim identity rather than forking one. */
+export async function extractClaimsAndEvidenceForSourceArtifacts(
+  investigationId: string,
+  sourceArtifactIds: string[],
+): Promise<ExtractionResult>;
+
+/** Unchanged public contract — now a thin wrapper: resolves investigationId to its full
+ *  content-retrieved sourceArtifactIds set, then delegates. No behavior change for Slice 4's own
+ *  call site. */
+export async function extractClaimsAndEvidence(investigationId: string): Promise<ExtractionResult>;
+```
+
+This is a minimal, behavior-preserving refactor of Slice 4's existing module (same transaction,
+same advisory lock, same LLM prompt shape, same fail-closed per-item filtering) — not a new
+extraction mechanism. The Landscape Researcher (below) is the second call site, invoking the scoped
+function with only the `SourceArtifact.id`s `searchWeb` just created with `status: 'retrieved'`.
+
+**Landscape Researcher — orchestration and signature**
+
+```typescript
+export interface LandscapeResearchResult {
+  webSearchQueries: WebSearchQuery[];            // one per searchWeb call issued this run
+  existingSolutionCandidates: ExistingSolutionCandidate[];
+  landscapeEvidenceItems: EvidenceItem[];         // EvidenceItems extracted from newly-retrieved
+                                                   // landscape-research SourceArtifacts this run —
+                                                   // returned so the Gap Hypothesis Generator and
+                                                   // Slice 9 don't have to re-derive this set
+  /** Mirrors demandAnalyzer's generationFailed pattern — set on infra/LLM failure only, never on a
+   *  legitimate zero-competitors finding (see negativeFindingSignal). */
+  generationFailed: boolean;
+  generationFailureReason?: string;
+  /** Populated iff existingSolutionCandidates is empty AND generationFailed === false — carries
+   *  what Slice 9 needs to construct a NegativeFinding row with element: 'existing-solution'
+   *  (roadmap Slice 6 Implementation Notes). Unset on every generationFailed: true path. */
+  negativeFindingSignal?: { statement: string };
+}
+
+export async function researchLandscape(
+  investigationId: string,
+  generationRunId: string,
+): Promise<LandscapeResearchResult>;
+```
+
+Orchestration, inside the same outer try/catch discipline as `analyzeDemand` (F-1 pattern — the
+entire function body, including the evidence read below, is wrapped so any unexpected error
+converts to `generationFailed: true` rather than an unhandled throw):
+
+1. Read the Investigation's already-persisted evidence via the existing
+   `getEvidenceForInvestigation(investigationId)` helper (same helper Slice 5 uses — Q-6's
+   "independent web research" requirement means this evidence *seeds query construction*, it does
+   not bound what gets searched for or retrieved). If zero evidence exists, mirror
+   `analyzeDemand`'s empty-evidence branch: `generationFailed: true`, explanatory reason, no search
+   attempted.
+2. One forced-tool LLM call (`callForcedTool`, new tool name `propose_landscape_queries`) over that
+   evidence, producing 1-or-more free-text search query strings aimed at existing
+   solutions/competitors/alternatives for the problem the evidence describes. (Per Q-6/Section 1.5:
+   this call reasons over evidence *content*, but the requirement that research proceed
+   independently of what a submitted artifact claims about competitors is enforced by prompt
+   instruction — mirroring `demandAnalyzer`'s "never treat personal motivation as a demand signal"
+   instruction pattern — not by withholding the evidence itself, since the LLM needs to know
+   *what problem* it's researching solutions for.) Schema-validated (R-4): non-empty array of
+   non-empty strings. On `LlmValidationError` after bounded repair, return `generationFailed: true`
+   per the same pattern as `analyzeDemand`'s LLM-failure branch.
+3. For each proposed query, call `searchWeb({ investigationId, generationRunId, query })`
+   (implemented, Section 1.6/4) — sequentially, not in parallel, to keep the per-query
+   `WebSearchQuery`/`WebSearchResult` transaction boundaries (already implemented in `searchWeb.ts`)
+   independently observable and to keep total outbound request concurrency bounded. Collect every
+   returned `WebSearchQuery` into `webSearchQueries`.
+4. Collect the `sourceArtifactId`s of every `WebSearchResult` with `status: 'retrieved'` across all
+   queries this run. If this set is empty (zero queries returned a retrieved result — Edge Case
+   "Landscape web search returns zero results"), skip step 5 and go straight to step 6 with
+   `landscapeEvidenceItems: []`.
+5. Call `extractClaimsAndEvidenceForSourceArtifacts(investigationId, retrievedSourceArtifactIds)`
+   (new scoped function, above) to extract and persist `EvidenceItem`s from just the newly-retrieved
+   landscape sources. On `generationFailed: true` from this call, propagate it as this function's
+   own `generationFailed: true` (extraction failure on the landscape sources is a Landscape
+   Researcher failure, not a silent "zero solutions found" outcome) with the inner
+   `generationFailureReason` prefixed for traceability. On success, its `evidenceItems` becomes
+   `landscapeEvidenceItems`.
+6. Second forced-tool LLM call (`callForcedTool`, tool name `identify_existing_solutions`) over
+   the union of the original evidence (step 1) and `landscapeEvidenceItems` (step 5) — an existing
+   solution's evidence may legitimately come from either set (e.g. a submitted artifact already
+   named a competitor, corroborated by a web result). Same index-into-combined-evidence-array
+   pattern as `analyzeDemand`'s `evidenceIndices`; same fail-closed per-entity filter (drop any
+   candidate whose `evidenceIndices` resolve to zero valid combined-evidence items — mirrors
+   `demandAnalyzer.ts`'s F-2 "all-dropped means the whole call is untrustworthy" rule: if the model
+   proposed ≥1 solution but fail-closed filtering drops all of them, return `generationFailed: true`,
+   not a confident empty result).
+7. `negativeFindingSignal` populated iff surviving `existingSolutionCandidates.length === 0` AND
+   `generationFailed === false` (identical trigger discipline to
+   `DemandConfidenceClassificationCandidate.negativeFindingSignal`).
+
+**Gap Hypothesis Generator — orchestration and signature**
+
+Per the roadmap's own sequencing ("can be built in parallel with Slice 5... sequenced after it here
+for a linear Forge session, not because of a hard dependency"), the Landscape Researcher itself has
+no Slice-5 dependency (confirmed by step 1-6 above, which reads only Slice-4-persisted evidence).
+The Gap Hypothesis Generator, however, is explicitly asked (this task's framing) to analyze landscape
+entries against Slice 5's demand output — so that dependency is expressed as **optional call-time
+parameters**, not an internal fetch, keeping the module itself decoupled and leaving the actual
+wiring (call this only once both Slice 5 and Slice 6's Landscape step have produced their
+candidates for the same `GenerationRun`) to Slice 8's Provenance Recorder orchestration:
+
+```typescript
+export interface GapHypothesisGenerationResult {
+  gapHypothesisCandidates: GapHypothesisCandidate[];
+  generationFailed: boolean;
+  generationFailureReason?: string;
+  /** Populated iff gapHypothesisCandidates is empty AND generationFailed === false — carries what
+   *  Slice 9 needs to construct a NegativeFinding row with element: 'gap-hypothesis'. */
+  negativeFindingSignal?: { statement: string };
+}
+
+export async function generateGapHypotheses(input: {
+  investigationId: string;
+  existingSolutionCandidates: ExistingSolutionCandidate[];
+  /** All evidence available to reason over — original Investigation evidence plus
+   *  landscapeEvidenceItems, i.e. researchLandscape's combined evidence array (step 6, above). A
+   *  GapHypothesis may cite evidence that never went through an ExistingSolution (e.g. a direct
+   *  demand-signal excerpt describing what's missing). */
+  allEvidenceItems: EvidenceItem[];
+  /** Optional — present when Slice 5 has already run for this GenerationRun (Provenance Recorder
+   *  wiring decision, not this function's concern). Absent, this component still runs: it produces
+   *  gap hypotheses from evidence + landscape alone, without a demand cross-reference. */
+  demandSignalCandidates?: DemandSignalCandidate[];
+  demandConfidenceClassificationCandidate?: DemandConfidenceClassificationCandidate;
+}): Promise<GapHypothesisGenerationResult>;
+```
+
+Orchestration (same F-1 outer try/catch, same R-4 validate-repair-fail forced-tool call, same
+fail-closed per-entity citation filter and same "all proposed hypotheses dropped by the filter ⇒
+`generationFailed: true`" rule as `analyzeDemand`'s F-2 and the Landscape Researcher's step 6
+above):
+
+1. If `existingSolutionCandidates.length === 0` and no demand-signal input was supplied, there is
+   nothing to reason a gap from — mirror `analyzeDemand`'s empty-input branch:
+   `generationFailed: true` with an explanatory reason, no LLM call attempted. (A `demandSignalCandidates`-only
+   input with zero existing solutions is still meaningful — "no competitors found" is itself
+   evidence of a gap — so this short-circuit requires **both** inputs to be absent/empty, not
+   either.)
+2. One forced-tool LLM call (tool name `identify_gap_hypotheses`) over `existingSolutionCandidates`,
+   `allEvidenceItems`, and (when present) the demand-signal inputs, instructed to propose zero-or-
+   more falsifiable `GapHypothesis` statements, each tagged with exactly one `GapCategory` (or
+   `'other'` + `otherCategoryLabel`) and citing ≥1 index into `allEvidenceItems`. Schema-validated
+   per the existing `GapCategory` nine-member closed union (R-4).
+3. Fail-closed per-entity filter: drop any hypothesis whose evidence indices resolve to zero valid
+   items in `allEvidenceItems`. If the model proposed ≥1 hypothesis but the filter drops all of
+   them, return `generationFailed: true` (untrustworthy result, same F-2 rule).
+4. `negativeFindingSignal` populated iff surviving `gapHypothesisCandidates.length === 0` AND
+   `generationFailed === false`.
+
+**Files (Forge implementation — not produced by this design step):**
+- `src/types/domain.ts` — add `ExistingSolutionCandidate`, `GapCategory`, `GapHypothesisCandidate`
+  (types only, above)
+- `src/services/extractClaimsAndEvidence.ts` — refactor: extract the existing body into
+  `extractClaimsAndEvidenceForSourceArtifacts(investigationId, sourceArtifactIds)`;
+  `extractClaimsAndEvidence(investigationId)` becomes a thin wrapper that resolves the full
+  content-retrieved id set and delegates. No behavior change to the existing export's contract or
+  its existing tests.
+- `src/services/landscapeResearcher.ts` — new; `researchLandscape` (above)
+- `src/services/gapHypothesisGenerator.ts` — new; `generateGapHypotheses` (above)
+- Corresponding `*.test.ts` files for both new services, plus a regression test on
+  `extractClaimsAndEvidence.ts` confirming the wrapper's behavior is unchanged and a new test on
+  `extractClaimsAndEvidenceForSourceArtifacts` confirming it does not reprocess ids outside the
+  given scope.
+
+**Out of scope for Slice 6 (explicit, not silently deferred):**
+- Persisting `ExistingSolution`/`GapHypothesis` rows — both stay candidate-only in memory, exactly
+  like `DemandSignal`/`DemandConfidenceClassification`; Slice 9 (Brief Assembler) persists them,
+  remaps `localId` -> real `id` (mirroring `DemandSignalCandidate.localId`'s documented remap), and
+  constructs the two `NegativeFinding` rows (`element: 'existing-solution'` /
+  `element: 'gap-hypothesis'`) from the `negativeFindingSignal` fields above.
+- `GenerationStep`/`SchemaValidationRecord` provenance wrapping around these two components' forced-
+  tool calls — Slice 8 (Provenance Recorder) wraps this slice's LLM calls, same as it wraps Slices
+  4/5/7's.
+- Wiring `generateGapHypotheses`'s optional Slice-5 parameters into an actual pipeline call —
+  Slice 8's orchestration decision (which `GenerationRun` step order actually invokes this with
+  Slice 5's output attached), not this slice's.
+- Query-count/result-count caps for `researchLandscape`'s query proposal step — no numeric bound is
+  introduced here (e.g. "propose at most N queries"); per this project's Research Data Integrity
+  discipline, an unsourced cap does not pass, and none is cited for this MVP. If Forge/Danny later
+  wants one, it needs a named owner and PROVISIONAL marker, added as its own change, not folded in
+  silently here.
+
+---
+
 ## 2. Components
 
 Each component is a **service responsibility boundary**, not a technology binding. In candidate

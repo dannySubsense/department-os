@@ -381,12 +381,43 @@ function buildUserPrompt(
  *  the persistence transaction (DB errors, transient connection failures, unexpected exceptions —
  *  not just the two specific bugs this fixed) is caught by the outer try/catch below and converted
  *  to a `generationFailed` result rather than an unhandled throw, per the roadmap's fail-closed
- *  per-run semantics for Slice 9 to consume. */
+ *  per-run semantics for Slice 9 to consume.
+ *
+ *  Slice 6 refactor: this export is now a thin wrapper — it resolves the Investigation's full
+ *  content-retrieved `SourceArtifact` id set and delegates to
+ *  `extractClaimsAndEvidenceForSourceArtifacts` (below), which holds the actual pipeline body.
+ *  Behavior-preserving: no change to this function's contract or its existing tests. */
 export async function extractClaimsAndEvidence(investigationId: string): Promise<ExtractionResult> {
   const { sourceArtifacts } = await getInvestigation(investigationId);
+  const usableSourceIds = sourceArtifacts
+    .filter(
+      (s): s is typeof s & { resolvedContent: string } =>
+        s.resolution.status === 'content-retrieved' && typeof s.resolvedContent === 'string',
+    )
+    .map((s) => s.id);
+  return extractClaimsAndEvidenceForSourceArtifacts(investigationId, usableSourceIds);
+}
+
+/** Extracts and persists `EvidenceItem`/`Claim`/`ClaimVersion` rows from EXACTLY the given
+ *  `sourceArtifactIds` (each must belong to `investigationId` and be `'content-retrieved'`) — the
+ *  original extraction/persistence body (Roadmap Slice 4), scoped by an explicit id set instead of
+ *  "every usable source for this Investigation." Existing-claim dedup/reuse logic
+ *  (`getExistingClaimsForInvestigation`) is unchanged: still reads the Investigation's full
+ *  existing-claims set, so a claim restated in a newly-scoped source still resolves to its existing
+ *  Claim identity rather than forking one. Added in Slice 6 so the Landscape Researcher can safely
+ *  re-invoke extraction over only the newly-retrieved landscape-research sources, without
+ *  re-processing (and duplicating EvidenceItems for) sources Slice 4's own pass already covered. */
+export async function extractClaimsAndEvidenceForSourceArtifacts(
+  investigationId: string,
+  sourceArtifactIds: string[],
+): Promise<ExtractionResult> {
+  const { sourceArtifacts } = await getInvestigation(investigationId);
+  const scopedIds = new Set(sourceArtifactIds);
   const usableSources = sourceArtifacts.filter(
     (s): s is typeof s & { resolvedContent: string } =>
-      s.resolution.status === 'content-retrieved' && typeof s.resolvedContent === 'string',
+      scopedIds.has(s.id) &&
+      s.resolution.status === 'content-retrieved' &&
+      typeof s.resolvedContent === 'string',
   );
 
   if (usableSources.length === 0) {

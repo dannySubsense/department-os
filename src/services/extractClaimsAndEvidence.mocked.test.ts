@@ -20,7 +20,11 @@ vi.mock('./llmClient.js', async (importOriginal) => {
 });
 
 const { callForcedTool } = await import('./llmClient.js');
-const { extractClaimsAndEvidence, __setF2RaceDelayForTests } = await import('./extractClaimsAndEvidence.js');
+const {
+  extractClaimsAndEvidence,
+  extractClaimsAndEvidenceForSourceArtifacts,
+  __setF2RaceDelayForTests,
+} = await import('./extractClaimsAndEvidence.js');
 
 afterAll(async () => {
   await pool.end();
@@ -560,5 +564,79 @@ describe('extractClaimsAndEvidence (mocked LLM)', () => {
         ['neutral-context', claimVersionId, evidenceItemId],
       ),
     ).rejects.toThrow(/immutable/);
+  });
+});
+
+/** Slice 6 regression coverage — Architecture §1.7's "not safe to call a second time" scoping
+ *  gap. Confirms `extractClaimsAndEvidenceForSourceArtifacts` processes EXACTLY the given
+ *  `sourceArtifactIds`, not the whole Investigation, even when other 'content-retrieved' sources
+ *  exist for the same Investigation. `extractClaimsAndEvidence`'s own existing behavior/tests
+ *  (above, and in `extractClaimsAndEvidence.test.ts`) are unchanged by the refactor — the thin
+ *  wrapper still resolves and passes the FULL content-retrieved id set — so they are not
+ *  duplicated here. */
+describe('extractClaimsAndEvidenceForSourceArtifacts (Slice 6 scoping)', () => {
+  it('only sends the given sourceArtifactIds to the LLM, excluding other content-retrieved sources in the same Investigation', async () => {
+    const submission = await submitSources({
+      origin: 'human',
+      artifacts: [
+        { type: 'text', raw: 'First source content — already extracted by an earlier Slice 4 pass.' },
+        { type: 'text', raw: 'Second source content — newly retrieved, e.g. by the Landscape Researcher.' },
+      ],
+    });
+    const [firstSourceId, secondSourceId] = submission.sourceArtifactIds;
+    await pool.query(
+      `UPDATE source_artifact SET resolution_status = 'content-retrieved', resolution_resolved_at = now(), resolved_content = $2 WHERE id = $1`,
+      [firstSourceId, 'First source content — already extracted by an earlier Slice 4 pass.'],
+    );
+    await pool.query(
+      `UPDATE source_artifact SET resolution_status = 'content-retrieved', resolution_resolved_at = now(), resolved_content = $2 WHERE id = $1`,
+      [secondSourceId, 'Second source content — newly retrieved, e.g. by the Landscape Researcher.'],
+    );
+
+    vi.mocked(callForcedTool).mockResolvedValueOnce({
+      attempts: 1,
+      value: {
+        evidenceItems: [
+          { sourceArtifactId: secondSourceId, excerptOrSummary: 'second-source evidence', label: 'observation' },
+        ],
+        claims: [{ text: 'A claim from the second source only', evidenceRefs: [{ evidenceIndex: 0, stance: 'supporting' }] }],
+        problemStatements: [
+          {
+            whoExperiencesIt: 'Someone',
+            contextOrWorkflow: 'Somewhere',
+            consequenceOrFriction: 'Something',
+            supportingClaimIndices: [0],
+          },
+        ],
+      },
+    });
+
+    const result = await extractClaimsAndEvidenceForSourceArtifacts(submission.investigationId, [secondSourceId]);
+
+    expect(result.generationFailed).toBe(false);
+    expect(callForcedTool).toHaveBeenCalledTimes(1);
+    const callArgs = vi.mocked(callForcedTool).mock.calls[0][0] as { userPrompt: string };
+    expect(callArgs.userPrompt).toContain(secondSourceId);
+    expect(callArgs.userPrompt).not.toContain(firstSourceId);
+
+    expect(result.evidenceItems).toHaveLength(1);
+    expect(result.evidenceItems[0].sourceArtifactId).toBe(secondSourceId);
+  });
+
+  it('returns generationFailed:true and never calls the LLM when the given sourceArtifactIds resolve to zero usable (content-retrieved) sources', async () => {
+    const submission = await submitSources({
+      origin: 'human',
+      artifacts: [{ type: 'text', raw: 'Unresolved source.' }],
+    });
+    const [sourceArtifactId] = submission.sourceArtifactIds;
+    // Deliberately left at status 'unresolved' — not 'content-retrieved'.
+
+    const result = await extractClaimsAndEvidenceForSourceArtifacts(submission.investigationId, [sourceArtifactId]);
+
+    expect(result.generationFailed).toBe(true);
+    expect(result.generationFailureReason).toMatch(
+      /No source with retrieved content is available for this Investigation/,
+    );
+    expect(callForcedTool).not.toHaveBeenCalled();
   });
 });

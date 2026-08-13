@@ -294,3 +294,37 @@ export interface PersonalPullNoteCandidate {
   text: string;
   label: 'contextual-motivation';
 }
+
+// ---- Landscape & Gap candidate shapes (Architecture §1.7, Slice 6) ----
+
+/** Candidate shape for `ExistingSolution` (Architecture §3), minus `id`/`briefVersionId`. `localId`
+ *  mirrors `DemandSignalCandidate.localId` — a synthetic per-run handle so
+ *  `GapHypothesisCandidate` (below) and Slice 9's persistence step can reference a specific
+ *  landscape entry before it has a real `ExistingSolution.id`. */
+export interface ExistingSolutionCandidate {
+  localId: string;
+  name: string;
+  whatItAddresses: string;
+  howPeopleCopeNow: string;
+  whereItsInadequate: string;
+  evidenceItemIds: NonEmptyArray<string>; // non-empty by contract — R-4 fail-closed, Section 4
+}
+
+export type GapCategory =
+  | 'capability'
+  | 'usability'
+  | 'price'
+  | 'workflow-fit'
+  | 'trust'
+  | 'integration'
+  | 'accessibility'
+  | 'distribution'
+  | 'other';
+
+/** Candidate shape for `GapHypothesis` (Architecture §3), minus `id`/`briefVersionId`. */
+export interface GapHypothesisCandidate {
+  category: GapCategory;
+  otherCategoryLabel?: string; // required when category === 'other'
+  statement: string; // specific, falsifiable claim about what's missing
+  evidenceItemIds: NonEmptyArray<string>; // non-empty by contract — R-4 fail-closed, Section 4
+}

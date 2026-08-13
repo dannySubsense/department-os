@@ -8,7 +8,7 @@
 - [x] Slice 3: Source Resolver + getInvestigation Read Path + Blocked/Generation-Failed States — COMPLETE (2026-08-10). 43/43 tests, QC PASS on 2nd re-verification.
 - [x] Slice 4: Evidence/Claim Model + Extraction & Clustering Engine + Evidence Labeler — COMPLETE (2026-08-12). 83/83 tests, QC PASS on 2nd re-verification (both blocking bugs confirmed via destructive testing, not just green tests). First slice calling the LLM (forced tool-use per DDR-0001).
 - [x] Slice 5: Demand Analyzer + Personal Pull Extractor — COMPLETE (2026-08-13). 106/106 tests, QC PASS on 3rd re-verification (pass 1: F-1 through F-4 blocking, incl. a regression of Slice 4's F-3 pattern; pass 2: F-5, a stale doc comment left asserting the pre-fix contract; pass 3: PASS, all closed).
-- [ ] Slice 6: Landscape Researcher + Gap Hypothesis Generator — PENDING (Row 9 PROVISIONAL must be resolved before this slice begins — see DDR-0001)
+- [x] Slice 6: Landscape Researcher + Gap Hypothesis Generator — COMPLETE (2026-08-13). searchWeb failure boundary resolved DDR-0001 Row 9 (3 QC rounds); Landscape Researcher + Gap Hypothesis Generator implementation (2 QC rounds, 2 real data-loss bugs found and fixed). 179/179 tests, tsc clean.
 - [ ] Slice 7: Uncertainty Compiler + Recommendation Engine — PENDING
 - [ ] Slice 8: Provenance Recorder — PENDING
 - [ ] Slice 9: Brief Assembler — PENDING
@@ -17,9 +17,16 @@
 - [ ] Slice 12: Validity/Invalidation Service + Decision-History Banner — PENDING
 
 ## Current
-Slice: 6 in progress — searchWeb failure boundary COMPLETE, Landscape Researcher + Gap Hypothesis Generator next
-Step: commit searchWeb boundary increment to PR #6, then continue Slice 6
+Slice: 7 starting — Uncertainty Compiler + Recommendation Engine
+Step: commit Slice 6 completion to PR #6, then begin Slice 7 architecture design
 Last updated: 2026-08-13
+
+## Fix Attempts (Slice 6 — Landscape Researcher + Gap Hypothesis Generator)
+| Test/File | Attempts | Last Error |
+|-----------|----------|------------|
+| Architecture design (§1.7) | 1 | @architect designed both services per the candidate-output pattern; caught a real design gap during design (not implementation): extractClaimsAndEvidence reprocessing all sources unconditionally would silently duplicate evidence when called again after searchWeb creates new landscape-research SourceArtifacts. Resolved via a scoped extractClaimsAndEvidenceForSourceArtifacts refactor, existing function becomes a thin wrapper. |
+| Implementation + QC pass 1 | 1 | 177/177 tests passing. QC pass 1: FAIL — 2 blocking findings, both in landscapeResearcher.ts. BLOCKER-1: extraction's generationFailed:true (meaning "no problem statement established" — normal/expected for landscape pages) was propagated as a landscapeResearcher-level failure, discarding already-persisted non-empty evidenceItems; the test fixture had hardcoded evidenceItems:[] alongside generationFailed:true, encoding the same wrong assumption as the bug, making it untestable by the existing suite (shared-well instance). BLOCKER-2: outer catch returned webSearchQueries:[] on any escaping error, discarding provenance for WebSearchQueries searchWeb() had already committed to the DB before the throw. |
+| Fix round + QC pass 2 | 1 | BLOCKER-1: landscapeResearcher.ts now only treats extraction as a failure when evidenceItems.length === 0; non-empty evidence used regardless of inner generationFailed. BLOCKER-2: issuedWebSearchQueries tracked in outer-catch-visible scope, returned instead of []. Both independently re-verified by QC via its own constructed scenarios (different mocking seam than the committed tests), including inverse cases to rule out over-correction (empty evidence still fails closed; first-call throw still returns []). QC pass 2: PASS. 179/179 tests, tsc clean. 3 non-blocking observations logged for Slice 8/9 (generationFailureReason dropped when evidence overrides failure; minor error-path asymmetry; an aliased-not-copied array). |
 
 ## Fix Attempts (Slice 6 — searchWeb failure boundary)
 | Test/File | Attempts | Last Error |
