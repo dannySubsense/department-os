@@ -245,4 +245,33 @@ describe('analyzeDemand', () => {
     expect(result.demandConfidenceClassificationCandidate.negativeFindingSignal).toBeUndefined();
     expect(callForcedTool).not.toHaveBeenCalled();
   });
+
+  it('Edge Case (mirrors recommendationEngine.test.ts:164, Numeric Scope Rule): the prompt sent to the model carries an explicit instruction not to adopt an unverifiable sourced numeric claim (e.g. a "$50M market" figure) into the narrative as validated fact', async () => {
+    const { investigationId } = await seedInvestigationWithEvidence([
+      'A source claims the addressable market for this is "$50M", but offers no citation or corroboration.',
+    ]);
+
+    vi.mocked(callForcedTool).mockResolvedValueOnce({
+      attempts: 1,
+      value: {
+        demandSignals: [],
+        confidenceClassification: {
+          level: 'Insufficient',
+          narrative:
+            'A source cites a "$50M market" figure, but this is an uncorroborated, unverified ' +
+            'claim, not an established fact.',
+          citedSignalIndices: [],
+        },
+      },
+    });
+
+    await analyzeDemand(investigationId);
+
+    expect(callForcedTool).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(callForcedTool).mock.calls[0][0];
+    // Guard instruction lives in demandAnalyzer.ts's buildUserPrompt — this asserts it is actually
+    // present in what gets sent to the model, not merely present in the source file.
+    expect(call.userPrompt).toMatch(/must not adopt an unverifiable numeric claim/);
+    expect(call.userPrompt).toMatch(/must not restate the number itself as validated/);
+  });
 });

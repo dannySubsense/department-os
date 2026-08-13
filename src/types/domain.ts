@@ -328,3 +328,29 @@ export interface GapHypothesisCandidate {
   statement: string; // specific, falsifiable claim about what's missing
   evidenceItemIds: NonEmptyArray<string>; // non-empty by contract — R-4 fail-closed, Section 4
 }
+
+// ---- Uncertainty & Recommendation candidate shapes (Architecture §1.8, Slice 7) ----
+
+/** Closed three-value union — no "insufficient information" member; a run that cannot produce a
+ *  trustworthy recommendation fails closed (`generationFailed: true`) rather than emitting a
+ *  placeholder decision (Architecture §1.8). */
+export type RecommendationDecision = 'Approve' | 'Reject' | 'Watch';
+
+/** Candidate shape for `UncertaintyStatement` (Architecture §3/§1.8), minus `briefVersionId`. No
+ *  `localId` — the Recommendation Engine and Slice 9 consume the three arrays wholesale, not by
+ *  index. Non-negatable — `UncertaintyStatement` is not one of `BriefElement`'s four negatable
+ *  elements, so it is always constructed on success. Never-empty-array policy: each of the three
+ *  arrays always contains at least one string — a genuinely-clean category gets one explicit
+ *  sentinel sentence, never `[]` (Architecture §1.8). */
+export interface UncertaintyStatementCandidate {
+  whatsUnknown: string[];
+  whatWouldChangeConclusion: string[];
+  whatsUndeterminable: string[];
+}
+
+/** Candidate shape for `Recommendation` (Architecture §3/§1.8), minus `briefVersionId`. Also
+ *  non-negatable (see `RecommendationDecision`). */
+export interface RecommendationCandidate {
+  decision: RecommendationDecision;
+  rationale: string; // must reference Brief evidence — never bare/scored (Q-1, US-7 AC1)
+}

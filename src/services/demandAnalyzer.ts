@@ -202,6 +202,10 @@ function buildUserPrompt(evidenceItems: EvidenceItem[]): string {
     `- The narrative must explain which signals (or which gaps/absences in the evidence) drove the ` +
     `classification. If no demand signals were found at all, say so explicitly and classify as ` +
     `'Insufficient'.\n` +
+    `- The narrative must not adopt an unverifiable numeric claim from evidence (e.g. a source's ` +
+    `market-size figure, percentage, or growth rate) as an established fact — if such a figure ` +
+    `appears only as a source's uncorroborated claim, you may reference that the claim exists and ` +
+    `is unverified, but must not restate the number itself as validated.\n` +
     `- citedSignalIndices should list only the signals that specifically drove the classification — ` +
     `it is legitimate and expected to leave this empty when no signals were found, or when the ` +
     `classification rests on general absence/weakness rather than any specific signal.`

@@ -9,7 +9,7 @@
 - [x] Slice 4: Evidence/Claim Model + Extraction & Clustering Engine + Evidence Labeler — COMPLETE (2026-08-12). 83/83 tests, QC PASS on 2nd re-verification (both blocking bugs confirmed via destructive testing, not just green tests). First slice calling the LLM (forced tool-use per DDR-0001).
 - [x] Slice 5: Demand Analyzer + Personal Pull Extractor — COMPLETE (2026-08-13). 106/106 tests, QC PASS on 3rd re-verification (pass 1: F-1 through F-4 blocking, incl. a regression of Slice 4's F-3 pattern; pass 2: F-5, a stale doc comment left asserting the pre-fix contract; pass 3: PASS, all closed).
 - [x] Slice 6: Landscape Researcher + Gap Hypothesis Generator — COMPLETE (2026-08-13). searchWeb failure boundary resolved DDR-0001 Row 9 (3 QC rounds); Landscape Researcher + Gap Hypothesis Generator implementation (2 QC rounds, 2 real data-loss bugs found and fixed). 179/179 tests, tsc clean.
-- [ ] Slice 7: Uncertainty Compiler + Recommendation Engine — PENDING
+- [x] Slice 7: Uncertainty Compiler + Recommendation Engine — COMPLETE (2026-08-13). 3 QC rounds (pass 1: 2 blocking bugs — cross-investigation evidence leakage in a new read helper, and a Date/string type lie; pass 2: 1 blocking test-coverage gap that also surfaced a genuine unimplemented Slice-5 requirement — numeric-scope non-adoption guard missing from demandAnalyzer.ts entirely; pass 3: PASS, mutation-tested). 208/208 tests, tsc clean.
 - [ ] Slice 8: Provenance Recorder — PENDING
 - [ ] Slice 9: Brief Assembler — PENDING
 - [ ] Slice 10: Investigation Screen — Completed State — PENDING
@@ -17,9 +17,17 @@
 - [ ] Slice 12: Validity/Invalidation Service + Decision-History Banner — PENDING
 
 ## Current
-Slice: 7 starting — Uncertainty Compiler + Recommendation Engine
-Step: commit Slice 6 completion to PR #6, then begin Slice 7 architecture design
+Slice: 8 starting — Provenance Recorder
+Step: commit Slice 7 completion to PR #6, then begin Slice 8 architecture design
 Last updated: 2026-08-13
+
+## Fix Attempts (Slice 7 — Uncertainty Compiler + Recommendation Engine)
+| Test/File | Attempts | Last Error |
+|-----------|----------|------------|
+| Architecture design (§1.8) | 1 | @architect confirmed the candidate-output pattern applies (both entities carry briefVersionId); identified a missing read helper (getClaimVersionsForInvestigation) needed for contradiction detection; established that only compileUncertainty ever interprets upstream generationFailed flags (recommendationEngine never sees raw upstream flags), applying the Slice-6-BLOCKER-1 lesson explicitly. |
+| Implementation + type-fix + QC pass 1 | 1 | 204/204 after a type-fix round on test fixtures (missing citedDemandSignalIds field, wrong LlmValidationError constructor arity — mechanical, not logic bugs). QC pass 1: FAIL — 2 blocking defects in the new getClaimVersionsForInvestigation.ts read helper. BLOCKER-1: cross-investigation evidence leakage — the evidence-fetching query was unscoped by investigation, so a ClaimVersion with evidence cited across two investigations leaked the foreign investigation's evidence into the result, directly feeding uncertaintyCompiler's contradiction-surfacing logic with a false cross-investigation contradiction. BLOCKER-2: created_at typed as string but is actually a runtime Date object — a type lie inconsistent with this codebase's established Date/.toISOString() precedent, uncaught because no test asserted the field's actual type. |
+| Fix round + QC pass 2 | 1 | Both blockers fixed (query now joins through source_artifact and filters by investigation_id; created_at typed Date with .toISOString()), both independently re-verified by QC via its own constructed two-investigation scenario. QC pass 2: FAIL — 1 new finding, BLOCKER-3: a roadmap-mandated test (numeric-scope non-adoption: an unverifiable claim like "$50M market" must not be adopted into Recommendation.rationale or DemandConfidenceClassification.narrative as validated) was entirely missing. Investigation revealed this was not just a test gap — the DemandConfidenceClassification.narrative half of the guard was never implemented in Slice 5's demandAnalyzer.ts at all, a genuine unimplemented requirement discovered retroactively. |
+| Retroactive Slice 5 fix + QC pass 3 | 1 | Added the missing prompt-instruction guard to demandAnalyzer.ts (mirroring recommendationEngine.ts's existing guard), added prompt-capture tests for both guards. QC pass 3: PASS — verified via mutation testing (replaced guard text with "MUTATED" in both files, confirmed exactly the 2 new tests failed and nothing else), not just a green suite. Noted as a standing limitation: this is a best-effort prompt constraint, not an enforced output-side invariant — worth revisiting if a hard guarantee is ever needed. 208/208 tests, tsc clean. |
 
 ## Fix Attempts (Slice 6 — Landscape Researcher + Gap Hypothesis Generator)
 | Test/File | Attempts | Last Error |

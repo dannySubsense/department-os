@@ -641,6 +641,321 @@ above):
 
 ---
 
+### 1.8 Uncertainty Compiler & Recommendation Engine — orchestration, candidate shapes, and the
+generationFailed interpretation boundary (Slice 7; addition to close the roadmap's Slice 7 design
+gap — owner: Ledger)
+
+**Confirmation (no schema changes to `UncertaintyStatement`/`Recommendation`)**: Section 3's
+existing shapes for these two types are sufficient as-is — `UncertaintyStatement` (`briefVersionId`,
+`whatsUnknown: string[]`, `whatWouldChangeConclusion: string[]`, `whatsUndeterminable: string[]`)
+and `Recommendation` (`briefVersionId`, `decision: RecommendationDecision`, `rationale: string`)
+already match US-6/US-7 exactly. Both carry `briefVersionId`, which does not exist until Slice 9 —
+same treatment as `ProblemStatement`/`DemandSignal`/`ExistingSolution`/`GapHypothesis` before them
+(roadmap's "Brief-scoped entities defer to a `*Candidate` in-memory shape until Slice 9"
+correction): this slice returns candidate shapes, never persists these two directly.
+
+**New candidate types to add to `src/types/domain.ts`** (alongside the existing `*Candidate` types;
+implementation step, not performed here):
+
+```typescript
+/** Candidate shape for `UncertaintyStatement` (Architecture §3), minus `briefVersionId`. No
+ *  `localId` — unlike `DemandSignalCandidate`/`ExistingSolutionCandidate`, nothing downstream
+ *  references an individual uncertainty item by id; the Recommendation Engine and Slice 9 consume
+ *  the three arrays wholesale, not by index. Like `ProblemStatementCandidate`, this is a
+ *  non-negatable required element (see "Never-empty-array policy" below) — there is no
+ *  NegativeFinding path for uncertainty; `UncertaintyStatement` is not one of the four elements
+ *  Q-2 named as negatable (Section 3 `BriefElement`), so it is always constructed on success, the
+ *  same footing as ProblemStatement. */
+export interface UncertaintyStatementCandidate {
+  whatsUnknown: string[];
+  whatWouldChangeConclusion: string[];
+  whatsUndeterminable: string[];
+}
+
+/** Candidate shape for `Recommendation` (Architecture §3), minus `briefVersionId`. Also
+ *  non-negatable — `RecommendationDecision` has no "insufficient information" member; a run that
+ *  cannot produce a trustworthy recommendation fails closed (`generationFailed: true`) rather than
+ *  emitting a placeholder decision. */
+export interface RecommendationCandidate {
+  decision: RecommendationDecision;
+  rationale: string; // must reference Brief evidence — never bare/scored (Q-1, US-7 AC1)
+}
+```
+
+**Never-empty-array policy for `UncertaintyStatementCandidate` (roadmap Implementation Notes: "must
+populate all three named lists, even if some are single-item")**: the roadmap's own test wording —
+"uncertainty names ≥1 item in each of the three categories (or explicitly states none apply, per
+whatever null-representation the implementation chooses — but never omits the field)" — leaves the
+null-representation choice to this design step. Chosen representation: **every array always
+contains at least one string**; when the Uncertainty Compiler genuinely finds nothing for a
+category, it populates that category with one explicit sentinel string (e.g. `"No unresolved
+[category] were identified for this Investigation's evidence."`), never a bare `[]`. This mirrors
+`DemandConfidenceClassificationCandidate.narrative`'s "explain the absence in prose" pattern rather
+than introducing a second, competing "empty means nothing found" convention that would need its own
+UI-copy branch. `UncertaintyStatement` is never subject to `NegativeFinding` (it is not in
+`BriefElement`) — this sentinel-string convention is how "genuinely nothing to report" is expressed
+for this element, not the `NegativeFinding` mechanism.
+
+**New read helper required (gap identified by this design step): `getClaimVersionsForInvestigation`**
+
+Neither existing read helper exposes what the Uncertainty Compiler needs to detect unresolved
+contradictions: `getEvidenceForInvestigation` (Slice 5) returns flat `EvidenceItem[]` with `label`
+but no claim/stance context, and no helper currently reads `ClaimVersion` (with its embedded
+`evidence: NonEmptyArray<ClaimVersionEvidenceRef>`, carrying `stance`) back out for an
+Investigation — Slice 4's `extractClaimsAndEvidence` returns `claimVersions: ClaimVersion[]` as
+part of its own in-process `ExtractionResult`, but that result is not retained anywhere for a later
+slice to re-read. This is a genuine gap, not an oversight to route around silently:
+
+```typescript
+// getClaimVersionsForInvestigation.ts — new file, same shape/pattern as
+// getEvidenceForInvestigation.ts (Slice 5): joins claim_version_evidence -> evidence_item ->
+// source_artifact.investigation_id to scope ClaimVersion rows to one Investigation (mirroring the
+// existing investigation-scoping approach 004_claims_and_evidence.sql's own comment documents for
+// `Claim`, which carries no investigation_id column of its own), denormalizing each ClaimVersion's
+// evidence array exactly as ClaimVersion/ClaimVersionEvidenceRef (Architecture §3) already specify.
+export async function getClaimVersionsForInvestigation(
+  investigationId: string,
+  client?: PoolClient,
+): Promise<ClaimVersion[]>;
+```
+
+**Design decision: neither component calls `analyzeDemand`/`researchLandscape`/
+`generateGapHypotheses` directly — the generationFailed-collision boundary (BLOCKER-1 lesson)**
+
+Slice 6's QC pass 1 BLOCKER-1 happened because downstream code read another component's
+`generationFailed` flag and conflated "this call found nothing new" with "this call failed." The
+risk surface for that exact mistake exists here too: `DemandAnalysisResult.generationFailed`,
+`LandscapeResearchResult.generationFailed`, and `GapHypothesisGenerationResult.generationFailed`
+each mean *"my own LLM/infra call failed"* — narrower than "there is nothing to say about demand /
+landscape / gaps." If the Uncertainty Compiler or Recommendation Engine called into those three
+functions itself and then folded their `generationFailed` flags into its *own* generationFailed
+decision (e.g. `generationFailed: demandAnalysis.generationFailed || landscapeResearch.generationFailed`),
+that would be exactly the same defect class in a new location: a Slice 5/6 component's own
+infra failure would silently abort Slice 7 entirely, when the *correct* interpretation of "Demand
+Analyzer failed" in the Uncertainty Compiler's context is not "I have failed too" — it is "this is
+itself a fact worth naming as uncertainty" (US-6's "what's undeterminable from available sources"
+category exists precisely for this).
+
+Two structural decisions close this off, rather than leaving it to inline case-by-case judgment
+inside the implementation:
+
+1. **Neither component calls Slices 5/6's functions.** Following the same "optional call-time
+   parameters, not an internal fetch" decoupling the roadmap already established for
+   `generateGapHypotheses`'s `demandSignalCandidates`/`demandConfidenceClassificationCandidate`
+   inputs, both `compileUncertainty` and `generateRecommendation` receive Slices 5/6's **already-
+   computed result objects, verbatim, by their own distinct field names** — never a merged/derived
+   boolean. This means there is exactly one call site in the whole pipeline that ever reads
+   `analyzeDemand`/`researchLandscape`/`generateGapHypotheses`'s `generationFailed` fields directly
+   for their *original* meaning: Slice 8's Provenance Recorder orchestration, which invokes those
+   three functions in the first place and is the only code with the actual context to decide
+   "should the whole `GenerationRun` fail because this step failed." Slice 7 never re-derives that
+   judgment from a flag it didn't originate.
+2. **Only the Uncertainty Compiler ever re-interprets an upstream `generationFailed: true` into
+   uncertainty content; the Recommendation Engine never does this itself.** `compileUncertainty`
+   is the single place in Slice 7 that reads `demandAnalysis.generationFailed` /
+   `landscapeResearch.generationFailed` / `gapHypothesisGeneration.generationFailed` at all — and
+   it interprets each, for its OWN context, as content: an upstream `generationFailed: true` is
+   deterministically (code-level, before any LLM call — see step 2 of the orchestration below)
+   seeded into `whatsUndeterminable` as an explicit sentence naming which pipeline step failed and
+   why (`generationFailureReason`), never treated as a reason for the Uncertainty Compiler's own
+   `generationFailed` to become `true`. `generateRecommendation` does not receive the raw Slice
+   5/6 result objects' `generationFailed` fields as a decision input at all — it receives only the
+   **already-compiled** `UncertaintyStatementCandidate` (whose `whatsUndeterminable` array already
+   names any upstream failures in prose) plus the surviving candidate arrays. This means the
+   interpretation of "what does an upstream failure mean here" happens in exactly one function, is
+   testable in isolation there, and cannot silently diverge between the two Slice 7 components.
+
+`compileUncertainty`'s and `generateRecommendation`'s **own** `generationFailed` flags are reserved
+exclusively for their own failures: their own `LlmValidationError` after bounded repair, or an
+unexpected error caught by their own F-1 outer try/catch — never a blind propagation of an
+upstream component's flag.
+
+**Uncertainty Compiler — orchestration and signature**
+
+```typescript
+export interface UncertaintyCompilerInput {
+  investigationId: string;
+  problemStatementCandidates: ProblemStatementCandidate[]; // Slice 4 output — always non-empty by
+    // the time this runs (Q-2 fail-closed upstream guarantees generateBriefVersion never reaches
+    // Slice 7 with zero ProblemStatements), but read defensively, not assumed (see step 1 below)
+  evidenceItems: EvidenceItem[];       // combined original + landscape evidence — same combined
+    // array researchLandscape's step 6 and gapHypothesisGenerator's allEvidenceItems already use
+  claimVersions: ClaimVersion[];       // NEW — via getClaimVersionsForInvestigation, above
+  demandAnalysis: DemandAnalysisResult;                 // Slice 5 result, verbatim, own field name
+  landscapeResearch: LandscapeResearchResult;           // Slice 6 result, verbatim, own field name
+  gapHypothesisGeneration: GapHypothesisGenerationResult; // Slice 6 result, verbatim, own field name
+}
+
+export interface UncertaintyCompilationResult {
+  uncertaintyStatementCandidate: UncertaintyStatementCandidate;
+  /** Own failure only — never a propagation of demandAnalysis/landscapeResearch/
+   *  gapHypothesisGeneration.generationFailed (see boundary discussion above). */
+  generationFailed: boolean;
+  generationFailureReason?: string;
+}
+
+export async function compileUncertainty(
+  input: UncertaintyCompilerInput,
+): Promise<UncertaintyCompilationResult>;
+```
+
+Orchestration (F-1 outer try/catch around the entire function body, matching `analyzeDemand`/
+`researchLandscape`):
+
+1. Defensive empty-input guard, mirroring `analyzeDemand`'s empty-evidence branch even though this
+   path should be unreachable given Q-2's upstream fail-closed guarantee: if
+   `problemStatementCandidates.length === 0` and `evidenceItems.length === 0`, return
+   `generationFailed: true` with an explanatory reason, no LLM call attempted.
+2. **Deterministic, code-level seeding (not model-derived) — this is where the generationFailed
+   boundary decision above is implemented:**
+   - For each of `demandAnalysis`, `landscapeResearch`, `gapHypothesisGeneration` with
+     `generationFailed === true`, append one sentence to a `seededUndeterminable: string[]` array
+     naming the failed step and echoing its `generationFailureReason` verbatim (e.g. "Demand
+     confidence could not be assessed: <generationFailureReason>").
+   - Scan `claimVersions` for any `evidence` entry with `stance === 'contradicting'`; for each
+     `ClaimVersion` with at least one such entry, append one sentence to a
+     `seededUnknown: string[]` array naming the claim (by `text`) and noting it has contradicting
+     evidence on record (per-`ClaimVersion`, not per-evidence-entry, to avoid one heavily-cited
+     claim flooding the list).
+   - Scan `evidenceItems` for `label === 'assumption'` or `label === 'unknown'`; if any exist,
+     append one summary sentence (count + one representative excerpt) to `seededUndeterminable`,
+     not one line per item (avoids an unbounded list for a source with many low-certainty
+     excerpts).
+3. One forced-tool LLM call (`callForcedTool`, tool name `compile_uncertainty`) over
+   `problemStatementCandidates`, `evidenceItems`, `claimVersions`, the demand/landscape/gap
+   candidate summaries, and the `seededUnknown`/`seededUndeterminable` items from step 2, with an
+   explicit instruction: *the seeded items are already-identified and MUST be included verbatim (or
+   paraphrased without losing meaning) in the corresponding output array; add any further items the
+   evidence supports beyond these, but never drop a seeded item.* Schema requires all three keys
+   present (`whatsUnknown`/`whatWouldChangeConclusion`/`whatsUndeterminable`, each an array of
+   non-empty strings — may be structurally empty at the model-output level; step 5 below enforces
+   the never-empty policy). On `LlmValidationError` after bounded repair, return
+   `generationFailed: true` (own failure) — but see step 4: the seeded items are NOT lost even on
+   this failure path, since they are code-derived, not model-derived.
+4. **Fallback on own LLM failure**: if step 3 raises `LlmValidationError`, do not discard the
+   step-2 seeded items — a schema-validation failure on the *model's* elaboration is not a reason
+   to also lose the deterministic, code-computed findings. Return `generationFailed: true` (this
+   is still Slice 7's own generation failing — the model call is what failed) but this is a design
+   note for Slice 8/9, not a contradiction: per the existing fail-closed discipline (mirrors
+   `analyzeDemand`), a `generationFailed: true` result is never persisted regardless of how much
+   partial content it carries, so the seeded-items-preserved detail matters only for
+   provenance/debuggability (Slice 8's `SchemaValidationRecord.attempts`), not for output
+   correctness.
+5. On success, merge each category: `finalCategory = dedupe(seededCategory ++ modelCategory)`. If
+   the merged array for a category is empty, populate it with the one sentinel string from the
+   "Never-empty-array policy" above (`whatsUnknown`/`whatWouldChangeConclusion` realistically reach
+   this only when evidence is thin but not absent; `whatsUndeterminable` reaches it only when no
+   upstream step failed, no contradiction exists, and no low-certainty evidence exists — a
+   legitimately clean case).
+6. Return `generationFailed: false` with the merged, never-empty-per-category
+   `UncertaintyStatementCandidate`.
+7. Outer catch (F-1): `generationFailed: true`, reason from the caught error — own failure only.
+
+**Recommendation Engine — orchestration and signature**
+
+```typescript
+export interface RecommendationEngineInput {
+  problemStatementCandidates: ProblemStatementCandidate[];
+  demandAnalysis: DemandAnalysisResult;
+  landscapeResearch: LandscapeResearchResult;
+  gapHypothesisGeneration: GapHypothesisGenerationResult;
+  /** The ALREADY-COMPILED uncertainty output — the sole channel through which an upstream Slice
+   *  5/6 generationFailed is represented to the Recommendation Engine (see boundary discussion
+   *  above). This function does not read demandAnalysis.generationFailed /
+   *  landscapeResearch.generationFailed / gapHypothesisGeneration.generationFailed itself to make
+   *  its own decision — those fields are included above only so the prompt can present the
+   *  surviving candidate content (demandSignalCandidates, existingSolutionCandidates,
+   *  gapHypothesisCandidates), not so this function re-derives failure semantics from them. */
+  uncertaintyStatementCandidate: UncertaintyStatementCandidate;
+}
+
+export interface RecommendationResult {
+  recommendationCandidate: RecommendationCandidate;
+  /** Own failure only — never derived from any upstream component's generationFailed. */
+  generationFailed: boolean;
+  generationFailureReason?: string;
+}
+
+export async function generateRecommendation(
+  input: RecommendationEngineInput,
+): Promise<RecommendationResult>;
+```
+
+Orchestration (same F-1 outer try/catch, same R-4 validate-repair-fail forced-tool call):
+
+1. Defensive guard, mirroring the Uncertainty Compiler's step 1 (should be unreachable given Q-2):
+   if `problemStatementCandidates.length === 0`, return `generationFailed: true`.
+2. One forced-tool LLM call (`callForcedTool`, tool name `generate_recommendation`) over
+   `problemStatementCandidates`, `demandAnalysis.demandConfidenceClassificationCandidate`,
+   `demandAnalysis.demandSignalCandidates`, `landscapeResearch.existingSolutionCandidates`,
+   `gapHypothesisGeneration.gapHypothesisCandidates`, and the full
+   `uncertaintyStatementCandidate` (all three arrays), producing exactly one `decision` (schema
+   enum `'Approve' | 'Reject' | 'Watch'`) and one `rationale` string. Prompt instructions,
+   mirroring `demandAnalyzer.ts`'s existing numeric-confidence guard: (a) rationale must reference
+   specific evidence/signals/gaps by content, never a bare label and never a system-generated
+   numeric score (Q-1/US-7 AC1); (b) rationale must not adopt an unverifiable numeric claim from
+   evidence (e.g. a source's "$50M market" figure) as an established fact — if such a figure
+   appears only in `assumption`/`unknown`-labeled evidence or as an uncorroborated claim, the
+   rationale may reference that the claim exists and is unverified, but must not restate the number
+   itself as validated (roadmap Slice 7 Edge Case row).
+3. Schema validation (R-4): enum membership + non-empty `rationale` string. No further per-entity
+   citation-index resolution is needed here (unlike `analyzeDemand`/`researchLandscape`/
+   `generateGapHypotheses`): `rationale` is a single free-text narrative field, not an array of
+   indexed, individually-citable sub-entities, so the fail-closed per-entity-drop pattern (F-2)
+   does not apply — this mirrors `DemandConfidenceClassificationCandidate.narrative`'s existing
+   treatment (narrative fields are validated for non-emptiness, not decomposed into a citation
+   index array). Content-level verification that the rationale genuinely references specific
+   evidence (beyond non-emptiness) is a prompt-engineering/PR-review-time concern, not a mechanical
+   schema check this slice invents an unsourced heuristic (e.g. a minimum length) to approximate —
+   consistent with this project's "no unsourced numeric constants" rule.
+4. On `LlmValidationError` after bounded repair, return `generationFailed: true` with a
+   `RecommendationCandidate` fallback of `decision: 'Watch'` (the most conservative default — never
+   `Approve`/`Reject` on a result the system does not trust) and a `rationale` stating the
+   validation failure explicitly. This fallback object exists only for a uniform return shape
+   (mirrors `analyzeDemand`'s `Insufficient`-default-on-failure pattern) — Slice 9 never persists it
+   because `generationFailed: true` short-circuits Brief assembly the same way an unestablished
+   `ProblemStatement` does (Section 4 `generateBriefVersion`).
+5. No `negativeFindingSignal` field: `RecommendationDecision` is a closed three-value union with no
+   "none/unknown" member, and `Recommendation` is not one of `BriefElement`'s four negatable
+   elements (Section 3) — same non-negatable footing as `ProblemStatement`/
+   `UncertaintyStatement`. A `Recommendation` is always produced on success, never recorded as an
+   explicit absence.
+6. Outer catch (F-1): `generationFailed: true`, `decision: 'Watch'` fallback, reason from the
+   caught error.
+
+**Files (Forge implementation — not produced by this design step):**
+- `src/types/domain.ts` — add `UncertaintyStatementCandidate`, `RecommendationCandidate` (types
+  only, above)
+- `src/services/getClaimVersionsForInvestigation.ts` — new; `getClaimVersionsForInvestigation`
+  (above), same helper pattern as `getEvidenceForInvestigation.ts`
+- `src/services/uncertaintyCompiler.ts` — new; `compileUncertainty` (above)
+- `src/services/recommendationEngine.ts` — new; `generateRecommendation` (above)
+- Corresponding `*.test.ts` and `*.validation.test.ts` files for both new services (mirroring
+  `landscapeResearcher.test.ts`/`landscapeResearcher.validation.test.ts`'s split), plus a test on
+  `getClaimVersionsForInvestigation` confirming investigation-scoping and stance denormalization.
+
+**Out of scope for Slice 7 (explicit, not silently deferred):**
+- Persisting `UncertaintyStatement`/`Recommendation` rows — both stay candidate-only in memory,
+  exactly like every other Brief-scoped Slice 4–6 output; Slice 9 (Brief Assembler) persists them
+  as embedded fields on the new `BriefVersion` (`uncertaintyStatement`/`recommendation`, Section 3
+  — not id-array-referenced like `demandSignalIds`/`existingSolutionIds`, since neither candidate
+  carries a `localId` — see "no `localId`" note above).
+- `GenerationStep`/`SchemaValidationRecord` provenance wrapping around these two components' forced-
+  tool calls — Slice 8 (Provenance Recorder) wraps this slice's LLM calls, same as it wraps Slices
+  4/5/6's.
+- Wiring `compileUncertainty`'s and `generateRecommendation`'s inputs into an actual pipeline call
+  (assembling `UncertaintyCompilerInput`/`RecommendationEngineInput` from the real outputs of
+  Slices 4–6 for one `GenerationRun`, and sequencing Uncertainty Compiler before Recommendation
+  Engine so the latter can consume the former's output) — Slice 8's orchestration decision, per the
+  same "wiring is Slice 8's concern, not this slice's" split already applied to
+  `generateGapHypotheses`'s optional demand-signal parameters (Section 1.7).
+- A mechanical/heuristic check that `Recommendation.rationale` genuinely cites specific evidence
+  (beyond non-emptiness and prompt instruction) — no unsourced length/keyword heuristic is
+  introduced here; if Forge/Danny later wants one, it needs a named owner and PROVISIONAL marker,
+  added as its own change.
+
+---
+
 ## 2. Components
 
 Each component is a **service responsibility boundary**, not a technology binding. In candidate
