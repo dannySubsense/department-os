@@ -33,6 +33,7 @@ describe('runMigrations', () => {
         '002_nullable_submission_id.sql',
         '003_source_artifact_resolved_content.sql',
         '004_claims_and_evidence.sql',
+        '005_web_search_query_results.sql',
       ]);
 
       const column = await db.query(
@@ -114,6 +115,7 @@ describe('runMigrations', () => {
         '002_nullable_submission_id.sql',
         '003_source_artifact_resolved_content.sql',
         '004_claims_and_evidence.sql',
+        '005_web_search_query_results.sql',
       ]);
 
       // The intended triggers must exist on THEIR OWN tables — scoped via tgrelid resolved
@@ -173,6 +175,7 @@ describe('runMigrations', () => {
         '002_nullable_submission_id.sql',
         '003_source_artifact_resolved_content.sql',
         '004_claims_and_evidence.sql',
+        '005_web_search_query_results.sql',
       ]);
 
       const after = await db.query(

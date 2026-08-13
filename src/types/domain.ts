@@ -207,6 +207,82 @@ export interface DemandConfidenceClassificationCandidate {
   };
 }
 
+// ---- Landscape & Gap: searchWeb adapter boundary (Architecture §1.6/§4, Slice 6) ----
+
+/** Provider-level searchWeb-adapter-call failure — Architecture §1.6 item 1. Distinct from
+ *  WebSearchResult: this means no result set was ever produced to iterate, not that an individual
+ *  result URL's retrieval failed. */
+export interface QueryLimitation {
+  id: string;
+  webSearchQueryId: string; // the WebSearchQuery this limitation is attached to — a
+  // WebSearchQuery row is created even when the search call fails, so the attempt itself is
+  // never dropped (Architecture §1.6 "Persistence — provably not dropped")
+  reason: string; // e.g. "provider error: 429 rate limited", "search API request timed out",
+  // "malformed query rejected by provider"
+  occurredAt: string; // client-captured — never trusted from the provider
+}
+
+/** Return shape of the searchWeb adapter call, before any result-URL retrieval is attempted
+ *  (Architecture §1.6 item 1). */
+export interface SearchWebAdapterResult {
+  outcome: 'succeeded' | 'query-limited';
+  query: string;
+  performedAt: string; // client-captured
+  selectedResultUrls: string[]; // present when outcome === 'succeeded'; an empty array here is a
+  // legitimate, non-limited "zero results found" outcome — categorically different from
+  // 'query-limited'
+  /** Set whenever ANY provider-level failure/limitation shape was observed. A single `web_search`
+   *  tool call may issue up to 5 searches (`max_uses: 5`), each producing its own
+   *  `web_search_tool_result` content block — some blocks may succeed while others error. This is
+   *  set on `outcome: 'query-limited'` (no URLs were ever produced, `selectedResultUrls: []`) AND
+   *  on `outcome: 'succeeded'` when a PARTIAL failure occurred — some blocks contributed URLs to
+   *  `selectedResultUrls` while at least one other block errored. Partial success must never look
+   *  like clean success (Q-6 AC5): callers MUST check this field regardless of `outcome`, not just
+   *  branch on `outcome`. Absent entirely only on a fully clean success with no block-level
+   *  failures. */
+  queryLimitation?: QueryLimitation;
+}
+
+/** One retrieval attempt for one selected result URL from a successful WebSearchQuery — exactly
+ *  one row per URL, success or failure alike (Architecture §1.6 "Persistence — provably not
+ *  dropped"). Classification rule (blocked = deliberate, attributable refusal; failed = could not
+ *  complete / no refusal signal obtained) is specified in full, with a worked classification
+ *  table, in Architecture §1.6 item 3. */
+export interface WebSearchResult {
+  url: string;
+  retrievedAt: string; // client-captured completion timestamp for this attempt — never a
+  // provider-supplied value (e.g. not Anthropic's page_age, which is a freshness estimate, not a
+  // retrieval timestamp — DDR-0001 Row 9 evidence)
+  status: 'retrieved' | 'blocked' | 'failed';
+  failureReason?: string; // populated when status !== 'retrieved'; see Architecture §1.6's
+  // classification table for the exact value per cause
+  sourceArtifactId?: string; // set only when status === 'retrieved'; the SourceArtifact
+  // (origin: 'landscape-research') this result produced, which then flows through the existing
+  // EvidenceItem/ClaimVersion/ExistingSolution/GapHypothesis citation model unchanged
+}
+
+/** One record per web search the Landscape Researcher performs (Q-6, binding). Preserves query,
+ *  every retrieved-or-attempted URL, retrieval timestamps, and search scope/limitations —
+ *  including failed or blocked retrievals, which are recorded, never silently dropped.
+ *  `queryLimitation` (Architecture §1.6 addendum) is the searchWeb-adapter-boundary failure path:
+ *  set iff the provider's search call itself failed to produce a result set, in which case
+ *  `results` is `[]` by construction (there was nothing to retrieve) — categorically distinct
+ *  from a successful call that legitimately returned zero results (queryLimitation absent,
+ *  results: [] is then simply "nothing found," not "the search failed"). */
+export interface WebSearchQuery {
+  id: string;
+  investigationId: string;
+  generationRunId: string; // ties the search to the GenerationRun that performed it
+  query: string;
+  performedAt: string;
+  results: WebSearchResult[];
+  scopeNote?: string; // e.g. result-count cap, date range, or other scope actually applied
+  limitations: string[]; // e.g. "rate-limited after 3 queries", "no results past page 1"
+  queryLimitation?: QueryLimitation; // Architecture §1.6 — set iff the searchWeb adapter call
+  // itself failed/errored (provider outage, rate limit, quota/auth failure, malformed-query
+  // rejection); absent on every successful adapter call regardless of result count
+}
+
 /** Candidate shape for `PersonalPullNote` (Architecture §3), minus `id`/`briefVersionId`. `label`
  *  is a literal type fixed to `'contextual-motivation'` — a type-level guarantee, not a
  *  convention: no other string value is assignable to this field, so Personal Pull content cannot

@@ -6,7 +6,7 @@ import Anthropic from '@anthropic-ai/sdk';
  *  — every component that needs literal-union- or NonEmptyArray-constrained output from the model
  *  goes through `callForcedTool` below, never free-text generation (DDR-0001's spike confirmed
  *  free-text drifts off-schema). */
-const MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-5-20250929';
+export const MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-5-20250929';
 
 /** R-4 (Danny, binding, Architecture §3/§4): at most one repair attempt, i.e. at most two total
  *  generation attempts per call (original + one repair). Configuration, not hardcoded per call
@@ -15,7 +15,11 @@ const MAX_REPAIR_ATTEMPTS = 1;
 
 let cachedClient: Anthropic | null = null;
 
-function getClient(): Anthropic {
+/** Exported so other call sites needing the raw Anthropic client (e.g. `searchWebAdapter.ts`'s
+ *  provider-boundary `web_search` server-tool call, which is not a forced-tool structured-output
+ *  call and so does not go through `callForcedTool`) share the same cached client/API-key
+ *  handling rather than re-implementing it. */
+export function getClient(): Anthropic {
   if (!cachedClient) {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {

@@ -17,9 +17,18 @@
 - [ ] Slice 12: Validity/Invalidation Service + Decision-History Banner — PENDING
 
 ## Current
-Slice: 6 starting — Landscape Researcher + Gap Hypothesis Generator
-Step: pre-slice — DDR-0001 Row 9 PROVISIONAL (web-search blocked-retrieval path) must be resolved before/during this slice
+Slice: 6 in progress — searchWeb failure boundary COMPLETE, Landscape Researcher + Gap Hypothesis Generator next
+Step: commit searchWeb boundary increment to PR #6, then continue Slice 6
 Last updated: 2026-08-13
+
+## Fix Attempts (Slice 6 — searchWeb failure boundary)
+| Test/File | Attempts | Last Error |
+|-----------|----------|------------|
+| Architecture design (§1.6) | 1 | @architect designed the searchWeb adapter contract per Danny's explicit direction: failure classification lives at the adapter boundary, not on Anthropic provider behavior. Extracted SSRF-hardened fetch machinery into shared ssrfGuardedFetch.ts; retrieved/blocked/failed classification table; not-dropped persistence invariant; migration 005. |
+| Implementation + QC pass 1 | 1 | 145/145 tests passing (post 3-item fix-round: type error, unapplied migration, and a red herring ipv4ToInt failure that turned out to be the TEST's own int32-overflow arithmetic, not a code bug — SSRF extraction confirmed byte-faithful vs Slice 4). QC pass 1: FAIL — 6 blocking findings: F1 searchWebAdapter's `.find()` silently dropped URLs/limitations from search blocks 2-5; F2 unguarded response.content could throw; F3 duplicate URLs caused a UNIQUE violation that rolled back and lost the entire search record; F4 SourceArtifact insert outside the persistence transaction (orphan-row risk); F5 unreachable dead-code assertion; F6 malformed-URL error message falsely claimed a protocol cause. |
+| Fix round 1 + QC pass 2 | 1 | F1/F3/F4/F5/F6 confirmed fixed via live probes. F2 NOT fully fixed — 3 remaining malformed-response shapes (null response, null content item, item missing url) could still throw or, worse, silently emit `null` into selectedResultUrls. New finding N1: that null-url leak chained into a second total-loss bug (NOT NULL violation rolling back the whole record) — same failure class as F3, different route. N2: architecture doc still said queryLimitation was populated "iff query-limited," now false since F1 allows partial-success+limitation. N3: dedup fix (F3) contradicted the literal not-dropped invariant text in 02-ARCHITECTURE.md §1.6 item 4 — escalated to Danny rather than silently resolved. N4: classification table row not split to match F6's two distinct messages. |
+| Danny's ruling (N3) | — | Keep deduplication. Invariant applies to the deduplicated list: `persistedResults.length === deduplicatedSelectedResultUrls.length`. Provider-returned duplicates collapse before retrieval and must not create duplicate audit records. Update 02-ARCHITECTURE.md and INVARIANTS.md accordingly. |
+| Fix round 2 + QC pass 3 | 1 | F2 fully closed (guards null response, drops malformed/url-less items, folds drop-count into queryLimitation so it's never silently invisible). N1 resolved as a structural consequence, independently re-verified via fuzzing 9 invalid url-value shapes through the adapter. N2/N4 doc fixes applied. N3: docs/INVARIANTS.md checked directly — contains no web-search-specific invariant text (QC's pass-2 line reference was a misread); the only contradicting text was in 02-ARCHITECTURE.md, now fixed to match Danny's ruling. QC pass 3: PASS — closes DDR-0001 Row 9 (PROVISIONAL → PASS). 151/151 tests, tsc clean. |
 
 ## Fix Attempts (Slice 5)
 | Test/File | Attempts | Last Error |

@@ -176,6 +176,213 @@ becomes a `SourceArtifact`, it flows through the **existing** `EvidenceItem` →
 `ClaimVersion`/`ExistingSolution`/`GapHypothesis` provenance chain unchanged — no second citation
 model is introduced. See Section 3 for exact schemas and Section 4 for the `searchWeb` contract.
 
+### 1.6 `searchWeb` adapter boundary, controlled-retrieval classification, and non-dropped
+persistence (Danny's binding direction; resolves DDR-0001 Row 9 PROVISIONAL, owner: Ledger)
+
+**Binding framing (Danny, explicit)**: the product contract for classifying web-search result
+retrieval lives at the `searchWeb` **adapter boundary** — code this architecture and its Forge
+slice own — never inside Anthropic's (or any other provider's) built-in search-tool behavior.
+DDR-0001 Row 9 could not provoke a genuine blocked/failed retrieval against the live Anthropic API
+to confirm its documented `WebSearchToolResultError` surfaces cleanly; that is not a gap this
+architecture tries to close by coaxing provider behavior (not reliably reproducible, out of
+scope). Instead, the classification is moved to a boundary this codebase controls end to end: a
+provider-agnostic `searchWeb` adapter contract, plus a controlled, SSRF-hardened retrieval path
+for every result URL the provider hands back. Whichever runtime/provider DDR-0001 selects for
+search plugs into this adapter; the classification behavior does not depend on that provider
+implementing anything beyond "return result URLs, or fail."
+
+**Existing SSRF-hardened fetch machinery (Slice 4/checkpoint-correction) — reusable, but not yet
+factored for reuse.** `src/services/resolveSourceArtifact.ts` already implements every primitive
+the controlled retrieval path below needs: protocol allowlisting (http/https only), private/
+loopback/CGNAT/link-local/reserved/multicast IPv4 blocking, IPv4-mapped IPv6 decoding before the
+same IPv4 check, a custom DNS `lookup` applied per-redirect-hop (closing the resolve-then-connect
+TOCTOU gap), manual redirect-chain following with the guard re-applied at every hop, a streaming
+response-size cap, and a request timeout. **All of it is currently module-private** —
+`fetchWithGuards`, `safeLookup`, `isDisallowedIp`, `decodeMappedIpv4Hex`, `inIpv4Cidr`,
+`ipv4ToInt`, and the `MAX_RESPONSE_BYTES`/`MAX_REDIRECTS`/`FETCH_TIMEOUT_MS` constants are neither
+exported nor located outside `resolveSourceArtifact.ts` — so today there is nothing to import.
+This slice's implementation work therefore includes an explicit extraction step, not a
+reimplementation:
+
+- Extract the network-guard primitives (everything from `isDisallowedIp` through `fetchWithGuards`,
+  `safeLookup`, and the three timing/size constants) out of `resolveSourceArtifact.ts` into a new
+  shared module, `src/services/ssrfGuardedFetch.ts`, exporting them.
+- `resolveSourceArtifact.ts` imports from the new shared module instead of defining these
+  primitives locally — no behavior change to Source Resolver, pure move.
+- The new controlled-retrieval path (below) imports the same shared module. Two call sites, one
+  hardened implementation — a fix to the SSRF guard (e.g. a new disallowed-range case) applies to
+  both Source Resolver and Landscape Researcher retrieval automatically, rather than requiring the
+  same fix to be independently re-applied twice.
+- `MIN_CONTENT_LENGTH` (the paywall/JS-shell content-length heuristic) stays specific to Source
+  Resolver's four-way `SourceResolution.status` and is **not** moved into the shared module as-is;
+  the controlled retrieval path below reuses the same heuristic value by importing the constant,
+  but maps its outcome onto the three-way `blocked`/`failed`/`retrieved` classification defined
+  next, not onto `SourceResolution`'s four-way status (the two call sites classify outcomes into
+  different, non-interchangeable enums for different consumers).
+
+**1. `searchWeb` adapter contract — provider-level search-call failure ("query limitations")**
+
+A `searchWeb` call has two possible outcomes at the adapter boundary, before any individual result
+URL is ever touched: the provider's search call itself succeeded (it returned zero or more result
+URLs to consider), or the search call itself failed/errored (no result set was ever produced —
+provider outage, rate limit, quota/auth failure, malformed-query rejection, etc.). The latter is a
+**query limitation**, recorded explicitly rather than surfaced as an empty, indistinguishable
+"zero results" outcome (Q-6 AC5 — "record search scope and limitations ... rather than silently
+omitting them"):
+
+```typescript
+/** The searchWeb adapter's own outcome, decided at the adapter boundary — never inferred from
+ *  provider-SDK-specific error shapes leaking into the rest of the pipeline. `query-limited` means
+ *  the provider's search call itself failed to produce a result set; it is categorically distinct
+ *  from a successful call that legitimately returned zero results (see selectedResultUrls: []
+ *  below, which is NOT a query limitation). */
+interface QueryLimitation {
+  id: string;
+  webSearchQueryId: string;          // the WebSearchQuery this limitation is attached to — a
+                                      // WebSearchQuery row is created even when the search call
+                                      // fails, so the attempt itself is never dropped (see
+                                      // Persistence, below)
+  reason: string;                    // e.g. "provider error: 429 rate limited", "search API
+                                      // request timed out", "malformed query rejected by provider"
+  occurredAt: string;                // client-captured — never trusted from the provider
+}
+
+/** Return shape of the searchWeb adapter call, before any result-URL retrieval is attempted. */
+interface SearchWebAdapterResult {
+  outcome: 'succeeded' | 'query-limited';
+  query: string;
+  performedAt: string;               // client-captured
+  selectedResultUrls: string[];      // present when outcome === 'succeeded'; an empty array here
+                                      // is a legitimate, non-limited "zero results found" outcome —
+                                      // categorically different from 'query-limited'
+  queryLimitation?: QueryLimitation; // populated when outcome === 'query-limited', OR when
+                                      // outcome === 'succeeded' on a partial-success case where
+                                      // some but not all search blocks failed (URLs were still
+                                      // collected from the blocks that succeeded); reason +
+                                      // occurredAt populated, id assigned on persistence
+}
+```
+
+**2. Controlled retrieval path — per-selected-URL classification**
+
+For every URL in `selectedResultUrls` on a `'succeeded'` adapter result, the Landscape Researcher
+runs a controlled retrieval attempt through the shared `ssrfGuardedFetch` module and classifies the
+outcome into exactly one of three states — extending, not replacing, the `WebSearchResult` shape
+already defined in Section 3:
+
+```typescript
+/** One retrieval attempt for one selected result URL — exactly one WebSearchResult row per URL
+ *  in SearchWebAdapterResult.selectedResultUrls, success or failure alike (see Persistence). */
+interface WebSearchResult {
+  url: string;
+  retrievedAt: string;               // client-captured completion timestamp for this attempt —
+                                      // never a provider-supplied value (e.g. not Anthropic's
+                                      // page_age, which is a freshness estimate, not a retrieval
+                                      // timestamp — DDR-0001 Row 9 evidence)
+  status: 'retrieved' | 'blocked' | 'failed';
+  failureReason?: string;            // populated for status !== 'retrieved'; see classification
+                                      // rule below for what goes in this field for each status
+  sourceArtifactId?: string;         // set only when status === 'retrieved'; the SourceArtifact
+                                      // (origin: 'landscape-research') this result produced
+}
+```
+
+**3. Blocked vs. failed — the principled, testable distinction**
+
+The two non-`retrieved` states are not interchangeable "something went wrong" buckets. They are
+kept distinct because they mean different things about *why* material is unavailable, and because
+`03-UI-SPEC.md`'s `SearchScopeNotice` (Slice 6/10) needs to describe the two differently to a human
+reviewer rather than collapsing them into one undifferentiated failure line. The dividing line:
+
+> **`blocked`** = a deliberate, attributable refusal was obtained — something (the origin server, or
+> this system's own network policy) affirmatively said no, with an identifiable reason.
+>
+> **`failed`** = no attributable refusal was obtained — the operation could not be completed at all,
+> or the target does not exist/work, with no signal that access was deliberately withheld.
+
+Concretely, classified by the shared retrieval module's outcome:
+
+| Classification | Triggers | `failureReason` example |
+|---|---|---|
+| `blocked` | HTTP `401` or `403` | `"HTTP 403 Forbidden"` |
+| `blocked` | HTTP `451` (legal/regulatory unavailability) | `"HTTP 451 Unavailable For Legal Reasons"` |
+| `blocked` | 2xx response, but body length below the shared `MIN_CONTENT_LENGTH` heuristic (paywall/login-wall/JS-only render — same signal `resolveSourceArtifact.ts` uses for `reachable-no-content`, mapped here onto `blocked` rather than a four-way status, since for search-result retrieval "content withheld" reads as blocked, not merely content-free) | `"Response returned successfully but contained little or no extractable text — likely a paywall, login wall, or JS-only render"` |
+| `blocked` | `ssrfGuardedFetch` rejects the destination before any request left the process (`EBLOCKEDHOST` — private/loopback/CGNAT/reserved-range target) | `"Blocked by network policy: disallowed network address"` |
+| `failed` | DNS resolution failure | `"DNS resolution failed for '<host>'"` |
+| `failed` | Connection error/reset, or request timeout (`AbortError`) | `"Request timed out after <FETCH_TIMEOUT_MS>ms"` |
+| `failed` | Response exceeded the shared `MAX_RESPONSE_BYTES` cap | `"Response exceeded maximum size of <MAX_RESPONSE_BYTES> bytes"` |
+| `failed` | Redirect chain exceeded `MAX_REDIRECTS`, or a redirect `Location` is invalid/unsupported-protocol | `"Too many redirects"` / `"Invalid redirect location: <value>"` |
+| `failed` | Any other non-2xx, non-{401,403,451} HTTP status (e.g. `404`, `500`, `502`) | `"HTTP 404 Not Found"` |
+| `failed` | Malformed URL — the selected result's URL string could not be parsed at all | `"Malformed URL — could not be parsed: '<value>'"` |
+| `failed` | Unsupported protocol — the selected result's URL parses, but its scheme is not http/https | `"Unsupported URL protocol '<value>' — only http/https are allowed."` |
+
+**Explicitly out of scope for this MVP (stated, not silently omitted)**: robots.txt-disallowed
+signals are not implemented — this MVP does no robots.txt fetch/parse; if a future slice adds one,
+a robots-disallowed rejection is a `blocked` case per the rule above (a deliberate, attributable
+refusal), and this table gains a row then, not now. HTTP `429` (rate-limited) is classified `failed`
+here — the *retrieval* being rate-limited is a could-not-complete condition on this attempt, not a
+deliberate content-access refusal; this is distinct from the *search-call* itself being rate-limited
+at the adapter boundary, which is a `QueryLimitation` (item 1, above), not a `WebSearchResult`.
+
+This rule is unit-testable directly: `classifyRetrievalOutcome(outcome: ssrfGuardedFetch's raw
+result or thrown error)` is a pure function from a bounded set of inputs (HTTP status code, or one
+of the shared module's typed error conditions) to `{ status, failureReason }` — every row in the
+table above is one test case, with no reliance on live network behavior.
+
+**4. Persistence — provably not dropped**
+
+Per this project's Research Data Integrity discipline ("never silently discard bytes; assert
+`len(cached) == len(source)`, or carry a first-class flag into every downstream table"), an ordered,
+deduplicated `selectedResultUrls` list is defined **before** retrieval begins (case-sensitive
+exact-match dedup — plausible because the adapter aggregates URLs across up to 5
+`web_search_tool_result` blocks per turn; see item 1). Provider-returned duplicates are collapsed
+at this point and must **not** create duplicate audit records downstream. The not-dropped
+invariant applies to this deduplicated list: each unique selected URL must produce exactly one
+`WebSearchResult` record, success or failure alike (including `blocked` and `failed` attempts) —
+never a silently-shorter results array, and never more than one record per unique URL. Concretely:
+
+- `WebSearchQuery` and its `results: WebSearchResult[]` (and, on the query-limited path, its
+  `queryLimitation`) are persisted together, in one transaction, once all retrieval attempts for
+  that query have settled (all attempts run with the existing per-attempt `FETCH_TIMEOUT_MS`
+  bound, so this is bounded, not open-ended).
+- Before that transaction commits, the implementation asserts
+  `persistedResults.length === deduplicatedSelectedResultUrls.length` (mirroring the "assert
+  `len(cached) == len(source)`" discipline directly, applied to the deduplicated list) — a
+  mismatch is a programming-error-level defect (e.g. an attempt that threw outside the
+  classification path and was swallowed rather than resolving to a `failed` `WebSearchResult`) and
+  must throw rather than persist a truncated array. This is a code-level invariant this Forge
+  slice implements and tests directly, not a database constraint alone.
+- At the schema level, `web_search_result` (new table, migration `005_web_search_query_results.sql`
+  — next number after `004_claims_and_evidence.sql`) enforces: `web_search_query_id` NOT NULL
+  REFERENCES `web_search_query(id)`; `url` NOT NULL; `status` NOT NULL CHECK IN
+  `('retrieved','blocked','failed')`; `retrieved_at` NOT NULL (client-captured, always present
+  regardless of outcome); `failure_reason` NOT NULL exactly when `status <> 'retrieved'` (a CHECK
+  constraint, not app-layer-only); `source_artifact_id` REFERENCES `source_artifact(id)`, NOT NULL
+  exactly when `status = 'retrieved'`; UNIQUE `(web_search_query_id, url)` — a URL cannot silently
+  produce two divergent records for the same query. `web_search_query` itself carries `id`,
+  `investigation_id` NOT NULL REFERENCES `investigation(id)`, `generation_run_id` NOT NULL
+  REFERENCES `generation_run(id)`, `query` NOT NULL, `performed_at` NOT NULL, `scope_note`
+  nullable, `limitations` (text array, may be empty), and a `query_limitation_id` nullable
+  REFERENCES a `query_limitation(id)` row (the `QueryLimitation` type above) — nullable because
+  most queries succeed and carry no limitation, populated exactly when `outcome ===
+  'query-limited'`. `query_limitation` carries `id`, `web_search_query_id` NOT NULL REFERENCES
+  `web_search_query(id)`, `reason` NOT NULL, `occurred_at` NOT NULL. Both `web_search_query` and
+  `web_search_result` follow this doc set's existing append-only pattern (Section 5) — immutable
+  once persisted, via the same `BEFORE UPDATE OR DELETE` trigger pattern `004_claims_and_evidence.sql`
+  already established; a corrected/retried search is a new `WebSearchQuery` row, never an edit to
+  an existing one.
+- `WebSearchQuery`/`WebSearchResult`/`QueryLimitation` are **not** Brief-scoped entities — none of
+  the three carries a `briefVersionId` (Section 3, existing shape) — so, per the roadmap's Slice
+  4/5–7 correction note (Brief-scoped entities defer to a `*Candidate` in-memory shape until Slice
+  9), that deferral does **not** apply here: these three are `investigationId`/`generationRunId`-
+  scoped, exactly like `GenerationRun`/`GenerationStep`, and are persisted directly by Slice 6, not
+  carried as a candidate shape into Slice 9.
+- This closes DDR-0001 Row 9's PROVISIONAL flag: the classification and non-drop guarantee are now
+  a property of this codebase's own adapter boundary and persistence layer, independently
+  verifiable by unit test, rather than a hoped-for behavior of a specific provider's SDK.
+
+---
+
 ---
 
 ## 2. Components
@@ -458,7 +665,12 @@ interface PersonalPullNote {
 
 /** One record per web search the Landscape Researcher performs (Q-6, binding). Preserves query,
  *  every retrieved-or-attempted URL, retrieval timestamps, and search scope/limitations —
- *  including failed or blocked retrievals, which are recorded, never silently dropped. */
+ *  including failed or blocked retrievals, which are recorded, never silently dropped.
+ *  `queryLimitation` (Section 1.6 addendum) is the searchWeb-adapter-boundary failure path: set
+ *  iff the provider's search call itself failed to produce a result set, in which case `results`
+ *  is `[]` by construction (there was nothing to retrieve) — categorically distinct from a
+ *  successful call that legitimately returned zero results (queryLimitation absent, results: []
+ *  is then simply "nothing found," not "the search failed"). */
 interface WebSearchQuery {
   id: string;
   investigationId: string;
@@ -468,13 +680,37 @@ interface WebSearchQuery {
   results: WebSearchResult[];
   scopeNote?: string;                // e.g. result-count cap, date range, or other scope actually applied
   limitations: string[];             // e.g. "rate-limited after 3 queries", "no results past page 1"
+  queryLimitation?: QueryLimitation; // Section 1.6 — set iff the searchWeb adapter call itself
+                                      // failed/errored (provider outage, rate limit, quota/auth
+                                      // failure, malformed-query rejection); absent on every
+                                      // successful adapter call regardless of result count
 }
 
+/** Provider-level searchWeb-adapter-call failure — Section 1.6. Distinct from WebSearchResult:
+ *  this means no result set was ever produced to iterate, not that an individual result URL's
+ *  retrieval failed. */
+interface QueryLimitation {
+  id: string;
+  webSearchQueryId: string;
+  reason: string;                    // e.g. "provider error: 429 rate limited", "search API
+                                      // request timed out", "malformed query rejected by provider"
+  occurredAt: string;                // client-captured — never trusted from the provider
+}
+
+/** One retrieval attempt for one selected result URL from a successful WebSearchQuery — exactly
+ *  one row per URL, success or failure alike (Section 1.6 "Persistence — provably not dropped").
+ *  Classification rule (blocked = deliberate, attributable refusal; failed = could not complete /
+ *  no refusal signal obtained) is specified in full, with a worked classification table, in
+ *  Section 1.6 item 3 — not restated here. */
 interface WebSearchResult {
   url: string;
-  retrievedAt: string;
+  retrievedAt: string;               // client-captured completion timestamp for this attempt —
+                                      // never a provider-supplied value (e.g. not Anthropic's
+                                      // `page_age`, which is a freshness estimate, not a retrieval
+                                      // timestamp — DDR-0001 Row 9 evidence)
   status: 'retrieved' | 'blocked' | 'failed';
-  failureReason?: string;            // populated when status !== 'retrieved'
+  failureReason?: string;            // populated when status !== 'retrieved'; see Section 1.6's
+                                      // classification table for the exact value per cause
   sourceArtifactId?: string;         // set only when status === 'retrieved'; the SourceArtifact
                                       // (origin: 'landscape-research') this result produced, which
                                       // then flows through the existing EvidenceItem/ClaimVersion/
@@ -750,6 +986,19 @@ function searchWeb(input: {
 // SourceArtifact with origin: 'landscape-research', then cited by ExistingSolution/GapHypothesis
 // through the existing EvidenceItem chain — no separate citation path. Failed or blocked
 // retrievals are recorded on WebSearchResult, never dropped.
+//
+// Internally (Section 1.6, addendum — resolves DDR-0001 Row 9): (1) calls the searchWeb adapter,
+// which returns SearchWebAdapterResult — outcome 'succeeded' (with selectedResultUrls, possibly
+// empty) or 'query-limited' (with a QueryLimitation, no result set was ever produced); (2) on
+// 'query-limited', persists WebSearchQuery with results: [] and queryLimitation set, and returns
+// immediately — no retrieval is attempted; (3) on 'succeeded', first dedupes selectedResultUrls
+// (provider-returned duplicates collapsed before retrieval, so they never create duplicate audit
+// records), then runs one controlled retrieval attempt per deduplicated URL through the shared
+// ssrfGuardedFetch module (extracted from resolveSourceArtifact.ts's existing SSRF-hardened fetch
+// machinery — Section 1.6), classifies each into WebSearchResult.status via the blocked/failed
+// rule in Section 1.6 item 3, and persists exactly one WebSearchResult per unique selected URL
+// (including blocked and failed attempts) in the same transaction as the WebSearchQuery row,
+// asserting persistedResults.length === deduplicatedSelectedResultUrls.length before commit.
 
 // Source Resolver
 function resolveSourceArtifact(sourceArtifactId: string): Promise<SourceResolution>;
@@ -951,6 +1200,7 @@ independent verification; that UI change is not made by this document and is fla
 | **Demand-confidence-to-negative-finding traceability link** | `DemandConfidenceClassification.negativeFindingRef?: string` holds the `id` of the `NegativeFinding` row (element: `'demand-signal-type'`) for this `BriefVersion`, populated if and only if that row exists (`demandSignalIds` empty — no demand signals found at all); never derived from `level` or `citedDemandSignalIds` | PR-review traceability fix, B-1 (unresolvable ref) and B-2 (wrong/self-contradictory trigger) corrected this revision — `NegativeFinding` gained an `id` field, and the trigger is now row-existence, not an inference from a classification field that can legitimately be empty for unrelated reasons |
 | **Fail-closed pipeline (no partial Brief)** | `generateBriefVersion` either returns a `BriefVersion` with all seven elements populated (Problem Statement non-negatable — at least one valid record required; the other four negatable per the row above), or does not produce one at all (Investigation moves to `blocked` or `generation-failed`, per which failure occurred) | Satisfies US-1 AC3 and the "no Brief with no evidentiary basis" requirement; the `blocked`/`generation-failed` split closes G-13; PR-review corrected (this revision) to restore Problem Statement as non-negatable per Q-2 |
 | **Open discriminator over closed enum, where the domain evidence says so** | `SourceArtifactType`, `SubmissionOrigin` typed as `'known-literal' \| (string & {})` rather than a bare `\| string` | Decision 1.1, corrected per G-2 — matches the pattern Requirements already mandates for demand-signal "other" while actually retaining literal-type value in tooling |
+| **Adapter-boundary classification, not provider-trusted classification** | `searchWeb`'s `SearchWebAdapterResult` (`succeeded`/`query-limited`) and the controlled-retrieval `blocked`/`failed`/`retrieved` classification are both decided by this codebase's own adapter and `ssrfGuardedFetch` module, never inferred from a specific provider's SDK error shapes or trusted timestamps | Danny's binding direction (Section 1.6) — resolves DDR-0001 Row 9's PROVISIONAL flag by moving the classification to a boundary this system controls and can unit test, instead of depending on unconfirmed provider behavior |
 
 ### Anti-Patterns (Do Not Use)
 
@@ -964,6 +1214,7 @@ independent verification; that UI change is not made by this document and is fla
 - **Empty required-citation arrays**: no required citation field (`ClaimVersion.evidence`, `ProblemStatement.supportingClaimVersionIds`, `DemandSignal.evidenceItemIds`, `ExistingSolution.evidenceItemIds`, `GapHypothesis.evidenceItemIds`) may be persisted or returned empty — an empty array fails the same R-4 validation/repair/fail-closed path as an out-of-schema enum value. `DemandConfidenceClassification.citedDemandSignalIds` is the sole named exception (Section 4).
 - **Stance stored on EvidenceItem**: no schema above reintroduces a `stance` field on `EvidenceItem` — stance is relationship-scoped (`ClaimVersionEvidence`/`ClaimVersionEvidenceRef`), never item-intrinsic, because the same shared item can support one claim and contradict another.
 - **Silent coercion of out-of-schema values**: no component may map an invalid enum member or malformed structured output to a default, a "nearest valid" guess, or a placeholder, and continue as if the field were valid (R-4, Danny binding). The only paths for an out-of-schema value are: bounded repair via `SchemaValidationRecord` (Section 3), or the step — and its `GenerationRun` — failing explicitly with `outcome: 'failed'`. A future PR adding a fallback/default branch on validation failure reintroduces R-4 and is an architecture violation.
+- **Dropped or partial `WebSearchResult` sets**: no code path may persist a `WebSearchQuery` whose `results` array is shorter than the adapter's `selectedResultUrls` on a `'succeeded'` outcome — every selected URL gets exactly one `WebSearchResult` row, success or failure alike (Section 1.6). A future PR that skips persisting a `failed`/`blocked` attempt (e.g. only persisting `retrieved` results) reintroduces the exact silent-data-loss failure mode this section exists to prevent.
 - **A "no problem established" NegativeFinding, or any BriefVersion persisted without a ProblemStatement**: `BriefElement` does not include `'problem-statement'`; no component may construct a `NegativeFinding` row with that element value, and `generateBriefVersion` must fail explicitly (no `BriefVersion` persisted, `Investigation.status` not moved to `'brief-generated'`) rather than complete with zero `ProblemStatement` records. Q-2 (Danny, binding) required Problem Definition to contain a specific problem with no absence path; a prior revision incorrectly generalized the negative-finding mechanism to this element and is reverted by this correction — reintroducing it is an architecture violation, not a style choice.
 
 ---
@@ -1058,3 +1309,4 @@ above, since that is what the evaluation needs to observe and measure:
       (Section 3) so an `Insufficient` classification can point at the exact `NegativeFinding` row
       it relied on, closing the traceability gap between an empty `citedDemandSignalIds` and a
       recorded absence.
+- [x] `searchWeb` adapter-boundary contract, controlled-retrieval `blocked`/`failed`/`retrieved` classification (with a principled, testable dividing rule), and the provably-not-dropped persistence shape are specified (Section 1.6 addendum) — resolves DDR-0001 Row 9's PROVISIONAL flag ahead of Slice 6, per Danny's binding direction that this classification belongs at the adapter boundary, not inside a specific provider's behavior.

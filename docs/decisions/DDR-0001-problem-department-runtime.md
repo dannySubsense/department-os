@@ -72,7 +72,7 @@ gets an explicit verdict below; no row is folded into a summary paragraph.
 | 6 | Structured-output / schema-constrained generation mode capable of producing the exact literal unions in Section 3 (`EvidenceLabel`, `DemandConfidenceLevel`, `GapCategory`, `RecommendationDecision`) without free-text drift | **PASS** | Forced tool-use with a JSON-schema enum reliably returned valid `EvidenceLabel` values on both a normal statement and a deliberately ambiguous/adversarial one — server-side schema enforcement, never emitted an off-enum value. Free-text mode (no tool forcing) was also tried and does drift off-schema, confirming forced tool-use is required, not merely convenient. |
 | 7 | Schema/enum validation of structured model output with a bounded re-prompt-and-repair path (`MAX_REPAIR_ATTEMPTS = 1`), explicit run-failure (not silent coercion) when repair also fails | **PASS** | The repair-loop control flow (validate → repair once → hard fail, no silent coercion) was exercised end-to-end client-side against the forced-tool-use output from row 6; combined with row 6's server-side enum enforcement, off-schema output was never observed to reach the repair path in practice during this spike, but the client-side control flow itself was verified to execute correctly. |
 | 8 | A minimal read/write surface reachable by a human (no requirement on framework) for the Review Surface | **Not spiked — desk-assessed, N/A as a runtime differentiator** | Any minimal web framework satisfies this regardless of which LLM runtime is chosen; not a capability the Anthropic API itself provides or blocks. Reasoning stated explicitly rather than silently omitted. |
-| 9 | A tool or adapter through which the runtime can search the public web and retrieve/inspect selected results, preserving query/URL/retrieval-time and surfacing failed or blocked retrievals | **PASS on happy path; PARTIAL/PROVISIONAL on failure path** | Anthropic's built-in `web_search` tool works live, exposes query + result URLs + a `page_age` freshness estimate (not a true retrieval timestamp — must be captured client-side). The spike could **not** provoke a genuine blocked/failed retrieval to confirm Anthropic's documented `WebSearchToolResultError` types actually surface cleanly in practice. **Flagged PROVISIONAL** — named owner: Ledger, to validate against a real blocked source **before Slice 6** (Landscape Researcher) begins. |
+| 9 | A tool or adapter through which the runtime can search the public web and retrieve/inspect selected results, preserving query/URL/retrieval-time and surfacing failed or blocked retrievals | **PASS — resolved at the `searchWeb` adapter boundary, not the provider** | Per Danny's explicit direction (2026-08-13), the product contract does not depend on coaxing Anthropic's `web_search` tool into naturally producing a blocked/failed result — that behavior is not reliably reproducible and was moved out of scope for this row. Instead, Slice 6 implemented the contract at the `searchWeb` adapter boundary: provider-level search failures are recorded as `QueryLimitation`s (never a thrown error, verified across 12+ malformed-response shapes including null responses, malformed content blocks, and items missing a `url`); each selected result URL goes through a controlled, SSRF-hardened retrieval path (reusing the Slice-4 hardening, extracted into `ssrfGuardedFetch.ts`) that classifies the attempt as `retrieved`, `blocked`, or `failed` with a `failureReason` and a client-captured `timestamp`; every classification-table row is covered by a deterministic fixture (local HTTP server, not live network). Persistence is provably not-dropped: `persistedResults.length === deduplicatedSelectedResultUrls.length` is asserted pre-commit inside the same transaction as the `SourceArtifact` insert, live-probed via an injected-bug test (removing the assertion causes a detectable rollback failure) and a forced-duplicate-URL test (record survives, no total loss). 3 QC rounds (pass 1 FAIL — 6 blocking findings incl. a `.find()`-based silent multi-block data loss and a duplicate-URL total-loss bug; pass 2 FAIL — 3 of the 6 fixes incomplete plus 2 new findings; pass 3 PASS, all closed, independently re-probed). |
 
 Rows 1, 2, 3 are storage-axis capabilities, not runtime-axis — scored below under Storage.
 
@@ -119,10 +119,9 @@ silently omitted.
 - Failed-run provenance (row 4) is partial: a rejected request yields `request_id` + error but no
   usage/token data, since no inference occurred. Slice 8 must design `GenerationRun` failure
   records around this asymmetry rather than assuming symmetric success/failure provenance.
-- Row 9's failure-path behavior (blocked/failed web retrieval surfacing as a clean
-  `WebSearchToolResultError`) is **unconfirmed** and carries real risk for Slice 6 (Landscape
-  Researcher) if it does not behave as documented. This must be validated before Slice 6 begins,
-  not discovered during it.
+- Row 9 is resolved: RESOLVED (2026-08-13) — retrieval failure classification lives at the
+  `searchWeb` adapter boundary (see Evidence row 9), not on Anthropic's provider behavior. No open
+  risk remains for Slice 6 on this axis.
 
 **This forecloses (for this milestone only):**
 - No other runtime (e.g. OpenAI function-calling, a different agent framework) or storage
@@ -150,19 +149,15 @@ capabilities available in most mainstream RDBMSs; the SQL used here is portable 
 not a proprietary Postgres feature. The physical separation from LORE's instance means a storage
 swap for Department OS Core does not touch or risk LORE's data at all.
 
-**Named open item requiring resolution before it can be treated as fully reversible-or-not:** the
-row 9 PROVISIONAL flag (web-search failure-path behavior) is a decision-relevant unknown, not a
-sunk cost — resolving it before Slice 6 could still change the row 9 verdict from PASS/PARTIAL to
-a genuine gap, which under G-22 would require a HALT to Danny rather than silent continuation.
+**Row 9, resolved:** the PROVISIONAL flag is closed (see Evidence row 9 and Gate Status below) — no
+open item remains on this axis.
 
 ---
 
 ## Stopping Rule (G-22) Status
 
 Not triggered. Every scored row is at minimum PASS or explicitly-reasoned-N/A; no row failed
-outright. The single PARTIAL/PROVISIONAL item (row 9 failure path) is named with an owner and a
-deadline (before Slice 6) rather than treated as a silent gap — per G-22, this is recorded as a
-documented open item, not glossed over.
+outright. Row 9's PROVISIONAL item is now RESOLVED (2026-08-13) — see Evidence row 9.
 
 ---
 
