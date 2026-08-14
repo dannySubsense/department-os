@@ -1249,9 +1249,11 @@ interface GenerationRun {
                                       // that is still 'in-progress' after the process that created
                                       // it has ended represents exactly the one gap this design
                                       // cannot close from inside the process (a hard crash/OOM kill
-                                      // between createGenerationRun and the try/finally's finally
-                                      // block never running) — named explicitly, not silently
-                                      // assumed away; see point 4.
+                                      // after createGenerationRun and before either finalization
+                                      // path runs — see the exactly-once contract at point 4;
+                                      // this comment previously said "the try/finally's finally
+                                      // block", corrected 2026-08-14 with that ruling) — named
+                                      // explicitly, not silently assumed away; see point 4.
   startedAt: string;                 // unchanged — now set at createGenerationRun time, not
                                       // retroactively at finalization
   completedAt: string;               // unchanged — but now genuinely only meaningful once
@@ -1304,12 +1306,32 @@ function recordGenerationStep(input: {
   step: GenerationStep;
 }): Promise<void>;
 
-/** Must be called from Slice 9's generateBriefVersion in a finally block wrapping the ENTIRE
- *  pipeline (every Slice 4-7 step), not just the happy-path return — Danny, binding: "finalize
- *  failed runs even when a component throws". Sets completedAt, outcome, briefVersionId, and the
- *  computed modelIdentifiers/toolsInvoked union described above. Idempotency: calling this twice
- *  for the same generationRunId is a programming-error-level defect (Forge implements this as a
- *  hard assertion, not a silent overwrite) — exactly one finalization per run. */
+/** EXACTLY-ONCE FINALIZATION (Composer ruling, 2026-08-14, design gate round 2 — supersedes the
+ *  "call it from a finally block" instruction previously stated here). The original wording and
+ *  Slice 9's in-transaction success finalization, implemented literally, produce DOUBLE
+ *  finalization — which this function's own idempotency contract (below) treats as a
+ *  programming-error-level defect. The two are reconciled as follows, and there is exactly one
+ *  finalization per run on every path:
+ *
+ *    - SUCCESS  -> finalize INSIDE Slice 9's phase-4 assembly transaction, using the supplied
+ *                  transaction client. The run's success and the Brief it produced commit or roll
+ *                  back together; a committed Brief can never be left with an in-progress run.
+ *                  EVERY read and write performed inside a successful finalization — INCLUDING
+ *                  loadStepLog and the modelIdentifiers/toolsInvoked computation derived from it —
+ *                  must use that same client, never the pool. A pool read inside a transaction
+ *                  cannot see the transaction's own uncommitted rows.
+ *    - FAILURE  -> finalize AFTER the rollback and BEFORE the rethrow, on its own connection. The
+ *                  run record and its stepLog are audit records and must survive the rollback that
+ *                  discards the Brief.
+ *    - NO unconditional second finalization anywhere. Specifically: no bare `finally` block that
+ *                  finalizes regardless of outcome, since both paths above have already finalized.
+ *
+ *  The intent the superseded wording was protecting is preserved: a failed run is still finalized
+ *  even when a component throws — that is the FAILURE path above, which runs before the rethrow.
+ *  Sets completedAt, outcome, briefVersionId, and the computed modelIdentifiers/toolsInvoked union
+ *  described above. Idempotency: calling this twice for the same generationRunId is a
+ *  programming-error-level defect (Forge implements this as a hard assertion, not a silent
+ *  overwrite) — exactly one finalization per run. */
 function finalizeGenerationRun(input: {
   generationRunId: string;
   outcome: 'succeeded' | 'failed';
@@ -1347,13 +1369,18 @@ function runStepWithProvenance<T>(input: {
 ```
 
 **Durability characteristics, stated explicitly (not assumed):** `createGenerationRun` +
-per-step `recordGenerationStep` + a `finally`-block `finalizeGenerationRun` closes the specific gap
-Danny named — a component throwing mid-pipeline still leaves a `GenerationRun` row with
-`outcome: 'failed'`, a real `stepLog` up to and including the failed step, and no orphaned
-`in-progress` row for any crash the process's own `try/finally` can observe. The one gap this cannot
-close from inside the process — a hard process kill (OOM, `SIGKILL`, host failure) between
-`createGenerationRun` and the `finally` block executing — is named here rather than silently
-assumed away: such a row is left `outcome: 'in-progress'` indefinitely. No reconciliation/sweep job
+per-step `recordGenerationStep` + the exactly-once `finalizeGenerationRun` contract above closes
+the specific gap Danny named — a component throwing mid-pipeline still leaves a `GenerationRun` row
+with `outcome: 'failed'`, a real `stepLog` up to and including the failed step, and no orphaned
+`in-progress` row for any crash the process can observe, because the failure path finalizes after
+rollback and before the rethrow. (This paragraph previously said "a `finally`-block
+`finalizeGenerationRun`"; corrected 2026-08-14 alongside the exactly-once ruling above, since a
+`finally` that finalizes unconditionally would double-finalize the success path.) A successful run
+additionally cannot be left in-progress at all: its finalization commits inside the same
+transaction as the `BriefVersion` it produced. The one gap this cannot close from inside the
+process — a hard process kill (OOM, `SIGKILL`, host failure) after `createGenerationRun` and before
+either finalization path executes — is named here rather than silently assumed away: such a row is
+left `outcome: 'in-progress'` indefinitely. No reconciliation/sweep job
 is designed for this MVP (an unsourced "assume abandoned after N minutes" timeout would itself be
 exactly the kind of unsourced-numeric-constant this project's Research Data Integrity discipline
 forbids); if Forge/Danny wants one, it needs a named owner, a cited timeout value, and a PROVISIONAL
