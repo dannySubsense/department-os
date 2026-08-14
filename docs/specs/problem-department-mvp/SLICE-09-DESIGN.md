@@ -142,7 +142,23 @@ unqualified generation-failed failure rule, and its 0–4 `NegativeFinding` test
 design's own §3 phase 3 check 1 note already established should read 0–3 given evidence's
 structurally-unreachable negative path; and the architecture's §1.9 finalization contract).
 
-**Revision note (revision 7 — this revision): NARROW patch, gate at `12d1902` FAIL.** Composer
+**Revision note (revision 8 — this revision): SINGLE MECHANICAL CONTRACT CORRECTION, gate at
+`a61677c` FAIL on one defect.** The Composer ACCEPTED both revision-7 Producer decisions — the
+snapshot-union approach (the four existing component signatures are NOT to be changed) and keeping
+`claimVersionId` restricted to this run's extraction (fresh `ClaimVersion`s are minted each run).
+The preflight current-version equality fix also PASSED. One defect remained: `startSnapshot` is
+captured BEFORE the Extraction step runs, but the permitted union was written as
+`startSnapshot ∪ landscapeEvidenceItems` — omitting `ExtractionResult.evidenceItems`. Extraction
+inserts fresh `EvidenceItem`s and the Demand Analyzer subsequently reads them, so a candidate
+citing that legitimate step-1 evidence would have failed phase 3. This is the PRIMARY path, not an
+edge case. All seven references now read
+`startSnapshot ∪ ExtractionResult.evidenceItems ∪ LandscapeResearchResult.landscapeEvidenceItems`,
+and one falsification test is added (a normal first generation citing Extraction-created evidence
+must SUCCEED). Nothing else in the document was touched — this was a formula correction, not a
+redesign, and was applied by Ledger directly rather than dispatched, as it is mechanical and the
+Composer specified the exact replacement text.
+
+**Revision note (revision 7): NARROW patch, gate at `12d1902` FAIL.** Composer
 review: exactly-once finalization, zero-foreign ownership, locking, migration constraints, and the
 retry transition (revision 6's BLOCKING 1/3/5 fixes and the standing locking/migration work) are
 ACCEPTED and NOT re-examined here. Two blockers only, both scoped to §3:
@@ -444,7 +460,7 @@ two other rules:
 **The evidence universe for this run (revision 7, replacing revision 6's "this run's own
 extraction/research output" narrowing — Producer decision, flagged for Composer re-gate, see
 below).** Immediately after step 0, and BEFORE step 1 runs, snapshot
-`evidenceUniverse := getEvidenceForInvestigation(investigationId)` — the full set of
+`startSnapshot := getEvidenceForInvestigation(investigationId)` — the full set of
 `EvidenceItem`s persisted and visible for this Investigation at the moment this run begins,
 captured explicitly once, not re-derived later. This is the SAME call
 `demandAnalyzer.ts`/`personalPullExtractor.ts`/`landscapeResearcher.ts` already make internally
@@ -452,11 +468,27 @@ captured explicitly once, not re-derived later. This is the SAME call
 Investigation, not a run-scoped subset, and `landscapeResearcher.ts`'s
 `LandscapeResearchResult.landscapeEvidenceItems` returns only NEWLY-created evidence, while its
 `ExistingSolutionCandidate`s may legitimately cite OLDER evidence from that same full read. The
-run's full evidence universe is therefore `evidenceUniverse ∪ landscapeEvidenceItems` (start-of-run
-snapshot UNION evidence created during this run) — not "this run's own output" alone. Phase 3
-check 1(c) below validates every non-`ClaimVersion` citation against exactly this union. **Older,
-local evidence a component legitimately read from the Investigation's full evidence set IS valid
-provenance** — it is not required to have been newly created by this run to be citable.
+run's full evidence universe is therefore:
+
+```
+startSnapshot
+  ∪ ExtractionResult.evidenceItems
+  ∪ LandscapeResearchResult.landscapeEvidenceItems
+```
+
+— the start-of-run snapshot, UNION the evidence this run's own Extraction step (step 1) newly
+inserts, UNION the evidence the Landscape Researcher newly creates. **All three terms are
+required.** `startSnapshot` is captured BEFORE step 1 runs, so it cannot contain Extraction's
+rows; Extraction inserts fresh `EvidenceItem`s and returns them in `ExtractionResult.evidenceItems`
+(verified against the live extraction code), and the Demand Analyzer subsequently reads them via
+its own `getEvidenceForInvestigation` call. A two-term union of
+`startSnapshot ∪ landscapeEvidenceItems` therefore REJECTS a candidate citing perfectly legitimate
+step-1 evidence — that omission was a real defect in revision 7, corrected here (Composer gate,
+2026-08-14). Phase 3 check 1(c) below validates every non-`ClaimVersion` citation against exactly
+this three-term union. **Older, local evidence a component legitimately read from the
+Investigation's full evidence set IS valid provenance** — it is not required to have been newly
+created by this run to be citable; and evidence created BY this run's own Extraction step is
+likewise valid provenance, not an out-of-universe citation.
 
 > **Producer decision (this revision), made under the Composer's "the implementer must not guess
 > between contracts" instruction, flagged prominently for re-gate override:** two options were
@@ -618,13 +650,13 @@ Runs after all non-hard-stopping phase-2 steps complete. Two checks, in order.
      `ProblemStatementCandidate`/`ClaimVersion` (Danny's ruling, explicit — "apply ownership
      validation to ALL evidence ids entering the Brief"). REVISION 7 CORRECTION (BLOCKER 2):
      revision 6's "this run's own extraction/research output" narrowing for THESE entities is
-     REPLACED by the `evidenceUniverse` contract stated once in §3 Phase 2 (the "evidence universe
+     REPLACED by the evidence-universe contract stated once in §3 Phase 2 (the "evidence universe
      for this run" callout) — it is restated here, not redefined, so the two cannot drift:**
      - `DemandSignalCandidate.evidenceItemIds`, `ExistingSolutionCandidate.evidenceItemIds`, and
        `GapHypothesisCandidate.evidenceItemIds` — every id must (i) resolve to an `evidence_item`
        whose `source_artifact.investigation_id = investigationId` (zero foreign — these arrays are
        already non-empty by the candidate's own `NonEmptyArray` contract, so "zero foreign" alone
-       is the remaining bar), AND (ii) be a member of `evidenceUniverse ∪ landscapeEvidenceItems`
+       is the remaining bar), AND (ii) be a member of `startSnapshot ∪ ExtractionResult.evidenceItems ∪ LandscapeResearchResult.landscapeEvidenceItems`
        (§3 Phase 2's snapshotted universe) — NOT narrowed to only what this run's own step
        produced. An older, local `EvidenceItem` a component read from the Investigation's full
        evidence set (via `getEvidenceForInvestigation`, as `demandAnalyzer.ts`/
@@ -632,7 +664,7 @@ Runs after all non-hard-stopping phase-2 steps complete. Two checks, in order.
      - `PersonalPullNoteCandidate.sourceArtifactId` — a single id, not an array; require it
        resolves to a `source_artifact` with `investigation_id = investigationId` (zero foreign)
        AND that the `SourceArtifact` backs an `EvidenceItem` within the same
-       `evidenceUniverse ∪ landscapeEvidenceItems` set (i.e. the source was among what this run's
+       `startSnapshot ∪ ExtractionResult.evidenceItems ∪ LandscapeResearchResult.landscapeEvidenceItems` set (i.e. the source was among what this run's
        own pipeline was actually handed to read, per the same universe — not merely any
        `source_artifact` row that happens to share this `investigationId`).
 
@@ -662,18 +694,28 @@ Runs after all non-hard-stopping phase-2 steps complete. Two checks, in order.
      merely "at least one local."
    - **(NEW, revision 7, BLOCKER 2)** a correction whose candidate (e.g. a
      `DemandSignalCandidate`) cites a LOCAL `EvidenceItem` that PREDATES this run — it was present
-     in the start-of-run `evidenceUniverse` snapshot but is not a member of any of this run's own
+     in the start-of-run `startSnapshot` but is not a member of any of this run's own
      step outputs (`ExtractionResult.evidenceItems`, `landscapeEvidenceItems`, etc.) → assembly
      MUST SUCCEED. This is the test that proves the universe rule does not reject legitimate
      corrections — the exact failure mode revision 6's "this run's own output" narrowing produced
      and BLOCKER 2 identified.
    - **(NEW, revision 7, BLOCKER 2, paired with the test above)** a candidate citing an
-     `EvidenceItem` OUTSIDE the `evidenceUniverse ∪ landscapeEvidenceItems` union — either because
+     `EvidenceItem` OUTSIDE the `startSnapshot ∪ ExtractionResult.evidenceItems ∪ LandscapeResearchResult.landscapeEvidenceItems` union — either because
      it belongs to a foreign Investigation (already covered structurally by check 1(a)'s
      zero-foreign rule, restated here as the paired case) OR because it was created AFTER this
      run's start-of-run snapshot by something other than this run's own steps (e.g. a concurrent,
      unrelated write to the same Investigation's evidence that this run never read) → assembly
      MUST still fail closed.
+   - **(NEW, revision 8 — Composer gate, 2026-08-14)** a NORMAL FIRST GENERATION whose candidate
+     (e.g. a `DemandSignalCandidate`) cites an `EvidenceItem` created by **this run's own
+     Extraction step** — i.e. a member of `ExtractionResult.evidenceItems`, which by construction
+     is absent from `startSnapshot` because the snapshot is taken before step 1 runs → assembly
+     MUST SUCCEED. This is the ordinary, overwhelmingly common case: Extraction inserts fresh
+     evidence, the Demand Analyzer reads it back via `getEvidenceForInvestigation`, and cites it.
+     Revision 7's two-term union (`startSnapshot ∪ landscapeEvidenceItems`) omitted
+     `ExtractionResult.evidenceItems` and would therefore have rejected it — failing not an edge
+     case but the primary path. This test exists so that omission cannot recur silently: it fails
+     against any union missing the Extraction term.
 
 2. **Four-element `negativeFindings` fail-closed rule (G-1) — TERMINAL-FAIL DIRECTLY, no
    bounded-repair (Danny's ruling, explicit; corrects an earlier framing of Ledger's own design
