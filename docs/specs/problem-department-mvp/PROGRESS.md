@@ -18,6 +18,20 @@
 - [ ] Slice 12: Validity/Invalidation Service + Decision-History Banner — PENDING
 
 ## Current
+
+> **This section is the single live status record for this sprint** (see
+> `docs/development-workflow.md`, "Working on this repository right now"). Read it first when
+> picking up work. Do not copy current state into any other file — a root `NOW.md` status card
+> did that until 2026-08-14 and drifted out of sync with this file; it was removed rather than
+> resynced. Detailed slice history is below, not here.
+
+Build target: Problem Department MVP · Phase: Forge
+Product code exists: Slices 1-8. **None of Slice 9.**
+Last completed product gate: Slice 8 retroactive correction — QC PASS round 3 (2026-08-14).
+Last merged side tool: spec-doc-checker (PR #5, 2026-08-10) — tooling, not product progress.
+Next product capability (not yet built): one `generateBriefVersion` call wires Slices 4-8 together
+and atomically persists the Brief with all its candidate entities.
+
 Slice: 9 — Brief Assembler. **GATE CLOSED.**
 Step: Slice 8's retroactive correction is complete and QC-passed. Slice 9 reimplementation is
 blocked pending Composer review of `SLICE-09-DESIGN.md` revision 5. The prior attempt is

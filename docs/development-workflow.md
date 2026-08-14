@@ -62,4 +62,24 @@ Decisions that change architecture, choose a runtime, or expand scope beyond a c
 
 ## Working on this repository right now
 
-The repository currently contains documentation and structure only. Until the first milestone (see [milestones/problem-department-mvp.md](milestones/problem-department-mvp.md)) is explicitly greenlit for implementation, work should stay in `docs/` — no application code, agent runtime, or scaffolding.
+**Read the `## Current` section at the top of the active sprint's `PROGRESS.md` first.** For the
+sprint in flight that is
+[specs/problem-department-mvp/PROGRESS.md](specs/problem-department-mvp/PROGRESS.md). That section
+is the **single live status record**: what slice is active, what gate state it is in, and what is
+blocking. Detailed slice-by-slice history lives below it in the same file.
+
+Do not maintain a second copy of current state anywhere else — not in a root status card, not in a
+separate tracking file, not in prose at the top of another doc. A manually-maintained status cache
+duplicates `PROGRESS.md` and drifts from it; a root `NOW.md` did exactly that and was removed on
+2026-08-14, having gone stale by claiming a slice "fully complete" after a QC round that a later
+defect disproved, while `PROGRESS.md` recorded the correction. One record, updated in place.
+
+If an agent instruction file (including an untracked local one such as `CLAUDE.md`) tells you to
+maintain a status file that no tracked document describes, treat that as a defect in the
+instruction and raise it — an artifact committed to the repository whose governing rule is not in
+the repository cannot be verified, reviewed, or inherited by a fresh clone.
+
+Note on scope: this section previously stated the repository contained "documentation and
+structure only" with "no application code." That has been false since Slice 2 shipped; it was
+corrected on 2026-08-14. Milestone status is tracked in `PROGRESS.md`, not restated here, so this
+section cannot go stale the same way again.
