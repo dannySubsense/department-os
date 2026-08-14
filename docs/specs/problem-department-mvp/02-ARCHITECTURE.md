@@ -956,6 +956,485 @@ Orchestration (same F-1 outer try/catch, same R-4 validate-repair-fail forced-to
 
 ---
 
+
+### 1.9 Provenance Recorder — `callForcedTool` telemetry, `LlmValidationError` full-history carriage,
+`GenerationRun` lifecycle ownership, and `searchWeb` telemetry (Slice 8; addition to close the
+roadmap's Slice 8 design gap — owner: Ledger; binding direction: Danny)
+
+**Framing (resolves the roadmap-ambiguity question this design step was asked to resolve
+explicitly, not guess at):** Roadmap Slice 9 states `generateBriefVersion` is "the single
+entrypoint orchestrating Slices 4–8" — i.e. Slice 9, not Slice 8, is what actually sequences calls
+into Slices 4–7 and decides step order. Earlier sections of this document (1.7, 1.8) used the
+looser phrase "Slice 8's orchestration decision" for pipeline wiring; read against the roadmap,
+that phrasing is imprecise, not a genuine conflict — Slice 8 owns the *Provenance Recorder
+machinery* (schemas, persistence, and the instrumentation hooks below) and Slice 9 owns *calling*
+that machinery around the real pipeline sequence, because no orchestrator exists to drive it until
+Slice 9's `generateBriefVersion` is built. This section therefore specifies Provenance Recorder
+functions and instrumentation as a **library Slice 9 calls**, not a standalone orchestrator Slice 8
+builds and runs itself. Everything below is instrumentation of the existing execution path per
+Danny's binding direction — no new validation layer, no new repair mechanism, `MAX_REPAIR_ATTEMPTS
+= 1` unchanged (confirmed explicitly in point 5).
+
+#### 1. `callForcedTool` attempt telemetry — capture mechanism and shape
+
+**Decision: capture via an optional `AsyncLocalStorage`-based collector, not a return-value change
+and not a per-call-site callback parameter.** Three options were weighed:
+
+| Option | Cost across the 7+ existing call sites | Verdict |
+|---|---|---|
+| Extend `ForcedToolCallResult<T>`/`LlmValidationError` to carry per-attempt telemetry directly | Zero signature churn for *consumption* (existing sites only read `.value`/`err.message`, confirmed below), but telemetry is unreachable for a step that `throw`s past its own catch, and any later step that also needs it (e.g. Provenance Recorder writing `GenerationStep.validationRecords`) has no way to receive it without every intermediate call site (the 7 component functions) threading it through their own return types — real churn, and still doesn't solve the throw case cleanly. | Rejected — solves "carry a value" but not "route it to a listener several call frames away." |
+| Add an `onAttempt` callback parameter to `CallForcedToolParams<T>`, forwarded by each of the 7 component functions via a new optional input field | Optional parameter, so no *existing* call (including `llmClient.test.ts` and all component `.test.ts` files) needs to change to keep compiling/passing. But *using* it for provenance requires each of the 7 component functions (`demandAnalyzer`, `uncertaintyCompiler`, `recommendationEngine`, `extractClaimsAndEvidence`, `personalPullExtractor`, `landscapeResearcher` [2 call sites], `gapHypothesisGenerator`) to accept and forward the callback — 8 small, additive edits. | Workable, but more surface area than necessary for a cross-cutting concern. |
+| **`AsyncLocalStorage`-scoped collector: `callForcedTool` and `searchWeb` call a module-level `recordToolInvocation()` after every attempt; the orchestrator opens a collection scope with `withProvenanceCollector()` around each step** | **Zero changes to `callForcedTool`'s public signature, zero changes to any of the 7 component functions' signatures, zero changes to any existing test.** The instrumentation is entirely internal to `llmClient.ts` and `searchWeb.ts`; it is inert (no-op) unless a collector scope is active, which only Slice 9's orchestrator ever opens. | **Chosen** — genuinely the least invasive of the three; the standard pattern for cross-cutting request-scoped telemetry that must survive being several call frames removed from the code that needs to consume it. |
+
+**New shared module, `src/services/provenanceContext.ts`:**
+
+```typescript
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+/** One captured attempt/invocation, generic enough to cover both callForcedTool's schema-validated
+ *  attempts and searchWeb's non-schema-validated tool calls (web_search, url-fetch) — see "searchWeb
+ *  telemetry" below. Not every field applies to every invocation kind; unused fields are omitted,
+ *  never populated with a placeholder (Research Data Integrity discipline — no fabricated values). */
+export interface CapturedToolInvocation {
+  toolName: string;                 // e.g. 'identify_existing_solutions' (callForcedTool tool name),
+                                     // 'web_search' (searchWeb adapter call), 'url-fetch' (searchWeb
+                                     // per-URL controlled retrieval)
+  startedAt: string;                // client-captured (DDR-0001 Row 4: API provides no wall-clock
+                                     // timing; this codebase must capture it itself)
+  completedAt: string;
+  modelIdentifier?: string;         // set for LLM-backed invocations (callForcedTool, searchWeb's
+                                     // web_search adapter call which also invokes the model); unset
+                                     // for the pure-HTTP url-fetch invocation
+  attemptNumber?: number;           // set for callForcedTool attempts (1 = original, 2 = repair);
+                                     // unset for searchWeb invocations (no repair concept there)
+  fieldPath?: string;               // callForcedTool only — which SchemaValidationRecord this
+                                     // attempt belongs to (mirrors existing SchemaValidationRecord.fieldPath)
+  rawOutput?: unknown;              // callForcedTool: the tool-call input as produced. searchWeb:
+                                     // omitted (body content is persisted as SourceArtifact.resolved
+                                     // content already — not duplicated into provenance)
+  valid?: boolean;                  // callForcedTool: schema-validation result. searchWeb: unset —
+                                     // see outcome below, a differently-shaped result (3-4 way, not
+                                     // boolean)
+  validationError?: string;         // callForcedTool only, present iff valid === false
+  outcome?: 'retrieved' | 'blocked' | 'failed' | 'query-limited'; // searchWeb only — mirrors
+                                     // WebSearchResult.status plus the adapter-level 'query-limited'
+                                     // case; unset for callForcedTool attempts
+  failureReason?: string;           // searchWeb only, present iff outcome !== 'retrieved'
+  tokenUsage?: { inputTokens: number; outputTokens: number }; // present when the underlying API
+                                     // response included usage data — DDR-0001 Row 4: a
+                                     // provider-rejected request yields no usage data, so this is
+                                     // optional, never defaulted to {0,0} (that would misrepresent
+                                     // "not measured" as "measured zero")
+}
+
+export interface ProvenanceCollector {
+  record(invocation: CapturedToolInvocation): void;
+}
+
+const storage = new AsyncLocalStorage<ProvenanceCollector>();
+
+/** Opens a collection scope for the duration of `fn`. Every `recordToolInvocation` call made by
+ *  code running inside `fn` (however deep the call stack — this is the whole point of
+ *  AsyncLocalStorage over a passed-down parameter) is routed to `collector`. Nested scopes are not
+ *  used by this design (Slice 9 opens exactly one scope per GenerationStep, never nests them). */
+export function withProvenanceCollector<T>(collector: ProvenanceCollector, fn: () => Promise<T>): Promise<T> {
+  return storage.run(collector, fn);
+}
+
+/** No-op when no collector scope is active (e.g. a direct unit test of demandAnalyzer.ts calling
+ *  callForcedTool with no Provenance Recorder involved at all) — this is what makes the
+ *  instrumentation inert by default and safe to leave in place at every callForcedTool/searchWeb
+ *  call site regardless of whether a caller cares about provenance. */
+export function recordToolInvocation(invocation: CapturedToolInvocation): void {
+  storage.getStore()?.record(invocation);
+}
+```
+
+**`callForcedTool` internal change (implementation, not shown as a public-contract change — the
+exported function signature and `CallForcedToolParams<T>` are unchanged):** inside the existing
+`for (attempt = 1; attempt <= MAX_REPAIR_ATTEMPTS + 1; attempt++)` loop, wrap the existing
+`anthropic.messages.create` call with `startedAt`/`completedAt` capture, read `response.usage`
+(`input_tokens`/`output_tokens`) when present, and after computing `result = params.validate(...)`
+call `recordToolInvocation({...})` with that attempt's full telemetry — on both the valid and
+invalid branch, before either returning or looping to the next attempt. This is instrumentation of
+the existing loop body, not a new control-flow path.
+
+#### 2. `LlmValidationError` and `ForcedToolCallResult<T>` — additive, not breaking
+
+**Correction to the task framing, found during this design step, not assumed:** re-reading every
+catch site confirms **no breaking change to `LlmValidationError`'s shape is actually required**,
+and making one would be actively harmful — `src/services/llmClient.test.ts` (a call site in its own
+right) asserts `validationErr.attempts` is the numeric *count* (`toBe(2)`) and
+`validationErr.rawOutput` is the *last* raw output (`toEqual({ ok: 'bad-2' })`); `result.attempts`
+in the same file is asserted as a numeric count too. Repurposing either field's type to carry an
+array would break these already-green, QC-passed assertions for no functional gain — the full
+history can be added as a **new, additional field** instead.
+
+**Every catch site checked (8 total — 7 production services + the test file), what it reads, what
+changes for it:**
+
+| Site | Reads today | Change required |
+|---|---|---|
+| `demandAnalyzer.ts` | `err instanceof LlmValidationError`, `err.message` | None |
+| `extractClaimsAndEvidence.ts` | `err instanceof LlmValidationError`, `err.message` | None |
+| `recommendationEngine.ts` | `err instanceof LlmValidationError`, `err.message` | None |
+| `uncertaintyCompiler.ts` | `err instanceof LlmValidationError`, `err.message` | None |
+| `personalPullExtractor.ts` | `err instanceof LlmValidationError`, `err.message` | None |
+| `landscapeResearcher.ts` (×2 call sites) | `err instanceof LlmValidationError`, `err.message` | None |
+| `gapHypothesisGenerator.ts` | `err instanceof LlmValidationError`, `err.message` | None |
+| `llmClient.test.ts` | `err.attempts` (number), `err.rawOutput` (last raw output), `result.attempts` (number) | None — both existing fields keep their current type and value; only a new field is added |
+
+None of the 7 production services reads `.rawOutput` or `.attempts` at all — every one narrows only
+on `instanceof LlmValidationError` and then reads `.message` to build its own
+`generationFailureReason`/absence-narrative string. This is exactly the shape of change Danny's
+direction anticipated needing to scope explicitly if unavoidable — here it turns out to be
+avoidable entirely: zero of the 8 call sites requires modification.
+
+**Refined shapes (both additive):**
+
+```typescript
+export interface ForcedToolCallResult<T> {
+  value: T;
+  attempts: number;                         // UNCHANGED — count, as before
+  attemptHistory: SchemaValidationAttempt[]; // NEW — full per-attempt record, length === attempts,
+                                              // using the refined SchemaValidationAttempt shape
+                                              // (Section 3, point 3 below); populated regardless of
+                                              // whether a provenance collector scope is active —
+                                              // this is the function's own accounting, independent
+                                              // of the AsyncLocalStorage side-channel above, which
+                                              // exists to route telemetry to a *listener*, not to be
+                                              // the sole record of it
+}
+
+export class LlmValidationError extends Error {
+  constructor(
+    message: string,
+    public readonly rawOutput: unknown,       // UNCHANGED — last raw output, as before
+    public readonly attempts: number,         // UNCHANGED — count, as before
+    public readonly attemptHistory: SchemaValidationAttempt[], // NEW — full history, same shape as
+                                              // ForcedToolCallResult.attemptHistory above
+  ) {
+    super(message);
+    this.name = 'LlmValidationError';
+  }
+}
+```
+
+`callForcedTool` builds one `attemptHistory` array as it loops (it already computes every field
+needed per attempt — `rawOutput`, `valid`, `validationError` — for the existing `lastRawOutput`/
+`lastError` variables; this refactor retains each attempt's record instead of overwriting it),
+independent of whether `recordToolInvocation` is also called for that attempt. `attemptHistory` is
+the durable, always-present record (returned on success, thrown on failure); the
+`AsyncLocalStorage` collector (point 1) is the routing mechanism for a listener several frames away
+(Slice 9's orchestrator) that needs the same data attached to a specific `GenerationStep` before
+the calling component function has even returned.
+
+#### 3. `GenerationRun`/`GenerationStep`/`SchemaValidationRecord`/`SchemaValidationAttempt` — schema
+refinement (not a rebuild; Section 3's existing shapes are the base)
+
+**`SchemaValidationAttempt` — add timing, model identity, token usage:**
+
+```typescript
+interface SchemaValidationAttempt {
+  attemptNumber: number;             // unchanged
+  rawOutput: string;                 // unchanged
+  valid: boolean;                    // unchanged
+  validationError?: string;          // unchanged
+  startedAt: string;                 // NEW — client-captured (DDR-0001 Row 4)
+  completedAt: string;               // NEW
+  modelIdentifier: string;           // NEW — the MODEL constant value at call time; recorded per
+                                      // attempt (not just once per step) so a future change that
+                                      // varies the model on repair remains representable without a
+                                      // further schema change
+  tokenUsage?: { inputTokens: number; outputTokens: number }; // NEW — optional per DDR-0001 Row 4's
+                                      // documented asymmetry: a provider-rejected request yields no
+                                      // usage data
+}
+```
+
+**`SchemaValidationRecord` — add tool name (currently absent; `GenerationStep.modelIdentifier`
+exists but nothing records *which tool* produced a given structured output when a step invokes more
+than one forced-tool call, e.g. Landscape Researcher's `propose_landscape_queries` and
+`identify_existing_solutions`):**
+
+```typescript
+interface SchemaValidationRecord {
+  fieldPath: string;                 // unchanged
+  toolName: string;                  // NEW — the callForcedTool toolName that produced this record
+  attempts: SchemaValidationAttempt[]; // unchanged shape reference, refined attempt shape above
+  finalOutcome: 'valid' | 'invalid'; // unchanged
+}
+```
+
+**`GenerationStep` — add outcome, generic tool-invocation telemetry (for non-schema-validated calls
+like `searchWeb`), and an unexpected-error slot for the throw case:**
+
+```typescript
+interface GenerationStep {
+  component: string;                 // unchanged
+  startedAt: string;                 // unchanged
+  completedAt: string;               // unchanged
+  outcome: 'succeeded' | 'failed';   // NEW — required. 'failed' covers both "produced a terminal-
+                                      // failed SchemaValidationRecord" and "threw an unexpected
+                                      // error" (see error field below) — a step is never left
+                                      // outcome-less.
+  error?: string;                    // NEW — populated iff outcome === 'failed' AND the failure was
+                                      // an unexpected thrown error (not a schema-validation
+                                      // terminal-fail, which is already fully represented by
+                                      // validationRecords[].finalOutcome === 'invalid'). Keeps the
+                                      // two distinct failure shapes distinguishable without
+                                      // overloading one field.
+  modelIdentifier?: string;          // unchanged
+  inputRefs: string[];               // unchanged
+  outputRefs: string[];              // unchanged
+  validationRecords?: SchemaValidationRecord[]; // unchanged, refined record shape above
+  toolInvocations?: ToolInvocationRecord[]; // NEW — non-schema-validated tool telemetry (searchWeb's
+                                      // web_search adapter call and per-URL url-fetch retrieval
+                                      // attempts); unset for steps with no such calls
+}
+
+/** Persisted projection of provenanceContext.ts's CapturedToolInvocation for invocations that are
+ *  NOT schema-validated structured output (searchWeb's two call kinds) — kept as a distinct type
+ *  from SchemaValidationAttempt because it has no attemptNumber/repair concept and a differently-
+ *  shaped outcome (3-4-way status, not boolean valid/invalid). */
+interface ToolInvocationRecord {
+  toolName: string;                  // 'web_search' | 'url-fetch'
+  startedAt: string;
+  completedAt: string;
+  outcome: 'retrieved' | 'blocked' | 'failed' | 'query-limited';
+  failureReason?: string;            // present iff outcome !== 'retrieved'
+  modelIdentifier?: string;          // set for 'web_search' (the adapter's own LLM call), unset for
+                                      // 'url-fetch' (plain HTTP, no model involved)
+}
+```
+
+**`GenerationRun` — add the in-progress lifecycle state (point 4 requires a durable row to exist
+before the pipeline has produced any outcome at all):**
+
+```typescript
+interface GenerationRun {
+  id: string;
+  investigationId: string;
+  briefVersionId: string | null;
+  outcome: 'in-progress' | 'succeeded' | 'failed'; // REFINED — 'in-progress' is NEW. Set at
+                                      // creation (point 4), before any Slice 4 step begins; moved to
+                                      // 'succeeded'/'failed' only by finalizeGenerationRun. A row
+                                      // that is still 'in-progress' after the process that created
+                                      // it has ended represents exactly the one gap this design
+                                      // cannot close from inside the process (a hard crash/OOM kill
+                                      // between createGenerationRun and the try/finally's finally
+                                      // block never running) — named explicitly, not silently
+                                      // assumed away; see point 4.
+  startedAt: string;                 // unchanged — now set at createGenerationRun time, not
+                                      // retroactively at finalization
+  completedAt: string;               // unchanged — but now genuinely only meaningful once
+                                      // outcome !== 'in-progress'; a caller reading completedAt on
+                                      // an 'in-progress' row must not treat it as populated
+                                      // (implementation detail: nullable at the persistence layer
+                                      // even though the TS interface keeps it non-optional for the
+                                      // succeeded/failed cases, which are the only ones Section 4's
+                                      // existing read paths consume)
+  runtimeIdentifier: string;         // unchanged
+  modelIdentifiers: string[];        // unchanged — computed by finalizeGenerationRun as the union of
+                                      // every step's modelIdentifier + every attempt's
+                                      // modelIdentifier across stepLog, not asserted per-step
+  toolsInvoked: string[];            // unchanged — computed by finalizeGenerationRun as the union of
+                                      // every SchemaValidationRecord.toolName + every
+                                      // ToolInvocationRecord.toolName across stepLog
+  stepLog: GenerationStep[];         // unchanged — appended to by recordGenerationStep, in order, as
+                                      // each step completes or fails (point 4)
+}
+```
+
+No other Section 3 schema changes. `GenerationStep.component` naming against Section 2's component
+list (already a stated constraint) is unaffected by any of the above.
+
+#### 4. `GenerationRun` lifecycle — creation before Slice 4, ordered step recording, durable
+finalization on the unhappy path
+
+**New Provenance Recorder functions (Section 4 API contract addition):**
+
+```typescript
+/** Must be called by Slice 9's generateBriefVersion BEFORE the first Slice 4 step begins (Danny,
+ *  binding) — not after the pipeline completes, and not lazily on first step. Persists a
+ *  GenerationRun row immediately with outcome: 'in-progress', stepLog: [], briefVersionId: null,
+ *  so a durable row exists for the full duration of the run, including the window before any step
+ *  has produced output. */
+function createGenerationRun(input: {
+  investigationId: string;
+  runtimeIdentifier: string;
+}): Promise<GenerationRun>;
+
+/** Called once per completed OR failed component step, in pipeline order — appends exactly one
+ *  entry to the persisted GenerationRun.stepLog (never replaces or reorders existing entries; this
+ *  is an append, matching the append-only pattern already established for BriefVersion/StatusEvent
+ *  elsewhere in this document, Section 5). Slice 9's orchestrator calls this from inside each
+ *  step's own try/finally (see runStepWithProvenance below) — so a step that throws still produces
+ *  a stepLog entry with outcome: 'failed' and error set, rather than being silently omitted from
+ *  the record. */
+function recordGenerationStep(input: {
+  generationRunId: string;
+  step: GenerationStep;
+}): Promise<void>;
+
+/** Must be called from Slice 9's generateBriefVersion in a finally block wrapping the ENTIRE
+ *  pipeline (every Slice 4-7 step), not just the happy-path return — Danny, binding: "finalize
+ *  failed runs even when a component throws". Sets completedAt, outcome, briefVersionId, and the
+ *  computed modelIdentifiers/toolsInvoked union described above. Idempotency: calling this twice
+ *  for the same generationRunId is a programming-error-level defect (Forge implements this as a
+ *  hard assertion, not a silent overwrite) — exactly one finalization per run. */
+function finalizeGenerationRun(input: {
+  generationRunId: string;
+  outcome: 'succeeded' | 'failed';
+  briefVersionId: string | null;
+}): Promise<GenerationRun>;
+
+/** Convenience wrapper Slice 9's orchestrator uses around each Slice 4-7 component call — NOT a
+ *  new orchestration layer (Slice 9 still owns deciding step order, inputs, and what "the pipeline"
+ *  is); this only removes the repetitive try/finally + telemetry-collection boilerplate every call
+ *  site would otherwise duplicate. Opens a provenanceContext.ts collector scope (point 1) around
+ *  `fn`, so every callForcedTool/searchWeb invocation `fn` triggers (however many call frames deep)
+ *  is captured; on return, builds GenerationStep.validationRecords from callForcedTool-shaped
+ *  invocations and toolInvocations from searchWeb-shaped ones, and calls recordGenerationStep. On
+ *  throw, still calls recordGenerationStep with outcome: 'failed' and error: the caught message,
+ *  using whatever partial telemetry the collector accumulated before the throw, then rethrows —
+ *  the caller (generateBriefVersion) is what decides whether one failed step aborts the whole run
+ *  (per the existing R-4/negativeFindings fail-closed rules already specified for Slices 4-7, which
+ *  this function does not alter). */
+function runStepWithProvenance<T>(input: {
+  generationRunId: string;
+  component: string;                 // matches a Section 2 component name
+  inputRefs: string[];
+  fn: () => Promise<T>;
+}): Promise<T>;
+```
+
+**Durability characteristics, stated explicitly (not assumed):** `createGenerationRun` +
+per-step `recordGenerationStep` + a `finally`-block `finalizeGenerationRun` closes the specific gap
+Danny named — a component throwing mid-pipeline still leaves a `GenerationRun` row with
+`outcome: 'failed'`, a real `stepLog` up to and including the failed step, and no orphaned
+`in-progress` row for any crash the process's own `try/finally` can observe. The one gap this cannot
+close from inside the process — a hard process kill (OOM, `SIGKILL`, host failure) between
+`createGenerationRun` and the `finally` block executing — is named here rather than silently
+assumed away: such a row is left `outcome: 'in-progress'` indefinitely. No reconciliation/sweep job
+is designed for this MVP (an unsourced "assume abandoned after N minutes" timeout would itself be
+exactly the kind of unsourced-numeric-constant this project's Research Data Integrity discipline
+forbids); if Forge/Danny wants one, it needs a named owner, a cited timeout value, and a PROVISIONAL
+marker, added as its own change — not folded in silently here.
+
+**Ordering guarantee:** because `recordGenerationStep` is called from each step's own
+`try/finally` (via `runStepWithProvenance`), `stepLog` entries land in true execution order even
+when a later step never runs (the pipeline stops at the first `generationFailed: true`/thrown
+step per Slices 4-7's existing fail-closed contracts) — there is no separate re-ordering or
+sequence-number bookkeeping needed; array-append order is call order.
+
+#### 5. `searchWeb` telemetry
+
+`searchWeb.ts` does not call `callForcedTool` (its LLM call lives in `searchWebAdapter.ts`,
+invoking Anthropic's `web_search` server tool directly — Section 1.6), so it does not get
+`callForcedTool`'s instrumentation "for free." Two `recordToolInvocation` (point 1) call sites are
+added directly to `searchWeb.ts`, both additive — no change to `searchWeb`'s public signature or
+return shape:
+
+1. **Around the `searchWebAdapter(input.query)` call** — `toolName: 'web_search'`,
+   `startedAt`/`completedAt` captured around the call, `modelIdentifier: MODEL` (searchWebAdapter
+   already imports `MODEL` from `llmClient.ts`), `outcome` derived from
+   `SearchWebAdapterResult.outcome` (`'query-limited'` maps directly;
+   `'succeeded'` maps to `'retrieved'` for this adapter-level invocation specifically — distinct
+   from any individual URL's later retrieval outcome), `failureReason` = `queryLimitation.reason`
+   when present. This is the one adapter-boundary telemetry point (Section 1.6's existing
+   classification logic is unchanged; this only observes its outcome).
+2. **Inside `retrieveAndClassify(rawUrl)`, per URL** — `toolName: 'url-fetch'`, `startedAt`/
+   `completedAt` captured around the `fetchWithGuards` call (or the URL-parse/protocol-check
+   short-circuits, which still get a `startedAt === completedAt` telemetry record rather than being
+   silently unrecorded — consistent with the "never silently discard" discipline already governing
+   `WebSearchResult` persistence, Section 1.6 item 4), no `modelIdentifier` (plain HTTP, no model
+   involved), `outcome`/`failureReason` taken directly from `classifyRetrievalOutcome`'s existing
+   return value (`'retrieved' | 'blocked' | 'failed'` — `'query-limited'` never applies at this
+   per-URL granularity).
+
+Both call sites are inert when no `provenanceContext.ts` collector scope is active (e.g. Slice 6's
+existing `searchWeb.test.ts` unit tests, which call `searchWeb` directly with no Provenance Recorder
+involved) — identical no-op-by-default behavior to `callForcedTool`'s instrumentation. This keeps
+the *instrumentation itself* zero-churn to Slice 6's tests. It does not extend to Slice 8's
+migration 006, which adds a (`NOT VALID`) foreign key from `web_search_query.generation_run_id` to
+the new `generation_run` table — that constraint required `searchWeb.test.ts` to insert a real
+`generation_run` row and use its id instead of a bare `randomUUID()` for `generationRunId`, since
+Slice 6 predates `generation_run` existing at all. That test churn is a real, direct consequence of
+Slice 8's schema change, not zero.
+
+`GenerationStep.toolInvocations` for the Landscape Researcher's step (Slice 9's orchestrator wraps
+`researchLandscape` in one `runStepWithProvenance` call per the existing component boundary,
+Section 2) therefore ends up containing one `'web_search'` entry per `searchWeb` call
+`researchLandscape` makes (one per proposed query, Section 1.7 step 3) plus one `'url-fetch'` entry
+per selected result URL across all of those calls — giving `GenerationRun.toolsInvoked` genuine
+`'web_search'`/`'url-fetch'` membership from a real run, not a hardcoded/defaulted list (closing the
+existing `toolsInvoked` doc comment's "e.g. `'url-fetch'`, `'search'`" placeholder with the actual
+values this design produces).
+
+#### 6. Confirmation: instrumentation only
+
+- **No new validation layer.** Every schema-validation decision (`valid`/`invalid`,
+  `finalOutcome`) is still made by exactly one place: `params.validate(...)` inside
+  `callForcedTool`, unchanged. This design adds *observation* of that existing decision (timing,
+  token usage, tool name, full history) — it does not add a second check, a stricter check, or a
+  parallel validator.
+- **No new repair mechanism.** `MAX_REPAIR_ATTEMPTS = 1` is untouched, still the sole constant
+  governing the loop bound, still `for (attempt = 1; attempt <= MAX_REPAIR_ATTEMPTS + 1;
+  attempt++)`. `attemptHistory`'s length is bounded by the same `1 + MAX_REPAIR_ATTEMPTS` the
+  existing `SchemaValidationRecord.attempts` doc comment already specifies (Section 3) — this design
+  makes that bound observable per-attempt (timing/tokens/model), it does not raise it, lower it, or
+  add a second retry path anywhere (`searchWeb` has no repair concept at all — a `'blocked'`/
+  `'failed'`/`'query-limited'` `WebSearchResult`/`QueryLimitation` is recorded and the run proceeds
+  or fails per Section 1.6's existing, unchanged rules).
+- **No new model calls.** Every `recordToolInvocation` call site observes a call
+  (`anthropic.messages.create` inside `callForcedTool`'s existing loop, `searchWebAdapter`'s
+  existing call, `fetchWithGuards`'s existing HTTP fetch) that was already going to happen under
+  Slices 4-7's/Section 1.6's existing behavior — none of this design's additions issue a call that
+  would not otherwise occur.
+- **Existing one-repair behavior is preserved and now durable/observable**, per Danny's framing
+  verbatim: every attempt (original + the one repair) is recorded with full context
+  (`SchemaValidationAttempt`'s refined shape) whether the step ultimately succeeds or terminal-fails,
+  and that record survives in `GenerationRun.stepLog` regardless of which outcome the step reaches —
+  "observable and durable," not "re-validated" or "re-tried."
+
+**Files (Forge implementation — not produced by this design step):**
+- `src/services/provenanceContext.ts` — new; `CapturedToolInvocation`, `ProvenanceCollector`,
+  `withProvenanceCollector`, `recordToolInvocation` (point 1)
+- `src/services/llmClient.ts` — internal-only change: `callForcedTool`'s loop body gains
+  timing/token-usage capture and two new `recordToolInvocation` call sites (valid/invalid branches);
+  `ForcedToolCallResult<T>` gains `attemptHistory`; `LlmValidationError` gains a fourth constructor
+  parameter, `attemptHistory` — public signature of `callForcedTool` itself is unchanged
+- `src/services/searchWeb.ts` — two new `recordToolInvocation` call sites (point 5); no change to
+  `searchWeb`'s exported signature or `WebSearchQuery`/`WebSearchResult` persistence
+- `src/types/domain.ts` — `SchemaValidationAttempt`/`SchemaValidationRecord`/`GenerationStep`/
+  `GenerationRun` refinements (point 3), new `ToolInvocationRecord`
+- `src/services/provenanceRecorder.ts` — new; `createGenerationRun`, `recordGenerationStep`,
+  `finalizeGenerationRun`, `runStepWithProvenance` (point 4) and their persistence
+- Corresponding `*.test.ts` for `provenanceContext.ts` and `provenanceRecorder.ts`; a regression
+  test on `llmClient.test.ts` confirming `result.attempts`/`err.attempts`/`err.rawOutput` are
+  unchanged in type/value while `result.attemptHistory`/`err.attemptHistory` carry the full
+  per-attempt record; a regression test on `searchWeb.test.ts` confirming existing behavior is
+  unchanged with no collector scope active, plus a new test asserting
+  `recordToolInvocation` is called with the expected `toolName`/`outcome` shape when a collector
+  scope IS active.
+
+**Out of scope for Slice 8 (explicit, not silently deferred):**
+- Actually wiring `runStepWithProvenance`/`createGenerationRun`/`finalizeGenerationRun` into a real
+  Slice 4–7 call sequence — that is Slice 9's `generateBriefVersion`, per the Framing note above and
+  the roadmap's own Slice 9 ownership of "the single entrypoint orchestrating Slices 4–8."
+- Any reconciliation/sweep job for a `GenerationRun` left `outcome: 'in-progress'` after a hard
+  process kill — named as an open gap in point 4, not solved here; no unsourced timeout constant is
+  introduced.
+- Persisting `ToolInvocationRecord`/refined `SchemaValidationAttempt` fields via a new migration —
+  the exact table/column shape for these fields on the existing `generation_run`/`generation_step`
+  tables (numbering continues from whichever migration Slice 6's `005_web_search_query_results.sql`
+  and Slice 4-7's own migrations left off) is a Forge implementation detail this design step does
+  not fix a specific file name for, since Slice 8's actual migration count depends on what Slices
+  4-7 already shipped by the time Slice 8 is reached.
+
+---
+
 ## 2. Components
 
 Each component is a **service responsibility boundary**, not a technology binding. In candidate

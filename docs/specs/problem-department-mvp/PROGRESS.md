@@ -10,16 +10,23 @@
 - [x] Slice 5: Demand Analyzer + Personal Pull Extractor — COMPLETE (2026-08-13). 106/106 tests, QC PASS on 3rd re-verification (pass 1: F-1 through F-4 blocking, incl. a regression of Slice 4's F-3 pattern; pass 2: F-5, a stale doc comment left asserting the pre-fix contract; pass 3: PASS, all closed).
 - [x] Slice 6: Landscape Researcher + Gap Hypothesis Generator — COMPLETE (2026-08-13). searchWeb failure boundary resolved DDR-0001 Row 9 (3 QC rounds); Landscape Researcher + Gap Hypothesis Generator implementation (2 QC rounds, 2 real data-loss bugs found and fixed). 179/179 tests, tsc clean.
 - [x] Slice 7: Uncertainty Compiler + Recommendation Engine — COMPLETE (2026-08-13). 3 QC rounds (pass 1: 2 blocking bugs — cross-investigation evidence leakage in a new read helper, and a Date/string type lie; pass 2: 1 blocking test-coverage gap that also surfaced a genuine unimplemented Slice-5 requirement — numeric-scope non-adoption guard missing from demandAnalyzer.ts entirely; pass 3: PASS, mutation-tested). 208/208 tests, tsc clean.
-- [ ] Slice 8: Provenance Recorder — PENDING
+- [x] Slice 8: Provenance Recorder — COMPLETE (2026-08-14). Per Danny's binding directive: instrumented callForcedTool/searchWeb rather than adding a second validation/repair layer. 2 QC rounds (pass 1: 2 blocking bugs — a migration that would fail against real pre-existing data, and a validation-record grouping bug that would fabricate repair histories once a step calls the same tool twice; pass 2: PASS, independently re-probed). 227/227 tests, tsc clean.
 - [ ] Slice 9: Brief Assembler — PENDING
 - [ ] Slice 10: Investigation Screen — Completed State — PENDING
 - [ ] Slice 11: Decision Recorder + Decision Form + Decision Confirmation Panel — PENDING
 - [ ] Slice 12: Validity/Invalidation Service + Decision-History Banner — PENDING
 
 ## Current
-Slice: 8 starting — Provenance Recorder
-Step: commit Slice 7 completion to PR #6, then begin Slice 8 architecture design
-Last updated: 2026-08-13
+Slice: 9 starting — Brief Assembler
+Step: commit Slice 8 completion to PR #6, then begin Slice 9 architecture design
+Last updated: 2026-08-14
+
+## Fix Attempts (Slice 8 — Provenance Recorder)
+| Test/File | Attempts | Last Error |
+|-----------|----------|------------|
+| Architecture design (§1.9) | 1 | @architect designed an AsyncLocalStorage-based collector per Danny's explicit "instrument, don't duplicate" directive — zero-churn to all 7 existing call sites. Resolved a roadmap-scope question explicitly: Slice 8 builds the Provenance Recorder library, Slice 9's generateBriefVersion orchestrator wires it into the actual pipeline sequence — not guessed silently. |
+| Implementation + fixture round + QC pass 1 | 1 | 225/225 after a migration-application fixture round (migration 006 wasn't applied to the test DB, plus 2 real test-fixture bugs it surfaced: a non-UUID literal in a uuid column, and 8 tests missing a required parent generation_run row for a new FK — both fixed). QC pass 1: FAIL — 2 blocking findings. BLOCKER-1: migration 006's FK on web_search_query.generation_run_id was an immediate validating constraint that QC live-probed would fail against real pre-existing orphaned data from Slice 6 (migration 005 shipped this column with no FK at all). BLOCKER-2: buildValidationRecords grouped tool invocations by toolName alone — QC live-probed that two callForcedTool calls with the same tool name within one step would merge into a single fabricated SchemaValidationRecord with an impossible attempts sequence, violating the documented 1+MAX_REPAIR_ATTEMPTS bound; latent today but explicitly anticipated by Slice 9's step design. |
+| Fix round + QC pass 2 | 1 | BLOCKER-1 fixed via NOT VALID constraint (skips validating existing rows, still enforces new writes, documented rationale for not using migration 005's DEFERRABLE pattern). BLOCKER-2 fixed via a per-invocation callId (UUID) generated once per callForcedTool call, grouping by callId instead of toolName. Also fixed a related field-semantics issue (fieldPath was silently holding a tool name instead of its documented schema-field-path meaning — redocumented honestly rather than faked) and corrected a now-false "zero churn" claim in the architecture doc. QC pass 2: PASS — all fixes independently re-probed against QC's own constructed scenarios (a fresh orphaned-row DB state, a fresh same-tool-twice invocation sequence), not just the committed tests. 227/227 tests, tsc clean. |
 
 ## Fix Attempts (Slice 7 — Uncertainty Compiler + Recommendation Engine)
 | Test/File | Attempts | Last Error |

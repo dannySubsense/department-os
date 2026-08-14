@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { CapturedToolInvocation } from './provenanceContext.js';
 
 /** Dedicated unit coverage for `callForcedTool`'s R-4 validate -> repair-once -> hard-fail control
  *  loop (Architecture §3/§4, Danny-binding). This boundary was previously only exercised
@@ -18,6 +19,7 @@ vi.mock('@anthropic-ai/sdk', () => {
 });
 
 const { callForcedTool, LlmValidationError } = await import('./llmClient.js');
+const { withProvenanceCollector } = await import('./provenanceContext.js');
 
 function toolUseResponse(input: unknown) {
   return {
@@ -138,5 +140,105 @@ describe('callForcedTool (R-4 validate -> repair-once -> hard-fail)', () => {
 
     expect(result.attempts).toBe(2);
     expect(createMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('callForcedTool — attemptHistory telemetry (Architecture §1.9 points 1/2)', () => {
+  it('populates attemptHistory with exactly one entry, carrying rawOutput/valid/model/timing, on a first-attempt success', async () => {
+    createMock.mockResolvedValueOnce(toolUseResponse({ ok: true }));
+
+    const result = await callForcedTool({
+      ...baseParams,
+      validate: (input) => ({ valid: true, value: input as { ok: boolean } }),
+    });
+
+    expect(result.attemptHistory).toHaveLength(1);
+    const attempt = result.attemptHistory![0];
+    expect(attempt.attemptNumber).toBe(1);
+    expect(attempt.valid).toBe(true);
+    expect(JSON.parse(attempt.rawOutput)).toEqual({ ok: true });
+    expect(attempt.modelIdentifier).toBeTruthy();
+    expect(typeof attempt.startedAt).toBe('string');
+    expect(typeof attempt.completedAt).toBe('string');
+    // Exactly 1 underlying model call for a first-attempt success — no extra call introduced.
+    expect(createMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('populates attemptHistory with exactly 2 entries (first invalid, repair valid) on the repair-succeeds path', async () => {
+    createMock
+      .mockResolvedValueOnce(toolUseResponse({ ok: 'not-a-boolean' }))
+      .mockResolvedValueOnce(toolUseResponse({ ok: true }));
+
+    const validate = (input: unknown) => {
+      const v = input as { ok: unknown };
+      return typeof v.ok === 'boolean'
+        ? { valid: true as const, value: v as { ok: boolean } }
+        : { valid: false as const, error: 'ok must be boolean' };
+    };
+
+    const result = await callForcedTool({ ...baseParams, validate });
+
+    expect(result.attemptHistory).toHaveLength(2);
+    expect(result.attemptHistory![0].attemptNumber).toBe(1);
+    expect(result.attemptHistory![0].valid).toBe(false);
+    expect(result.attemptHistory![0].validationError).toBe('ok must be boolean');
+    expect(result.attemptHistory![1].attemptNumber).toBe(2);
+    expect(result.attemptHistory![1].valid).toBe(true);
+    // MAX_REPAIR_ATTEMPTS unchanged: still exactly 2 underlying model calls, not 3.
+    expect(createMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('populates attemptHistory with exactly 2 entries (both invalid) on the repair-also-fails path, thrown as LlmValidationError.attemptHistory', async () => {
+    createMock
+      .mockResolvedValueOnce(toolUseResponse({ ok: 'bad-1' }))
+      .mockResolvedValueOnce(toolUseResponse({ ok: 'bad-2' }));
+
+    const validate = (input: unknown) => {
+      const v = input as { ok: unknown };
+      return typeof v.ok === 'boolean'
+        ? { valid: true as const, value: v as { ok: boolean } }
+        : { valid: false as const, error: 'ok must be boolean' };
+    };
+
+    try {
+      await callForcedTool({ ...baseParams, validate });
+      expect.unreachable('callForcedTool should have thrown LlmValidationError');
+    } catch (err) {
+      expect(err).toBeInstanceOf(LlmValidationError);
+      const validationErr = err as InstanceType<typeof LlmValidationError>;
+      expect(validationErr.attemptHistory).toHaveLength(2);
+      expect(validationErr.attemptHistory[0].valid).toBe(false);
+      expect(validationErr.attemptHistory[1].valid).toBe(false);
+      // Existing fields keep their original meaning — no breaking change (Architecture §1.9 point 2).
+      expect(validationErr.attempts).toBe(2);
+      expect(validationErr.rawOutput).toEqual({ ok: 'bad-2' });
+    }
+    // Still exactly 2 underlying model calls — no 3rd call introduced by the telemetry addition.
+    expect(createMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('calls recordToolInvocation with the correct tool name for each attempt when a provenance collector scope is open', async () => {
+    createMock
+      .mockResolvedValueOnce(toolUseResponse({ ok: 'not-a-boolean' }))
+      .mockResolvedValueOnce(toolUseResponse({ ok: true }));
+
+    const validate = (input: unknown) => {
+      const v = input as { ok: unknown };
+      return typeof v.ok === 'boolean'
+        ? { valid: true as const, value: v as { ok: boolean } }
+        : { valid: false as const, error: 'ok must be boolean' };
+    };
+
+    const captured: CapturedToolInvocation[] = [];
+    const collector = { record: (inv: CapturedToolInvocation) => captured.push(inv) };
+
+    await withProvenanceCollector(collector, () => callForcedTool({ ...baseParams, validate }));
+
+    expect(captured).toHaveLength(2);
+    expect(captured.every((inv) => inv.toolName === 'test_tool')).toBe(true);
+    expect(captured[0].attemptNumber).toBe(1);
+    expect(captured[0].valid).toBe(false);
+    expect(captured[1].attemptNumber).toBe(2);
+    expect(captured[1].valid).toBe(true);
   });
 });

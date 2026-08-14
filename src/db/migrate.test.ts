@@ -34,6 +34,7 @@ describe('runMigrations', () => {
         '003_source_artifact_resolved_content.sql',
         '004_claims_and_evidence.sql',
         '005_web_search_query_results.sql',
+        '006_generation_run_provenance.sql',
       ]);
 
       const column = await db.query(
@@ -116,6 +117,7 @@ describe('runMigrations', () => {
         '003_source_artifact_resolved_content.sql',
         '004_claims_and_evidence.sql',
         '005_web_search_query_results.sql',
+        '006_generation_run_provenance.sql',
       ]);
 
       // The intended triggers must exist on THEIR OWN tables — scoped via tgrelid resolved
@@ -176,6 +178,7 @@ describe('runMigrations', () => {
         '003_source_artifact_resolved_content.sql',
         '004_claims_and_evidence.sql',
         '005_web_search_query_results.sql',
+        '006_generation_run_provenance.sql',
       ]);
 
       const after = await db.query(
@@ -202,6 +205,94 @@ describe('runMigrations', () => {
            AND conrelid = 'source_artifact'::regclass`,
       );
       expect(constraint.rowCount).toBe(1);
+    } finally {
+      await db.query(`DROP SCHEMA "${schema}" CASCADE`);
+      await db.end();
+    }
+  });
+
+  it('006 applies without failing against a pre-existing orphaned web_search_query row (QC BLOCKER-1: NOT VALID backfill-safety), and still rejects new violations', async () => {
+    // Reproduces the exact failure QC live-probed: web_search_query.generation_run_id shipped in
+    // 005 as a bare NOT NULL UUID with no FK (see 005's header note — generation_run didn't exist
+    // yet). Any row inserted under that regime — including this test's planted row — may reference
+    // a generation_run_id with no corresponding generation_run row. A plain (validating)
+    // `ADD CONSTRAINT ... FOREIGN KEY` in 006 would fail to apply against exactly this state; the
+    // fix (NOT VALID) must let 006 apply cleanly here instead.
+    const schema = 'migrate_test_006_orphan_backfill';
+    const db = await schemaPool(schema);
+    try {
+      // Apply 001-005 by hand (mirrors the "pre-existing database" pattern above), stopping short
+      // of 006 so the FK does not exist yet when the orphaned row is planted.
+      for (const filename of [
+        '001_initial_schema.sql',
+        '002_nullable_submission_id.sql',
+        '003_source_artifact_resolved_content.sql',
+        '004_claims_and_evidence.sql',
+        '005_web_search_query_results.sql',
+      ]) {
+        const sql = readFileSync(path.join(MIGRATIONS_DIR, filename), 'utf-8');
+        await db.query(sql);
+      }
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          filename    TEXT PRIMARY KEY,
+          applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `);
+      for (const filename of [
+        '001_initial_schema.sql',
+        '002_nullable_submission_id.sql',
+        '003_source_artifact_resolved_content.sql',
+        '004_claims_and_evidence.sql',
+        '005_web_search_query_results.sql',
+      ]) {
+        await db.query(`INSERT INTO schema_migrations (filename) VALUES ($1)`, [filename]);
+      }
+
+      // Plant an orphaned web_search_query row: generation_run_id points at nothing, which was
+      // legal under 005's bare-UUID-no-FK column.
+      const investigation = await db.query(
+        `INSERT INTO investigation (id) VALUES (gen_random_uuid()) RETURNING id`,
+      );
+      const orphanGenerationRunId = '00000000-0000-0000-0000-000000000000';
+      const orphanQuery = await db.query(
+        `INSERT INTO web_search_query
+           (id, investigation_id, generation_run_id, query, performed_at)
+         VALUES (gen_random_uuid(), $1, $2, 'orphaned pre-006 row', now())
+         RETURNING id`,
+        [investigation.rows[0].id, orphanGenerationRunId],
+      );
+
+      // 006 must apply without throwing despite the orphan — this is the behavioral assertion
+      // that a plain validating ADD CONSTRAINT would fail.
+      const applied = await runMigrations(db);
+      expect(applied).toEqual(['006_generation_run_provenance.sql']);
+
+      // The orphaned row is untouched (never silently dropped) and the constraint exists, marked
+      // NOT VALID (convalidated = false) rather than validated.
+      const orphanStillPresent = await db.query(
+        `SELECT 1 FROM web_search_query WHERE id = $1`,
+        [orphanQuery.rows[0].id],
+      );
+      expect(orphanStillPresent.rowCount).toBe(1);
+
+      const constraint = await db.query(
+        `SELECT convalidated FROM pg_constraint
+         WHERE conname = 'web_search_query_generation_run_id_fkey'
+           AND conrelid = 'web_search_query'::regclass`,
+      );
+      expect(constraint.rowCount).toBe(1);
+      expect(constraint.rows[0].convalidated).toBe(false);
+
+      // Enforcement going forward: a NEW row with a nonexistent generation_run_id is rejected.
+      await expect(
+        db.query(
+          `INSERT INTO web_search_query
+             (id, investigation_id, generation_run_id, query, performed_at)
+           VALUES (gen_random_uuid(), $1, gen_random_uuid(), 'should be rejected', now())`,
+          [investigation.rows[0].id],
+        ),
+      ).rejects.toThrow();
     } finally {
       await db.query(`DROP SCHEMA "${schema}" CASCADE`);
       await db.end();

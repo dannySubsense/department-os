@@ -1,13 +1,14 @@
 import { beforeEach, beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import type { AddressInfo } from 'node:net';
 import { createServer } from 'node:http';
-import { randomUUID } from 'node:crypto';
 import { pool } from '../db/pool.js';
 import {
   __allowPrivateNetworkHostForTests,
   __resetPrivateNetworkTestAllowlist,
 } from './ssrfGuardedFetch.js';
 import type { SearchWebAdapterResult } from '../types/domain.js';
+import { withProvenanceCollector, type CapturedToolInvocation } from './provenanceContext.js';
+import { createGenerationRun } from './provenanceRecorder.js';
 
 /** searchWeb orchestrator coverage (Architecture §1.6 items 2/4): query-limited short-circuit
  *  persistence, per-URL controlled retrieval, SourceArtifact creation with
@@ -79,10 +80,20 @@ async function insertInvestigation(): Promise<string> {
   return result.rows[0].id;
 }
 
+// migration 006 added web_search_query.generation_run_id -> generation_run(id) FK: every
+// generationRunId used below must reference a real generation_run row, not a bare randomUUID().
+async function insertGenerationRun(investigationId: string): Promise<string> {
+  const run = await createGenerationRun({
+    investigationId,
+    runtimeIdentifier: 'test-runtime',
+  });
+  return run.id;
+}
+
 describe('searchWeb — query-limited short-circuit', () => {
   it('persists a WebSearchQuery with results: [] and a QueryLimitation, and never attempts retrieval', async () => {
     const investigationId = await insertInvestigation();
-    const generationRunId = randomUUID();
+    const generationRunId = await insertGenerationRun(investigationId);
 
     searchWebAdapterMock.mockResolvedValueOnce({
       outcome: 'query-limited',
@@ -128,7 +139,7 @@ describe('searchWeb — query-limited short-circuit', () => {
 describe('searchWeb — controlled retrieval, classification, and not-dropped persistence', () => {
   it('persists exactly one WebSearchResult per selected URL, classifying retrieved/blocked/failed via deterministic fixtures, and creates a SourceArtifact (origin: landscape-research) only for the retrieved one', async () => {
     const investigationId = await insertInvestigation();
-    const generationRunId = randomUUID();
+    const generationRunId = await insertGenerationRun(investigationId);
 
     const retrievedUrl = `${fixtureBaseUrl}/ok`;
     const blockedUrl = `${fixtureBaseUrl}/forbidden`; // deterministic 403 -> blocked
@@ -182,7 +193,7 @@ describe('searchWeb — controlled retrieval, classification, and not-dropped pe
 
   it('persists zero WebSearchResult rows when the adapter succeeds with zero selected URLs (legitimate empty result set, not a limitation)', async () => {
     const investigationId = await insertInvestigation();
-    const generationRunId = randomUUID();
+    const generationRunId = await insertGenerationRun(investigationId);
 
     searchWebAdapterMock.mockResolvedValueOnce({
       outcome: 'succeeded',
@@ -216,7 +227,7 @@ describe('persistSucceeded — transaction rollback / not-dropped invariant (QC 
   // never a partial/truncated WebSearchResult set.
   it('rolls back the entire transaction and persists zero rows when a duplicate URL in `results` violates the UNIQUE(web_search_query_id, url) constraint mid-loop', async () => {
     const investigationId = await insertInvestigation();
-    const generationRunId = randomUUID();
+    const generationRunId = await insertGenerationRun(investigationId);
     const performedAt = new Date().toISOString();
 
     const duplicateUrl = 'https://example.com/duplicate-forced-for-test';
@@ -260,7 +271,7 @@ describe('persistSucceeded — transaction rollback / not-dropped invariant (QC 
 describe('searchWeb — partial-success queryLimitation (finding 1)', () => {
   it('persists BOTH retrieved results AND a query_limitation row in the same transaction when one web_search_tool_result block succeeds and another errors, and outcome stays succeeded with URLs present', async () => {
     const investigationId = await insertInvestigation();
-    const generationRunId = randomUUID();
+    const generationRunId = await insertGenerationRun(investigationId);
     const retrievedUrl = `${fixtureBaseUrl}/ok`;
 
     searchWebAdapterMock.mockResolvedValueOnce({
@@ -306,7 +317,7 @@ describe('searchWeb — partial-success queryLimitation (finding 1)', () => {
 describe('searchWeb — dedup of duplicate selectedResultUrls (finding 3)', () => {
   it('persists exactly one WebSearchResult per unique URL and does not lose the WebSearchQuery when selectedResultUrls contains an exact duplicate', async () => {
     const investigationId = await insertInvestigation();
-    const generationRunId = randomUUID();
+    const generationRunId = await insertGenerationRun(investigationId);
     const retrievedUrl = `${fixtureBaseUrl}/ok`;
 
     searchWebAdapterMock.mockResolvedValueOnce({
@@ -338,10 +349,99 @@ describe('searchWeb — dedup of duplicate selectedResultUrls (finding 3)', () =
   });
 });
 
+describe('searchWeb — provenance telemetry (Architecture §1.9 "searchWeb telemetry")', () => {
+  it('records "web_search" and "url-fetch" recordToolInvocation calls with correct outcomes when a collector scope is open, without changing searchWeb\'s own return value or persistence', async () => {
+    const investigationId = await insertInvestigation();
+    const generationRunId = await insertGenerationRun(investigationId);
+
+    const retrievedUrl = `${fixtureBaseUrl}/ok`;
+    const blockedUrl = `${fixtureBaseUrl}/forbidden`;
+    const failedUrl = `http://localhost:${refusedPort}/unreachable`;
+
+    searchWebAdapterMock.mockResolvedValueOnce({
+      outcome: 'succeeded',
+      query: 'provenance scoped query',
+      performedAt: new Date().toISOString(),
+      selectedResultUrls: [retrievedUrl, blockedUrl, failedUrl],
+    });
+
+    const captured: CapturedToolInvocation[] = [];
+    const collector = { record: (inv: CapturedToolInvocation) => captured.push(inv) };
+
+    const result = await withProvenanceCollector(collector, () =>
+      searchWeb({ investigationId, generationRunId, query: 'provenance scoped query' }),
+    );
+
+    // Instrumentation does not alter searchWeb's own behavior — same shape/assertions as the
+    // unscoped "controlled retrieval" test above.
+    expect(result.results).toHaveLength(3);
+    const byUrl = Object.fromEntries(result.results.map((r) => [r.url, r]));
+    expect(byUrl[retrievedUrl].status).toBe('retrieved');
+    expect(byUrl[blockedUrl].status).toBe('blocked');
+    expect(byUrl[failedUrl].status).toBe('failed');
+
+    const webSearchInvocations = captured.filter((inv) => inv.toolName === 'web_search');
+    expect(webSearchInvocations).toHaveLength(1);
+    expect(webSearchInvocations[0].outcome).toBe('retrieved');
+
+    const urlFetchInvocations = captured.filter((inv) => inv.toolName === 'url-fetch');
+    expect(urlFetchInvocations).toHaveLength(3);
+    expect(new Set(urlFetchInvocations.map((inv) => inv.outcome))).toEqual(
+      new Set(['retrieved', 'blocked', 'failed']),
+    );
+  }, 20_000);
+
+  it('records a "web_search" invocation with outcome "query-limited" when the adapter reports query-limited, with a scope open', async () => {
+    const investigationId = await insertInvestigation();
+    const generationRunId = await insertGenerationRun(investigationId);
+
+    searchWebAdapterMock.mockResolvedValueOnce({
+      outcome: 'query-limited',
+      query: 'provenance limited query',
+      performedAt: new Date().toISOString(),
+      selectedResultUrls: [],
+      queryLimitation: {
+        id: '',
+        webSearchQueryId: '',
+        reason: 'provider error: 429 rate limited',
+        occurredAt: new Date().toISOString(),
+      },
+    });
+
+    const captured: CapturedToolInvocation[] = [];
+    const collector = { record: (inv: CapturedToolInvocation) => captured.push(inv) };
+
+    const result = await withProvenanceCollector(collector, () =>
+      searchWeb({ investigationId, generationRunId, query: 'provenance limited query' }),
+    );
+
+    expect(result.results).toEqual([]);
+    expect(captured).toHaveLength(1);
+    expect(captured[0].toolName).toBe('web_search');
+    expect(captured[0].outcome).toBe('query-limited');
+  });
+
+  it('is a no-op that does not throw or alter behavior when searchWeb runs with no provenance collector scope open (all prior describe blocks in this file already exercise this — this test asserts it explicitly)', async () => {
+    const investigationId = await insertInvestigation();
+    const generationRunId = await insertGenerationRun(investigationId);
+
+    searchWebAdapterMock.mockResolvedValueOnce({
+      outcome: 'succeeded',
+      query: 'no scope query',
+      performedAt: new Date().toISOString(),
+      selectedResultUrls: [],
+    });
+
+    await expect(
+      searchWeb({ investigationId, generationRunId, query: 'no scope query' }),
+    ).resolves.toMatchObject({ results: [] });
+  });
+});
+
 describe('persistSucceeded — atomicity, no orphan SourceArtifact on rollback (finding 4)', () => {
   it('leaves no orphan source_artifact row when the transaction fails after the source_artifact insert but before commit', async () => {
     const investigationId = await insertInvestigation();
-    const generationRunId = randomUUID();
+    const generationRunId = await insertGenerationRun(investigationId);
     const performedAt = new Date().toISOString();
 
     const retrievedUrl = 'https://example.com/atomicity-forced-for-test';

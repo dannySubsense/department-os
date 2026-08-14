@@ -1,5 +1,8 @@
 import 'dotenv/config';
+import { randomUUID } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
+import { recordToolInvocation } from './provenanceContext.js';
+import type { SchemaValidationAttempt } from '../types/domain.js';
 
 /** DDR-0001 (ACCEPTED): Claude Agent SDK / direct Anthropic API using forced tool-use for
  *  schema-constrained structured output. This is the sole LLM call site pattern for the codebase
@@ -31,15 +34,16 @@ export function getClient(): Anthropic {
 }
 
 /** Thrown when a forced-tool-use call fails schema validation on the original attempt AND the one
- *  bounded repair attempt (R-4 fail-closed — never silently coerced). `rawOutput` and
- *  `validationErrors` retain every attempt's detail for provenance, matching Architecture §3's
- *  SchemaValidationRecord/SchemaValidationAttempt shape (full GenerationStep/GenerationRun
- *  provenance wiring is Slice 8 scope; this class carries the minimum this slice needs). */
+ *  bounded repair attempt (R-4 fail-closed — never silently coerced). `rawOutput` and `attempts`
+ *  retain their original meaning (last raw output, attempt count) unchanged (Architecture §1.9
+ *  point 2); `attemptHistory` (NEW, Slice 8) carries the full per-attempt record, matching the
+ *  refined SchemaValidationAttempt shape. */
 export class LlmValidationError extends Error {
   constructor(
     message: string,
     public readonly rawOutput: unknown,
     public readonly attempts: number,
+    public readonly attemptHistory: SchemaValidationAttempt[] = [],
   ) {
     super(message);
     this.name = 'LlmValidationError';
@@ -49,6 +53,11 @@ export class LlmValidationError extends Error {
 export interface ForcedToolCallResult<T> {
   value: T;
   attempts: number; // 1 = valid on first attempt, 2 = required the one repair attempt
+  attemptHistory?: SchemaValidationAttempt[]; // NEW (Slice 8) — full per-attempt record, length
+  // === attempts when populated, using the refined SchemaValidationAttempt shape (Architecture
+  // §1.9 point 2). Optional so the many existing test files that construct
+  // ForcedToolCallResult-shaped mock literals directly (bypassing callForcedTool itself) remain
+  // unchanged — callForcedTool's own real return value always populates this field.
 }
 
 export interface CallForcedToolParams<T> {
@@ -73,9 +82,14 @@ export async function callForcedTool<T>(
   params: CallForcedToolParams<T>,
 ): Promise<ForcedToolCallResult<T>> {
   const anthropic = getClient();
+  // One callId per callForcedTool() invocation, shared by every attempt it makes — lets
+  // provenanceRecorder.ts's buildValidationRecords correctly separate two distinct calls to the
+  // same toolName within one GenerationStep (see CapturedToolInvocation.callId doc comment).
+  const callId = randomUUID();
 
   let lastRawOutput: unknown;
   let lastError = '';
+  const attemptHistory: SchemaValidationAttempt[] = [];
 
   for (let attempt = 1; attempt <= MAX_REPAIR_ATTEMPTS + 1; attempt++) {
     const userContent =
@@ -86,6 +100,7 @@ export async function callForcedTool<T>(
           `Previous tool input: ${JSON.stringify(lastRawOutput)}\n` +
           `Produce a corrected tool call that fixes this error.`;
 
+    const startedAt = new Date().toISOString();
     const response = await anthropic.messages.create({
       model: MODEL,
       max_tokens: 8192,
@@ -100,6 +115,10 @@ export async function callForcedTool<T>(
       ],
       tool_choice: { type: 'tool', name: params.toolName },
     });
+    const completedAt = new Date().toISOString();
+    const tokenUsage = response.usage
+      ? { inputTokens: response.usage.input_tokens, outputTokens: response.usage.output_tokens }
+      : undefined;
 
     const toolUseBlock = response.content.find(
       (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use',
@@ -108,13 +127,61 @@ export async function callForcedTool<T>(
     if (!toolUseBlock) {
       lastRawOutput = response.content;
       lastError = 'model response contained no tool_use block';
+      const invalidAttempt: SchemaValidationAttempt = {
+        attemptNumber: attempt,
+        rawOutput: JSON.stringify(lastRawOutput),
+        valid: false,
+        validationError: lastError,
+        startedAt,
+        completedAt,
+        modelIdentifier: MODEL,
+        tokenUsage,
+      };
+      attemptHistory.push(invalidAttempt);
+      recordToolInvocation({
+        toolName: params.toolName,
+        startedAt,
+        completedAt,
+        modelIdentifier: MODEL,
+        attemptNumber: attempt,
+        rawOutput: lastRawOutput,
+        valid: false,
+        validationError: lastError,
+        tokenUsage,
+        callId,
+      });
       continue;
     }
 
     lastRawOutput = toolUseBlock.input;
     const result = params.validate(toolUseBlock.input);
+
+    const thisAttempt: SchemaValidationAttempt = {
+      attemptNumber: attempt,
+      rawOutput: JSON.stringify(lastRawOutput),
+      valid: result.valid,
+      validationError: result.valid ? undefined : result.error,
+      startedAt,
+      completedAt,
+      modelIdentifier: MODEL,
+      tokenUsage,
+    };
+    attemptHistory.push(thisAttempt);
+    recordToolInvocation({
+      toolName: params.toolName,
+      startedAt,
+      completedAt,
+      modelIdentifier: MODEL,
+      attemptNumber: attempt,
+      rawOutput: lastRawOutput,
+      valid: result.valid,
+      validationError: result.valid ? undefined : result.error,
+      tokenUsage,
+      callId,
+    });
+
     if (result.valid) {
-      return { value: result.value, attempts: attempt };
+      return { value: result.value, attempts: attempt, attemptHistory };
     }
     lastError = result.error;
   }
@@ -123,5 +190,6 @@ export async function callForcedTool<T>(
     `callForcedTool: "${params.toolName}" failed schema validation after ${MAX_REPAIR_ATTEMPTS + 1} attempt(s): ${lastError}`,
     lastRawOutput,
     MAX_REPAIR_ATTEMPTS + 1,
+    attemptHistory,
   );
 }

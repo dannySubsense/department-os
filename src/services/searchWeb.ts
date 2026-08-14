@@ -3,6 +3,8 @@ import { pool } from '../db/pool.js';
 import { searchWebAdapter } from './searchWebAdapter.js';
 import { fetchWithGuards } from './ssrfGuardedFetch.js';
 import { classifyRetrievalOutcome, type RetrievalOutcome } from './classifyRetrievalOutcome.js';
+import { recordToolInvocation } from './provenanceContext.js';
+import { MODEL } from './llmClient.js';
 import type { QueryLimitation, WebSearchQuery, WebSearchResult } from '../types/domain.js';
 
 export interface SearchWebInput {
@@ -31,7 +33,18 @@ export interface SearchWebInput {
  *     `SearchWebAdapterResult.queryLimitation`'s doc comment) and is persisted alongside the
  *     results in this same transaction. */
 export async function searchWeb(input: SearchWebInput): Promise<WebSearchQuery> {
+  const adapterStartedAt = new Date().toISOString();
   const adapterResult = await searchWebAdapter(input.query);
+  const adapterCompletedAt = new Date().toISOString();
+
+  recordToolInvocation({
+    toolName: 'web_search',
+    startedAt: adapterStartedAt,
+    completedAt: adapterCompletedAt,
+    modelIdentifier: MODEL,
+    outcome: adapterResult.outcome === 'query-limited' ? 'query-limited' : 'retrieved',
+    failureReason: adapterResult.queryLimitation?.reason,
+  });
 
   if (adapterResult.outcome === 'query-limited') {
     if (!adapterResult.queryLimitation) {
@@ -78,20 +91,32 @@ export interface RetrievedClassification {
 }
 
 async function retrieveAndClassify(rawUrl: string): Promise<RetrievedClassification> {
-  const retrievedAt = new Date().toISOString();
+  const startedAt = new Date().toISOString();
+
+  const record = (status: WebSearchResult['status'], failureReason: string | undefined): void => {
+    recordToolInvocation({
+      toolName: 'url-fetch',
+      startedAt,
+      completedAt: new Date().toISOString(),
+      outcome: status,
+      failureReason,
+    });
+  };
 
   let url: URL;
   try {
     url = new URL(rawUrl);
   } catch {
     const { status, failureReason } = classifyRetrievalOutcome({ kind: 'invalid-url', rawUrl });
-    return { url: rawUrl, retrievedAt, status, failureReason };
+    record(status, failureReason);
+    return { url: rawUrl, retrievedAt: startedAt, status, failureReason };
   }
 
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     const outcome: RetrievalOutcome = { kind: 'unsupported-protocol', protocol: url.protocol };
     const { status, failureReason } = classifyRetrievalOutcome(outcome);
-    return { url: rawUrl, retrievedAt, status, failureReason };
+    record(status, failureReason);
+    return { url: rawUrl, retrievedAt: startedAt, status, failureReason };
   }
 
   try {
@@ -103,16 +128,18 @@ async function retrieveAndClassify(rawUrl: string): Promise<RetrievedClassificat
       bodyLength: body.trim().length,
     });
 
+    record(status, failureReason);
     if (status === 'retrieved') {
-      return { url: rawUrl, retrievedAt, status, resolvedContent: body };
+      return { url: rawUrl, retrievedAt: startedAt, status, resolvedContent: body };
     }
-    return { url: rawUrl, retrievedAt, status, failureReason };
+    return { url: rawUrl, retrievedAt: startedAt, status, failureReason };
   } catch (err) {
     const { status, failureReason } = classifyRetrievalOutcome({
       kind: 'error',
       error: err instanceof Error ? err : new Error(String(err)),
     });
-    return { url: rawUrl, retrievedAt, status, failureReason };
+    record(status, failureReason);
+    return { url: rawUrl, retrievedAt: startedAt, status, failureReason };
   }
 }
 

@@ -354,3 +354,95 @@ export interface RecommendationCandidate {
   decision: RecommendationDecision;
   rationale: string; // must reference Brief evidence — never bare/scored (Q-1, US-7 AC1)
 }
+
+// ---- Provenance (Architecture §3 "Provenance", refined per §1.9 — Slice 8). These types are
+// introduced by this slice for the first time (no prior base shape existed in this file), so the
+// §1.9 "refinements" are folded directly into the shapes below rather than layered on afterward. ----
+
+/** One record per Brief-generating run — covers every component in Section 2's pipeline for a
+ *  given Investigation. US-11. `outcome: 'in-progress'` (§1.9 point 3) is set at
+ *  `createGenerationRun` time, before any Slice 4 step begins; moved to 'succeeded'/'failed' only
+ *  by `finalizeGenerationRun`. */
+export interface GenerationRun {
+  id: string;
+  investigationId: string;
+  briefVersionId: string | null; // set only when outcome === 'succeeded'
+  outcome: 'in-progress' | 'succeeded' | 'failed';
+  startedAt: string;
+  completedAt: string; // only meaningful once outcome !== 'in-progress'
+  runtimeIdentifier: string; // e.g. candidate runtime name/version under evaluation
+  modelIdentifiers: string[]; // computed by finalizeGenerationRun as the union of every step's
+  // modelIdentifier + every attempt's modelIdentifier across stepLog
+  toolsInvoked: string[]; // computed by finalizeGenerationRun as the union of every
+  // SchemaValidationRecord.toolName + every ToolInvocationRecord.toolName across stepLog
+  stepLog: GenerationStep[]; // ordered, one entry per component in Section 2 — appended to by
+  // recordGenerationStep, in order, as each step completes or fails
+}
+
+/** One entry per component step in a GenerationRun's pipeline. `outcome` (§1.9 point 3) is
+ *  required — 'failed' covers both "produced a terminal-failed SchemaValidationRecord" and "threw
+ *  an unexpected error" (see `error`). */
+export interface GenerationStep {
+  component: string; // matches a Section 2 component name
+  startedAt: string;
+  completedAt: string;
+  outcome: 'succeeded' | 'failed';
+  error?: string; // populated iff outcome === 'failed' AND the failure was an unexpected thrown
+  // error (not a schema-validation terminal-fail, already represented by
+  // validationRecords[].finalOutcome === 'invalid')
+  modelIdentifier?: string;
+  inputRefs: string[]; // IDs of records this step read
+  outputRefs: string[]; // IDs of records this step produced
+  validationRecords?: SchemaValidationRecord[]; // one entry per schema-constrained structured
+  // output this step produced, subject to R-4's validation/repair mechanism
+  toolInvocations?: ToolInvocationRecord[]; // non-schema-validated tool telemetry (searchWeb's
+  // web_search adapter call and per-URL url-fetch retrieval attempts); unset for steps with no
+  // such calls
+}
+
+/** R-4 mitigation (Danny, binding) — one entry per schema-constrained structured output a step
+ *  produced. `toolName` (§1.9 point 3) is the callForcedTool toolName that produced this record —
+ *  disambiguates when a step invokes more than one forced-tool call. */
+export interface SchemaValidationRecord {
+  fieldPath: string; // Slice 8's actual implementation (provenanceRecorder.ts's
+  // buildValidationRecords) has no per-field granularity available from callForcedTool's current
+  // call sites, so this is populated with the same value as `toolName` below, not a dotted schema
+  // field path like 'GapHypothesis.category' — honestly redocumented here rather than left
+  // claiming semantics this implementation doesn't provide. A true per-field path would require a
+  // call-site change to callForcedTool's params, out of scope for Slice 8.
+  toolName: string; // the callForcedTool toolName that produced this record
+  attempts: SchemaValidationAttempt[]; // length 1 (no repair needed) up to 1 + MAX_REPAIR_ATTEMPTS
+  finalOutcome: 'valid' | 'invalid'; // 'invalid' iff every attempt, including repairs, failed
+}
+
+/** One captured generation attempt within a SchemaValidationRecord. `startedAt`/`completedAt`/
+ *  `modelIdentifier`/`tokenUsage` (§1.9 point 3) are client-captured (DDR-0001 Row 4: the API
+ *  provides no wall-clock timing). `modelIdentifier` is recorded per attempt, not once per step,
+ *  so a future change that varies the model on repair remains representable without a further
+ *  schema change. `tokenUsage` is optional per DDR-0001 Row 4's documented asymmetry — a
+ *  provider-rejected request yields no usage data, never defaulted to {0,0}. */
+export interface SchemaValidationAttempt {
+  attemptNumber: number; // 1 = original generation; 2 = first repair; etc.
+  rawOutput: string; // the model's output as produced, prior to validation — retained even when
+  // invalid; never overwritten or discarded
+  valid: boolean;
+  validationError?: string; // present iff valid === false
+  startedAt: string;
+  completedAt: string;
+  modelIdentifier: string;
+  tokenUsage?: { inputTokens: number; outputTokens: number };
+}
+
+/** Persisted projection of provenanceContext.ts's CapturedToolInvocation for invocations that are
+ *  NOT schema-validated structured output (searchWeb's two call kinds) — kept distinct from
+ *  SchemaValidationAttempt because it has no attemptNumber/repair concept and a differently-shaped
+ *  outcome (3-4-way status, not boolean valid/invalid). */
+export interface ToolInvocationRecord {
+  toolName: string; // 'web_search' | 'url-fetch'
+  startedAt: string;
+  completedAt: string;
+  outcome: 'retrieved' | 'blocked' | 'failed' | 'query-limited';
+  failureReason?: string; // present iff outcome !== 'retrieved'
+  modelIdentifier?: string; // set for 'web_search' (the adapter's own LLM call), unset for
+  // 'url-fetch' (plain HTTP, no model involved)
+}
