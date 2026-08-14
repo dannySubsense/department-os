@@ -142,7 +142,31 @@ unqualified generation-failed failure rule, and its 0–4 `NegativeFinding` test
 design's own §3 phase 3 check 1 note already established should read 0–3 given evidence's
 structurally-unreachable negative path; and the architecture's §1.9 finalization contract).
 
+**Revision note (revision 7 — this revision): NARROW patch, gate at `12d1902` FAIL.** Composer
+review: exactly-once finalization, zero-foreign ownership, locking, migration constraints, and the
+retry transition (revision 6's BLOCKING 1/3/5 fixes and the standing locking/migration work) are
+ACCEPTED and NOT re-examined here. Two blockers only, both scoped to §3:
+1. **Preflight never actually checked `problemBrief.current_version_id === input.supersedesVersionId`**
+   — a same-Brief, non-current target (e.g. current v3, supplied v1) passed preflight and produced
+   an off-chain branch. Fixed: §3 Phase 2 step 0 now explicitly rejects this case as
+   `InvalidSupersedeTargetError`, before any LLM call. Falsification test added.
+2. **The "this run's own extraction/research output" ownership narrowing (revision 6) is
+   incompatible with the live `demandAnalyzer.ts`/`personalPullExtractor.ts`/
+   `landscapeResearcher.ts`, which read ALL persisted Investigation evidence via
+   `getEvidenceForInvestigation`, not a run-scoped subset — making correct corrections
+   unassemblable.** Fixed per Danny's chosen resolution (Composer offered two options; Danny
+   selects the snapshotted-evidence-universe option as Producer): the evidence universe for a run
+   is the start-of-run `getEvidenceForInvestigation` snapshot UNION evidence created during the
+   run, stated once (§3 Phase 2) and referenced, not redefined, by phase 3's validation (§3 Phase
+   3 check 1(c)). Zero-foreign is unchanged. Two falsification tests added (a legitimate
+   older-local-evidence citation must succeed; an out-of-universe citation must still fail).
+   Flagged explicitly as a Producer decision under the Composer's "must not guess between
+   contracts" instruction, open to override at re-gate.
 
+Also corrected: the module plan's stale present-tense description of the Slice 8
+`runStepWithProvenance` correction as still requiring work — it is merged, commit `ce5be58`,
+pushed (§1). Nothing else in this document was touched; no other section was re-examined or
+restructured.
 
 ---
 
@@ -159,9 +183,10 @@ structurally-unreachable negative path; and the architecture's §1.9 finalizatio
 
 No changes to Slice 4–7 pipeline-component service files' own logic — `generateBriefVersion.ts` is a
 pure caller of their existing exported functions. Per Danny's OQ-1 ruling (revision 2, confirmed),
-`ExtractionResult` (Slice 4) is not extended. Per finding 6, Slice 8's `runStepWithProvenance` DOES
-require a correction, but that correction is explicitly out of scope for this document — Slice 9
-only declares the contract it needs from the corrected function (see §3).
+`ExtractionResult` (Slice 4) is not extended. Slice 8's `runStepWithProvenance` correction (finding
+6) is MERGED — commit `ce5be58`, pushed, not a pending dependency — its implementation was out of
+scope for this document to author, and this document only consumes its now-settled, now-available
+contract (see §3).
 
 ---
 
@@ -379,10 +404,19 @@ two other rules:
      doesn't exist → `InvalidSupersedeTargetError` (no ProblemBrief to correct), hard stop, zero
      LLM calls spent. Read the referenced `brief_version`; if it doesn't exist or its
      `problem_brief_id` doesn't match → `InvalidSupersedeTargetError` (wrong-Brief target), hard
-     stop, zero LLM calls spent. Otherwise, SNAPSHOT `preflightCurrentVersionId :=
-     problemBrief.current_version_id` (which, having just been read and matched against
-     `supersedesVersionId` implicitly by the caller's intent, equals `input.supersedesVersionId`
-     at this moment) and continue to step 1.
+     stop, zero LLM calls spent. **(Revision 7, BLOCKER 1 fix — this equality was previously
+     assumed "implicitly" and never actually checked.) Otherwise, explicitly compare
+     `problemBrief.current_version_id` against `input.supersedesVersionId`: if they are NOT equal
+     — i.e. `supersedesVersionId` names a real `BriefVersion` that DOES belong to this
+     `ProblemBrief` but is NOT the current one (e.g. current is v3, caller supplied v1) — throw
+     `InvalidSupersedeTargetError` ("supersedesVersionId is not the current version of this
+     ProblemBrief") right here, hard stop, zero LLM calls spent. This is a CALLER-CONTRACT error,
+     not a race: the request was already invalid the moment it was issued, before any concurrent
+     call could have changed anything — classifying it as `StaleCorrectionConflictError` would be
+     wrong (that class is reserved for a target that WAS current at preflight and changed during
+     the run, per §2's doc comment). Only once this equality holds** does preflight SNAPSHOT
+     `preflightCurrentVersionId := problemBrief.current_version_id` (now genuinely, explicitly
+     equal to `input.supersedesVersionId`, not merely assumed to be) and continue to step 1.
    - If `input.supersedesVersionId` is absent: read `problem_brief` for `investigationId`. If one
      already exists → `InvalidSupersedeTargetError` (caller must target the current version
      explicitly), hard stop, zero LLM calls spent. Otherwise, SNAPSHOT
@@ -398,6 +432,44 @@ two other rules:
      "classify from the CHANGE BETWEEN TWO OBSERVATIONS, not a single read" fix BLOCKING 2
      requires. Nothing about this preflight check re-validates or re-locks anything at phase 4;
      phase 4 only compares its own fresh read against this snapshot.
+   - **Falsification test to specify at Forge time (NEW, revision 7, BLOCKER 1):**
+     `ProblemBrief.currentVersionId` is v3; caller supplies `supersedesVersionId: v1` (a real
+     `BriefVersion` that DOES belong to this `ProblemBrief`, just not the current one). Assert:
+     rejected at preflight with `InvalidSupersedeTargetError` — specifically NOT
+     `StaleCorrectionConflictError` — zero LLM calls are made (no phase-2 step ever runs), and no
+     `BriefVersion` is persisted. This is the test that proves the previously-assumed-but-unchecked
+     `problemBrief.current_version_id === input.supersedesVersionId` equality is now an explicit,
+     enforced gate, not an implication.
+
+**The evidence universe for this run (revision 7, replacing revision 6's "this run's own
+extraction/research output" narrowing — Producer decision, flagged for Composer re-gate, see
+below).** Immediately after step 0, and BEFORE step 1 runs, snapshot
+`evidenceUniverse := getEvidenceForInvestigation(investigationId)` — the full set of
+`EvidenceItem`s persisted and visible for this Investigation at the moment this run begins,
+captured explicitly once, not re-derived later. This is the SAME call
+`demandAnalyzer.ts`/`personalPullExtractor.ts`/`landscapeResearcher.ts` already make internally
+(verified against the live code for this revision) — they read ALL persisted evidence for the
+Investigation, not a run-scoped subset, and `landscapeResearcher.ts`'s
+`LandscapeResearchResult.landscapeEvidenceItems` returns only NEWLY-created evidence, while its
+`ExistingSolutionCandidate`s may legitimately cite OLDER evidence from that same full read. The
+run's full evidence universe is therefore `evidenceUniverse ∪ landscapeEvidenceItems` (start-of-run
+snapshot UNION evidence created during this run) — not "this run's own output" alone. Phase 3
+check 1(c) below validates every non-`ClaimVersion` citation against exactly this union. **Older,
+local evidence a component legitimately read from the Investigation's full evidence set IS valid
+provenance** — it is not required to have been newly created by this run to be citable.
+
+> **Producer decision (this revision), made under the Composer's "the implementer must not guess
+> between contracts" instruction, flagged prominently for re-gate override:** two options were
+> available — (a) adopt the snapshotted evidence universe above, keeping `demandAnalyzer.ts`/
+> `personalPullExtractor.ts`/`landscapeResearcher.ts` untouched; or (b) change those three merged,
+> QC-passed slices' signatures to accept an explicit run-scoped evidence set instead of reading
+> the Investigation's full evidence themselves. This document adopts (a) — it preserves the real
+> property wanted (no cross-Investigation leakage, no citation of evidence that did not exist to
+> this run) without a large blast radius into closed, already-shipped work for no gain in that
+> property. Zero-foreign (§ check 1(a) above) is UNCHANGED and still applies in full — evidence
+> from a DIFFERENT Investigation is rejected regardless of which universe definition is used; only
+> the "this run's own output" narrowing is replaced by this snapshot-union universe.
+
 1. **Extraction & Clustering Engine** (`extractClaimsAndEvidence(investigationId)`) →
    `ExtractionResult`. Q-2 precheck (class 1): `generationFailed === true` OR
    `problemStatementCandidates.length === 0` → hard stop, §5 row I-1/C-1.
@@ -542,25 +614,27 @@ Runs after all non-hard-stopping phase-2 steps complete. Two checks, in order.
      run's candidates should only ever reference what this run's own extraction step actually
      produced.
 
-   - **(c) The SAME two disciplines — (a) zero-foreign, (b) this-run-provenance — apply to EVERY
-     Brief-scoped entity's evidence citations, not only `ProblemStatementCandidate`/`ClaimVersion`
-     (Danny's ruling, explicit — "apply ownership validation to ALL evidence ids entering the
-     Brief"):**
-     - `DemandSignalCandidate.evidenceItemIds` — every id must resolve to an `evidence_item` whose
-       `source_artifact.investigation_id = investigationId` (zero foreign; these are already
-       non-empty by the candidate's own `NonEmptyArray` contract, so "zero foreign" alone is the
-       remaining bar — there is no separate "at least one" to also check once the array is known
-       non-empty), AND must be a member of THIS run's own combined evidence set
-       (`ExtractionResult.evidenceItems` ∪ `LandscapeResearchResult.landscapeEvidenceItems` from
-       THIS `GenerationRun`'s own phase-2 steps).
-     - `ExistingSolutionCandidate.evidenceItemIds` and `GapHypothesisCandidate.evidenceItemIds` —
-       same two disciplines, same combined evidence set.
+   - **(c) Zero-foreign applies to EVERY Brief-scoped entity's evidence citations, not only
+     `ProblemStatementCandidate`/`ClaimVersion` (Danny's ruling, explicit — "apply ownership
+     validation to ALL evidence ids entering the Brief"). REVISION 7 CORRECTION (BLOCKER 2):
+     revision 6's "this run's own extraction/research output" narrowing for THESE entities is
+     REPLACED by the `evidenceUniverse` contract stated once in §3 Phase 2 (the "evidence universe
+     for this run" callout) — it is restated here, not redefined, so the two cannot drift:**
+     - `DemandSignalCandidate.evidenceItemIds`, `ExistingSolutionCandidate.evidenceItemIds`, and
+       `GapHypothesisCandidate.evidenceItemIds` — every id must (i) resolve to an `evidence_item`
+       whose `source_artifact.investigation_id = investigationId` (zero foreign — these arrays are
+       already non-empty by the candidate's own `NonEmptyArray` contract, so "zero foreign" alone
+       is the remaining bar), AND (ii) be a member of `evidenceUniverse ∪ landscapeEvidenceItems`
+       (§3 Phase 2's snapshotted universe) — NOT narrowed to only what this run's own step
+       produced. An older, local `EvidenceItem` a component read from the Investigation's full
+       evidence set (via `getEvidenceForInvestigation`, as `demandAnalyzer.ts`/
+       `landscapeResearcher.ts` genuinely do) IS legitimate provenance under this rule.
      - `PersonalPullNoteCandidate.sourceArtifactId` — a single id, not an array; require it
-       resolves to a `source_artifact` with `investigation_id = investigationId` (there is only
-       ever one id here, so "zero foreign" reduces to "this one id is local, not foreign") AND
-       that the `SourceArtifact` is one this run's own pipeline actually read (i.e. present among
-       the source artifacts `getInvestigation` returned for this Investigation at pipeline-start
-       time, or a landscape-research artifact this run's own Landscape Researcher step produced).
+       resolves to a `source_artifact` with `investigation_id = investigationId` (zero foreign)
+       AND that the `SourceArtifact` backs an `EvidenceItem` within the same
+       `evidenceUniverse ∪ landscapeEvidenceItems` set (i.e. the source was among what this run's
+       own pipeline was actually handed to read, per the same universe — not merely any
+       `source_artifact` row that happens to share this `investigationId`).
 
    If ANY citation across ANY of the above fails either discipline, the run fails: §5 row I-4/C-4.
    This still runs unconditionally, distrusting every upstream component's own
@@ -572,20 +646,34 @@ Runs after all non-hard-stopping phase-2 steps complete. Two checks, in order.
    the same reason as before (revision 2) — the schema keeps `'evidence'` as a valid
    `BriefElement` member, but no code path constructs one.
 
-   **Falsification tests to specify at Forge time (design only), THREE required (revision 6 adds
-   one to the two revision 4 specified):**
+   **Falsification tests to specify at Forge time (design only), FIVE required (revision 7 adds
+   two to the three revision 6 specified):**
    - (unchanged from revision 2) a nominally successful extraction where the persisted
      `claim_version_evidence` join for a cited `claimVersionId` is empty or missing entirely →
      assembly fails closed.
    - (unchanged from revision 4) a nominally successful extraction where the persisted
      `claim_version_evidence` join for a cited `claimVersionId` resolves ENTIRELY to a foreign
      Investigation's evidence → assembly fails closed.
-   - **(NEW, revision 6, BLOCKING 3)** a nominally successful extraction where a cited
+   - (unchanged from revision 6) a nominally successful extraction where a cited
      `claimVersionId`'s `claim_version_evidence` join is MIXED — at least one local row AND at
      least one foreign row (the specific gap Danny's ruling names: "a ClaimVersion with one local
      AND one foreign evidence reference PASSES" under the pre-revision-6 check) → assembly MUST
-     still fail closed. This is the test revision 4's two tests could not have caught, and the one
-     that proves (a) above is genuinely "zero foreign," not merely "at least one local."
+     still fail closed. This is the test that proves check 1(a) is genuinely "zero foreign," not
+     merely "at least one local."
+   - **(NEW, revision 7, BLOCKER 2)** a correction whose candidate (e.g. a
+     `DemandSignalCandidate`) cites a LOCAL `EvidenceItem` that PREDATES this run — it was present
+     in the start-of-run `evidenceUniverse` snapshot but is not a member of any of this run's own
+     step outputs (`ExtractionResult.evidenceItems`, `landscapeEvidenceItems`, etc.) → assembly
+     MUST SUCCEED. This is the test that proves the universe rule does not reject legitimate
+     corrections — the exact failure mode revision 6's "this run's own output" narrowing produced
+     and BLOCKER 2 identified.
+   - **(NEW, revision 7, BLOCKER 2, paired with the test above)** a candidate citing an
+     `EvidenceItem` OUTSIDE the `evidenceUniverse ∪ landscapeEvidenceItems` union — either because
+     it belongs to a foreign Investigation (already covered structurally by check 1(a)'s
+     zero-foreign rule, restated here as the paired case) OR because it was created AFTER this
+     run's start-of-run snapshot by something other than this run's own steps (e.g. a concurrent,
+     unrelated write to the same Investigation's evidence that this run never read) → assembly
+     MUST still fail closed.
 
 2. **Four-element `negativeFindings` fail-closed rule (G-1) — TERMINAL-FAIL DIRECTLY, no
    bounded-repair (Danny's ruling, explicit; corrects an earlier framing of Ledger's own design
