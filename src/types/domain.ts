@@ -387,9 +387,14 @@ export interface GenerationStep {
   startedAt: string;
   completedAt: string;
   outcome: 'succeeded' | 'failed';
-  error?: string; // populated iff outcome === 'failed' AND the failure was an unexpected thrown
-  // error (not a schema-validation terminal-fail, already represented by
-  // validationRecords[].finalOutcome === 'invalid')
+  error?: string; // null/absent when outcome === 'succeeded'. When outcome === 'failed', `error`
+  // records the component's modeled `generationFailureReason` (the primary path in practice,
+  // since every Slice 4-7 component catches its own throws), or the normalized thrown error
+  // when execution throws (Slice 8 correction, retroactive — provenanceRecorder.ts's
+  // runStepWithProvenance). NOT iff: `outcome` also goes 'failed' when only the validationRecords
+  // classifier trips (a validationRecord's finalOutcome === 'invalid') without the result itself
+  // being a modeled failure — in that branch `error` is left undefined, and `validationRecords`
+  // carries the detail instead (see architecture doc §1.9 point 3, Composer ruling 2026-08-14).
   modelIdentifier?: string;
   inputRefs: string[]; // IDs of records this step read
   outputRefs: string[]; // IDs of records this step produced

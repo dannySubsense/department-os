@@ -260,6 +260,36 @@ function buildToolInvocations(invocations: CapturedToolInvocation[]): ToolInvoca
     }));
 }
 
+/** Shape shared by every Slice 4-7 component result (`DemandAnalysisResult`,
+ *  `PersonalPullExtractionResult`, `LandscapeResearchResult`, `GapHypothesisGenerationResult`,
+ *  `UncertaintyCompilationResult`, `RecommendationResult`, `ExtractionResult`) — verified against
+ *  each component's own `*Result` interface in src/services/*.ts (Slice 8 correction audit): all
+ *  seven expose `generationFailed: boolean` and `generationFailureReason?: string`, and none uses
+ *  a differently-named modeled-failure field. */
+interface ModeledFailureCarrier {
+  generationFailed: boolean;
+  generationFailureReason?: string;
+}
+
+function isModeledFailureCarrier(result: unknown): result is ModeledFailureCarrier {
+  return (
+    typeof result === 'object' &&
+    result !== null &&
+    'generationFailed' in result &&
+    typeof (result as { generationFailed: unknown }).generationFailed === 'boolean'
+  );
+}
+
+/** True when the wrapped component RETURNED (did not throw) but reported its own modeled failure
+ *  — precondition failure, fail-closed post-filter drop, or an infra/DB error caught by the
+ *  component's own outer catch (Slice 8 correction, Architecture §1.9 point 3). This is the gap
+ *  the original outcome classification missed: it only inspected whether `fn` threw and whether
+ *  any SchemaValidationRecord had `finalOutcome === 'invalid'`, so a `generationFailed: true`
+ *  result with no invalid validation attempt was recorded as `outcome: 'succeeded'`. */
+function isModeledFailure(result: unknown): result is ModeledFailureCarrier & { generationFailed: true } {
+  return isModeledFailureCarrier(result) && result.generationFailed === true;
+}
+
 /** Convenience wrapper Slice 9's orchestrator uses around each Slice 4-7 component call — NOT a
  *  new orchestration layer; this only removes the repetitive try/finally + telemetry-collection
  *  boilerplate every call site would otherwise duplicate. Opens a provenanceContext.ts collector
@@ -267,12 +297,30 @@ function buildToolInvocations(invocations: CapturedToolInvocation[]): ToolInvoca
  *  return, builds GenerationStep.validationRecords/toolInvocations from the collected invocations
  *  and calls recordGenerationStep. On throw, still calls recordGenerationStep with
  *  outcome: 'failed' and error: the caught message, using whatever partial telemetry was
- *  accumulated before the throw, then rethrows. */
+ *  accumulated before the throw, then rethrows.
+ *
+ *  Slice 8 correction (retroactive, found during Slice 9 design): all seven Slice 4-7 components
+ *  wrap themselves in an outer catch that converts throws into a `generationFailed: true` result,
+ *  so this function's `catch` branch is effectively unreachable for real components — the
+ *  PRIMARY failure path is `fn` returning normally with `generationFailed: true`. Outcome is now
+ *  classified from BOTH sources: a returned `generationFailed: true` result (see
+ *  `isModeledFailure`), or any validationRecord with `finalOutcome === 'invalid'`. `error` is
+ *  populated from the result's `generationFailureReason` on a modeled failure. `outputRefs` is
+ *  no longer inferred from a hardcoded whitelist of known result-shape field names (Composer
+ *  ruling, retroactive Slice 8 correction #2 — the whitelist's failure mode was a silent `[]` for
+ *  any result shape it didn't recognise, unacceptable in an audit field). Instead every caller
+ *  supplies a REQUIRED `getOutputRefs: (result: T) => string[]` callback, mirroring the existing
+ *  `inputRefs: string[]` field: each caller maps its OWN component's result shape explicitly, so a
+ *  component with no referenceable, already-persisted output ids supplies `() => []` and that
+ *  emptiness is a deliberate caller choice, not silent inference. The `catch` branch is kept,
+ *  unreduced, for any unexpected throw from outside a component's own boundary; it has no result
+ *  to call `getOutputRefs` on, so it still records `outputRefs: []` honestly. */
 export async function runStepWithProvenance<T>(input: {
   generationRunId: string;
   component: string;
   inputRefs: string[];
   fn: () => Promise<T>;
+  getOutputRefs: (result: T) => string[];
 }): Promise<T> {
   const invocations: CapturedToolInvocation[] = [];
   const collector = { record: (invocation: CapturedToolInvocation) => invocations.push(invocation) };
@@ -283,9 +331,9 @@ export async function runStepWithProvenance<T>(input: {
     const completedAt = new Date().toISOString();
     const validationRecords = buildValidationRecords(invocations);
     const toolInvocations = buildToolInvocations(invocations);
-    const outcome: GenerationStep['outcome'] = validationRecords.some((r) => r.finalOutcome === 'invalid')
-      ? 'failed'
-      : 'succeeded';
+    const modeledFailure = isModeledFailure(result);
+    const outcome: GenerationStep['outcome'] =
+      modeledFailure || validationRecords.some((r) => r.finalOutcome === 'invalid') ? 'failed' : 'succeeded';
 
     await recordGenerationStep({
       generationRunId: input.generationRunId,
@@ -294,9 +342,10 @@ export async function runStepWithProvenance<T>(input: {
         startedAt,
         completedAt,
         outcome,
+        error: modeledFailure ? result.generationFailureReason : undefined,
         modelIdentifier: invocations.find((inv) => inv.modelIdentifier)?.modelIdentifier,
         inputRefs: input.inputRefs,
-        outputRefs: [],
+        outputRefs: input.getOutputRefs(result),
         validationRecords: validationRecords.length > 0 ? validationRecords : undefined,
         toolInvocations: toolInvocations.length > 0 ? toolInvocations : undefined,
       },
@@ -318,6 +367,8 @@ export async function runStepWithProvenance<T>(input: {
         error: err instanceof Error ? err.message : String(err),
         modelIdentifier: invocations.find((inv) => inv.modelIdentifier)?.modelIdentifier,
         inputRefs: input.inputRefs,
+        // `fn` threw rather than returning a result, so there is no result to derive ids from —
+        // honestly empty, not the try branch's unconditional [] (Slice 8 correction, defect 3).
         outputRefs: [],
         validationRecords: validationRecords.length > 0 ? validationRecords : undefined,
         toolInvocations: toolInvocations.length > 0 ? toolInvocations : undefined,

@@ -1178,12 +1178,39 @@ interface GenerationStep {
                                       // failed SchemaValidationRecord" and "threw an unexpected
                                       // error" (see error field below) — a step is never left
                                       // outcome-less.
-  error?: string;                    // NEW — populated iff outcome === 'failed' AND the failure was
-                                      // an unexpected thrown error (not a schema-validation
-                                      // terminal-fail, which is already fully represented by
-                                      // validationRecords[].finalOutcome === 'invalid'). Keeps the
-                                      // two distinct failure shapes distinguishable without
-                                      // overloading one field.
+  error?: string;                    // NEW — null/absent when outcome === 'succeeded'. When
+                                      // outcome === 'failed', `error` records the component's
+                                      // modeled `generationFailureReason`, or the normalized thrown
+                                      // error when execution throws. `validationRecords` remain the
+                                      // structured record of validation ATTEMPTS and do NOT replace
+                                      // the terminal failure reason. If both exist: use
+                                      // `generationFailureReason` for a normally-returned modeled
+                                      // failure, and the caught exception for a thrown failure.
+                                      //
+                                      // NOT "iff outcome === 'failed'": `outcome` also becomes
+                                      // 'failed' when ONLY the validationRecords classifier trips
+                                      // (some validationRecord has finalOutcome === 'invalid')
+                                      // while the returned result is not itself a modeled failure.
+                                      // In that branch `error` is left undefined and
+                                      // `validationRecords` carries the detail. Audited 2026-08-14:
+                                      // that pairing is UNREACHABLE for all seven current
+                                      // components — an invalid final attempt only arises from
+                                      // bounded-repair exhaustion, which always throws, and every
+                                      // component converts that throw into `generationFailed: true`
+                                      // WITH a reason. The branch is specified here because the
+                                      // type permits it, not because it occurs.
+                                      //
+                                      // CONTRACT CORRECTION (Composer ruling, 2026-08-14) — this
+                                      // text previously stated `error` was populated ONLY for an
+                                      // unexpected thrown error, explicitly excluding
+                                      // schema-validation terminal-fails. That encoded a FALSE
+                                      // IMPLEMENTATION ASSUMPTION: that failures reach the recorder
+                                      // only via thrown exceptions. In fact all seven pipeline
+                                      // components catch internally and RETURN
+                                      // `generationFailed: true`, so the throw path is effectively
+                                      // unreachable for them and the old rule left `error`
+                                      // populated almost never. This is a contract correction, not
+                                      // a new architectural decision — no DDR required.
   modelIdentifier?: string;          // unchanged
   inputRefs: string[];               // unchanged
   outputRefs: string[];              // unchanged
@@ -1305,6 +1332,16 @@ function runStepWithProvenance<T>(input: {
   generationRunId: string;
   component: string;                 // matches a Section 2 component name
   inputRefs: string[];
+  getOutputRefs: (result: T) => string[];  // NEW — REQUIRED (Composer ruling, 2026-08-14). Each
+                                      // caller explicitly maps its OWN result shape to the ids of
+                                      // records the step produced (GenerationStep.outputRefs). A
+                                      // component with no referenceable outputs supplies
+                                      // `() => []`, making emptiness DELIBERATE rather than
+                                      // silently inferred. Required, not optional: an earlier fix
+                                      // inferred outputRefs from an internal whitelist of known
+                                      // field names, which returned [] silently for any
+                                      // unrecognised result shape — unacceptable in an audit
+                                      // field. That whitelist was removed entirely.
   fn: () => Promise<T>;
 }): Promise<T>;
 ```

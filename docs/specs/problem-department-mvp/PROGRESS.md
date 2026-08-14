@@ -10,15 +10,35 @@
 - [x] Slice 5: Demand Analyzer + Personal Pull Extractor — COMPLETE (2026-08-13). 106/106 tests, QC PASS on 3rd re-verification (pass 1: F-1 through F-4 blocking, incl. a regression of Slice 4's F-3 pattern; pass 2: F-5, a stale doc comment left asserting the pre-fix contract; pass 3: PASS, all closed).
 - [x] Slice 6: Landscape Researcher + Gap Hypothesis Generator — COMPLETE (2026-08-13). searchWeb failure boundary resolved DDR-0001 Row 9 (3 QC rounds); Landscape Researcher + Gap Hypothesis Generator implementation (2 QC rounds, 2 real data-loss bugs found and fixed). 179/179 tests, tsc clean.
 - [x] Slice 7: Uncertainty Compiler + Recommendation Engine — COMPLETE (2026-08-13). 3 QC rounds (pass 1: 2 blocking bugs — cross-investigation evidence leakage in a new read helper, and a Date/string type lie; pass 2: 1 blocking test-coverage gap that also surfaced a genuine unimplemented Slice-5 requirement — numeric-scope non-adoption guard missing from demandAnalyzer.ts entirely; pass 3: PASS, mutation-tested). 208/208 tests, tsc clean.
-- [x] Slice 8: Provenance Recorder — COMPLETE (2026-08-14). Per Danny's binding directive: instrumented callForcedTool/searchWeb rather than adding a second validation/repair layer. 2 QC rounds (pass 1: 2 blocking bugs — a migration that would fail against real pre-existing data, and a validation-record grouping bug that would fabricate repair histories once a step calls the same tool twice; pass 2: PASS, independently re-probed). 227/227 tests, tsc clean.
-- [ ] Slice 9: Brief Assembler — PENDING
+- [x] Slice 8: Provenance Recorder — COMPLETE (2026-08-14), then **RETROACTIVELY CORRECTED (2026-08-14)** — see below. Per Danny's binding directive: instrumented callForcedTool/searchWeb rather than adding a second validation/repair layer. 2 QC rounds at original close (pass 1: 2 blocking bugs — a migration that would fail against real pre-existing data, and a validation-record grouping bug that would fabricate repair histories once a step calls the same tool twice; pass 2: PASS, independently re-probed).
+- [x] Slice 8 RETROACTIVE CORRECTION (2026-08-14) — defect discovered during Slice 9 design, not by Slice 8's own gate. `runStepWithProvenance` recorded a normally-returned `{ generationFailed: true }` as a SUCCEEDED step (all seven components catch internally and return rather than throw, so the throw branch Slice 8's tests exercised is effectively unreachable — the tested path could not occur while the real path went untested). `outputRefs` was separately hardcoded `[]` on both branches. Blast radius MEASURED, not assumed: zero production call sites at `64fff5e` (the intended caller `generateBriefVersion.ts` is Slice 9 work and did not exist), so LATENT/pre-integration — no mis-recorded rows provable from product code; a read-only DB census found 1 run / 1 step total. Fixes: result-aware outcome classification; `error` populated from `generationFailureReason`; `getOutputRefs: (result: T) => string[]` added as a **required** input field (Composer ruling — each caller maps its own result shape, `() => []` makes emptiness deliberate; the initially-implemented internal whitelist was removed entirely as it returned `[]` silently for unrecognised shapes). Binding contract corrected in `02-ARCHITECTURE.md` §1.9 pt 3 (the `error` text encoded the false assumption that failures reach the recorder only by throwing) and §1.9 pt 4 (stale four-field signature). **3 independent QC rounds** (pass 1 FAIL: architecture/code contradiction, `domain.ts` "iff" overclaim, and a vacuous `expect(true).toBe(true)` placeholder test that passed while asserting nothing; pass 2 FAIL: the remediation left §1.9 pt 4's signature stale — same defect class as pass 1; pass 3 PASS, with type checking restored and compiler-probed). Bounded-repair reachability audited: the `failed`-step-with-`error: undefined` branch is unreachable for all seven components.
+- [ ] Slice 9: Brief Assembler — **BLOCKED / NOT STARTED.** A first implementation attempt was made against a design that subsequently FAILED Composer QC with 7 blocking + 4 significant findings; it is QUARANTINED at `quarantine/slice-9-attempt-1` (`86f7b8b`) and is explicitly NOT evidence of anything — its tests are not coverage. Design is at revision 5 (all 11 findings corrected, plus a Composer ruling that G-1 takes precedence over Slice 7's upstream-failure tolerance: a component failure means "unknown because generation failed," not "searched and found nothing," so it cannot legally produce a NegativeFinding and hard-stops the run). Awaiting Composer review of design revision 5 before reimplementation.
 - [ ] Slice 10: Investigation Screen — Completed State — PENDING
 - [ ] Slice 11: Decision Recorder + Decision Form + Decision Confirmation Panel — PENDING
 - [ ] Slice 12: Validity/Invalidation Service + Decision-History Banner — PENDING
 
 ## Current
-Slice: 9 starting — Brief Assembler
-Step: commit Slice 8 completion to PR #6, then begin Slice 9 architecture design
+Slice: 9 — Brief Assembler. **GATE CLOSED.**
+Step: Slice 8's retroactive correction is complete and QC-passed. Slice 9 reimplementation is
+blocked pending Composer review of `SLICE-09-DESIGN.md` revision 5. The prior attempt is
+quarantined at `quarantine/slice-9-attempt-1` (`86f7b8b`) and may be reused only where a fragment
+traces to a corrected design requirement AND is covered by a rewritten test.
+
+Test counts are deliberately NOT asserted in this file. Agent-reported counts were found inflated
+twice on 2026-08-14 (15→12, 14→13), and a vacuous `expect(true).toBe(true)` test passed inside a
+green suite while asserting nothing. A count is not a coverage claim: run the suite and read the
+assertions. Ground truth is the runner's own output at a quiescent database — note the suite
+deadlocks on `TRUNCATE` if another process touches the DB concurrently, so a green result taken
+during concurrent runs is not evidence.
+
+Open, unowned items carried forward (neither blocks Slice 8):
+- `callId` is typed optional (`provenanceContext.ts`) while `buildValidationRecords`' safety
+  property depends on it always being set; the `inv.callId ?? inv.toolName` fallback would merge
+  two same-tool calls and make the `error: undefined` branch live. Dead today, unenforced.
+- `landscapeResearcher.ts:276-292` deliberately absorbs a nested extraction failure into a
+  landscape success when evidence is non-empty. Documented as intentional and predates the G-1
+  precedence ruling, which it now sits crosswise to.
+
 Last updated: 2026-08-14
 
 ## Fix Attempts (Slice 8 — Provenance Recorder)

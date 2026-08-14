@@ -111,6 +111,7 @@ describe('runStepWithProvenance â€” durable try/finally on throw (Architecture Â
         fn: async () => {
           throw new Error('forced mid-execution failure for provenance test');
         },
+        getOutputRefs: () => [],
       });
     } catch (err) {
       caught = err;
@@ -157,6 +158,7 @@ describe('runStepWithProvenance â€” durable try/finally on throw (Architecture Â
         });
         return 'step-result';
       },
+      getOutputRefs: () => [],
     });
 
     expect(result).toBe('step-result');
@@ -220,6 +222,7 @@ describe('runStepWithProvenance â€” durable try/finally on throw (Architecture Â
         });
         return 'ok';
       },
+      getOutputRefs: () => [],
     });
 
     const steps = await pool.query(
