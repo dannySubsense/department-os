@@ -676,10 +676,52 @@ that can legitimately record absence (Problem Definition is non-negatable — Q-
   fail-closed path Slice 8 already enforces for schema-constrained outputs and required-citation
   arrays; this slice does not build a second, parallel validation mechanism, it applies R-4's
   existing bounded-repair/terminal-fail contract to this rule.
+- **G-1 takes precedence over Slice 7's failure tolerance (Composer ruling, 2026-08-14).** A
+  component failure means **"unknown because generation failed,"** not **"searched and found
+  nothing."** These are different epistemic states and must never be collapsed. A failed component
+  therefore **cannot legally produce a `NegativeFinding`** — a `NegativeFinding` asserts a *verified*
+  absence, and a failed run verified nothing. Consequently: a `generationFailed: true` from the
+  Demand Analyzer, Landscape Researcher, or Gap Hypothesis Generator **hard-stops the assembled
+  run**. Slice 9 does not call further LLM components merely to lengthen the provenance trail — it
+  records the failed component accurately, finalizes the `GenerationRun` as `failed`, and persists
+  no Brief. Slice 7's `compileUncertainty` may remain tolerant of upstream failures **when directly
+  invoked** (it seeds `whatsUndeterminable` from upstream `generationFailed` flags); that tolerance
+  is **not** an orchestration requirement and Slice 9 is not obliged to exercise it. This precedence
+  was previously implicit in the interaction between G-1's fail-closed rule and the
+  `negativeFindingSignal` gating (`negativeFindingSignal` is unset on every `generationFailed: true`
+  path) — it is stated explicitly here so no future reader has to rediscover it.
+- **`'evidence'` negative path is structurally unreachable in this MVP (Composer ruling,
+  2026-08-14, Slice 9 contract clarification).** `'evidence'` **remains representable** in the
+  general `BriefElement`/`NegativeFinding` schema — it is not removed from the union, the enum, or
+  the database domain — but no run can legitimately reach a state where an `'evidence'`
+  `NegativeFinding` would be constructed, because Problem Definition is required (Q-2, the
+  non-negatable precheck above) *and* evidence-supported. Slice 9 therefore **never constructs an
+  `'evidence'` `NegativeFinding` and never invents an absence statement for it**, and Slice 4 is
+  **not** extended to supply one. The rule above is satisfied for `'evidence'` by the
+  evidence-chain verification below, which guarantees the id array is non-empty on every
+  successful run.
+- **Independent evidence-chain verification (Composer ruling, 2026-08-14).** Slice 9 verifies, on
+  its own, that every accepted `ProblemStatement` resolves through its `ClaimVersion`s to at least
+  one **persisted** `EvidenceItem`. This is an independent check against persisted rows, not a
+  re-read of the upstream in-memory result: if the chain is empty or broken, the run fails — no
+  `BriefVersion` is persisted, `GenerationRun` is finalized `failed`, and `Investigation.status`
+  becomes `'generation-failed'` — **even if the upstream extraction result reports
+  `generationFailed: false`**. Distrusting that upstream claim is the entire purpose of this check.
+- **Linear `BriefVersion` chain (Composer ruling, 2026-08-14).** Inside the final assembly
+  transaction, Slice 9 locks the `ProblemBrief` row and requires
+  `supersedesVersionId === ProblemBrief.currentVersionId`, and additionally verifies the
+  referenced version belongs to that same `ProblemBrief`. Version 1 must have `supersedesVersionId`
+  absent; every later version must supersede the then-current version. If the pointer changed while
+  generation was running, the assembly rolls back and returns a **stale-correction conflict** — no
+  `BriefVersion` persisted, `currentVersionId` unmoved; the caller must regenerate against the new
+  current version. This keeps `currentVersionId`, version numbering, the Slice 10 read path, and
+  decision history unambiguous; Slice 12's validity state is separate and is not a reason to defer
+  the constraint.
 - The `NegativeFinding.statement` this slice persists must be a real, non-placeholder absence
   statement surfaced by the owning upstream component (Slice 5 for `'demand-signal-type'`, Slice 6
-  for `'existing-solution'`/`'gap-hypothesis'`, Slice 4 for `'evidence'`) — this slice assembles
-  and persists the row; it does not author the absence statement's content itself from nothing.
+  for `'existing-solution'` and `'gap-hypothesis'`) — this slice assembles and persists the row; it
+  does not author the absence statement's content itself from nothing. These three are the only
+  elements for which an absence statement is ever produced (see the `'evidence'` note above).
 - A `GenerationRun.outcome: 'failed'` produced by Slice 8's bounded-repair exhaustion (a
   schema-validation terminal failure, **including exhaustion caused by an empty required-citation
   array**, and now including exhaustion of the `negativeFindings` fail-closed rule above — see
@@ -737,6 +779,27 @@ that can legitimately record absence (Problem Definition is non-negatable — Q-
       the fail-closed rule rejects the run on the same R-4 path as an out-of-schema enum value: no
       `BriefVersion` is persisted, and the failure composes into `GenerationRun.outcome ===
       'failed'` / `Investigation.status === 'generation-failed'`.
+- [ ] **Falsification test (Composer ruling, 2026-08-14):** given a *nominally successful*
+      extraction — `generationFailed: false` — whose accepted `ProblemStatement`s resolve through
+      their `ClaimVersion`s to zero persisted `EvidenceItem`s, or whose evidence references are
+      broken, assembly fails closed: no `BriefVersion` is persisted, `GenerationRun.outcome ===
+      'failed'`, `Investigation.status === 'generation-failed'`, and no `'evidence'`
+      `NegativeFinding` is constructed. The test must prove Slice 9 overrides the upstream
+      `generationFailed: false` claim rather than trusting it.
+- [ ] **Concurrency test (Composer ruling, 2026-08-14):** given two corrections that both begin
+      from the same `BriefVersion`, exactly one commits; the other fails with a stale-correction
+      conflict, persists no `BriefVersion`, does not move `ProblemBrief.currentVersionId`, and
+      creates no branch in the version chain.
+- [ ] **Losing-correction integrity test (Composer ruling, 2026-08-14):** the correction that
+      loses the race records a `GenerationRun` with `outcome: 'failed'`, `briefVersionId: null`,
+      and the conflict reason recorded — while the Investigation **still resolves to the winning
+      correction's current Brief**, with `Investigation.status`, `Investigation.statusReason`,
+      `Investigation.problemBriefId`, and `ProblemBrief.currentVersionId` all unchanged by the
+      loser. A stale-correction conflict is a concurrency rejection while an existing Brief remains
+      healthy — it is **not** a `'generation-failed'` case, and no new Investigation status is
+      added for it. The general rule that failures transition the Investigation to
+      `'generation-failed'` applies to pipeline or assembly failures that prevent production of a
+      usable Brief; this is a distinct class and must not be "corrected" into conformity with it.
 
 **Done When:**
 - [ ] US-10 AC1 and AC2 pass.
