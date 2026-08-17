@@ -451,3 +451,138 @@ export interface ToolInvocationRecord {
   modelIdentifier?: string; // set for 'web_search' (the adapter's own LLM call), unset for
   // 'url-fetch' (plain HTTP, no model involved)
 }
+
+// ---- Problem Brief identity & versioning, and the seven required Brief elements (Slice 9) —
+// copied exactly from 02-ARCHITECTURE.md Section 3 "Problem Brief identity & versioning" /
+// "Evidence & Claims" / "Negative findings" / "Demand" / "Landscape & Gap" / "Uncertainty &
+// Recommendation". These are the PERSISTED counterparts of the Slice 4/5/6/7 candidate shapes
+// above — each carries `id`/`briefVersionId` (or just `briefVersionId` for the three embedded,
+// one-per-BriefVersion objects), which do not exist until Slice 9 persists a BriefVersion. ----
+
+export interface ProblemStatement {
+  id: string;
+  briefVersionId: string;
+  whoExperiencesIt: string;
+  contextOrWorkflow: string;
+  consequenceOrFriction: string;
+  supportingClaimVersionIds: NonEmptyArray<string>; // exact ClaimVersion ids — Q-4; non-empty by
+  // contract (Section 4 citation-validation note)
+}
+
+export interface DemandSignal {
+  id: string;
+  briefVersionId: string;
+  type: DemandSignalType;
+  otherTypeLabel?: string; // required when type === 'other-observed-behavior'
+  evidenceItemIds: NonEmptyArray<string>; // non-empty by contract (Section 4 citation-validation note)
+}
+
+export interface DemandConfidenceClassification {
+  briefVersionId: string; // one per BriefVersion
+  level: DemandConfidenceLevel;
+  narrative: string; // must cite which signals/gaps drove the classification
+  citedDemandSignalIds: string[];
+  negativeFindingRef?: string; // the `id` of the NegativeFinding row with element:
+  // 'demand-signal-type' for this briefVersionId. Populated if and only if such a row exists
+  // (i.e. demandSignalIds is empty — no demand signals were found at all).
+}
+
+/** Personal Pull may be retained as contextual source material, but it is NOT a required Problem
+ *  Brief element and is NOT a demand-signal type. Structurally separate from DemandSignal/
+ *  DemandConfidenceClassification — never merged in, never counted toward either. US-12, US-4 AC4. */
+export interface PersonalPullNote {
+  id: string;
+  briefVersionId: string;
+  sourceArtifactId: string;
+  text: string;
+  label: 'contextual-motivation'; // fixed — cannot be relabeled into a demand field
+}
+
+export interface ExistingSolution {
+  id: string;
+  briefVersionId: string;
+  name: string;
+  whatItAddresses: string;
+  howPeopleCopeNow: string;
+  whereItsInadequate: string;
+  evidenceItemIds: NonEmptyArray<string>; // non-empty by contract (Section 4 citation-validation note)
+}
+
+export interface GapHypothesis {
+  id: string;
+  briefVersionId: string;
+  category: GapCategory;
+  otherCategoryLabel?: string; // required when category === 'other'
+  statement: string; // specific, falsifiable claim about what's missing
+  evidenceItemIds: NonEmptyArray<string>; // must be evidence-supported, not asserted bare;
+  // non-empty by contract (Section 4 citation-validation note)
+}
+
+export interface UncertaintyStatement {
+  briefVersionId: string; // one per BriefVersion
+  whatsUnknown: string[];
+  whatWouldChangeConclusion: string[];
+  whatsUndeterminable: string[];
+}
+
+export interface Recommendation {
+  briefVersionId: string; // one per BriefVersion — the system's own suggestion
+  decision: RecommendationDecision;
+  rationale: string; // must reference Brief evidence — never bare/scored
+}
+
+/** Carrier for "explicitly recorded absence" — restricted to the four elements Q-2 named as
+ *  negatable: Evidence, Demand Signal Type, Existing-Solution Landscape, and Gap Hypothesis.
+ *  Problem Statement is deliberately EXCLUDED — Q-2 required it to "contain a specific problem"
+ *  with no absence path. If no ProblemStatement can be established, `generateBriefVersion` fails
+ *  explicitly (G-1/R-4 fail-closed path) — it does not produce a BriefVersion carrying a
+ *  NegativeFinding for 'problem-statement' (that value does not exist in this union). */
+export type BriefElement = 'evidence' | 'demand-signal-type' | 'existing-solution' | 'gap-hypothesis';
+
+export interface NegativeFinding {
+  id: string;
+  briefVersionId: string;
+  element: BriefElement;
+  statement: string; // non-empty, explicit — e.g. "No demand signal types were found" (never a
+  // placeholder or restatement of the label)
+}
+
+/** ProblemBrief's SUBSTANTIVE content is immutable — id, investigationId, createdAt never change,
+ *  and no Brief content is ever edited in place. `currentVersionId` is the one field permitted to
+ *  update, exactly once per successful `generateBriefVersion` run for this problemBriefId. */
+export interface ProblemBrief {
+  id: string;
+  investigationId: string;
+  createdAt: string;
+  currentVersionId: string; // derived index state, NOT substantive content — see comment above
+}
+
+/** No stored mutable 'status' field (Q-3). Assigned validity is read from the latest StatusEvent
+ *  for this BriefVersion. "Superseded" is a structural fact, not an assigned state — both are
+ *  computed at read time (Slice 10's getBriefForReview), never stored redundantly. */
+export interface BriefVersion {
+  id: string;
+  problemBriefId: string;
+  versionNumber: number; // monotonic, starts at 1
+  createdAt: string;
+  supersedesVersionId: string | null; // null for version 1
+  generationRunId: string; // provenance — the run that produced this version — US-11
+
+  // The seven required elements — each resolved via the sub-entities above, referenced here for a
+  // single-fetch Brief read:
+  problemStatementIds: string[];
+  claimVersionIds: string[]; // exact ClaimVersion ids used by this version — Q-4. Never a
+  // reference to Claim (the mutable-identity level) and never a copy of claim text.
+  demandSignalIds: string[];
+  demandConfidenceClassification: DemandConfidenceClassification;
+  existingSolutionIds: string[];
+  gapHypothesisIds: string[];
+  negativeFindings: NegativeFinding[]; // 0..3 rows in this MVP — one per element in this list
+  // that had nothing to report (Demand Signal Type, Existing-Solution, Gap Hypothesis —
+  // Evidence's negative path is structurally unreachable in this MVP, and Problem Statement is
+  // non-negatable per Q-2); an element with a non-empty id array carries no row here — see the
+  // fail-closed rule at generateBriefVersion (G-1)
+  uncertaintyStatement: UncertaintyStatement;
+  recommendation: Recommendation;
+  personalPullNoteIds: string[]; // may be empty
+}

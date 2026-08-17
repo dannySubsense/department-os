@@ -29,6 +29,27 @@ async function insertInvestigation(): Promise<string> {
   return result.rows[0].id;
 }
 
+/** Inserts a real, schema-valid brief_version row referencing the given investigation and
+ *  generationRunId, for tests that need a genuine FK target for finalizeGenerationRun's
+ *  briefVersionId (generation_run_brief_version_id_fkey, Slice 9 migration 007/008) rather than
+ *  an unrelated randomUUID() that would violate the validated FK on a correctly-migrated DB. */
+async function insertBriefVersion(investigationId: string, generationRunId: string): Promise<string> {
+  const problemBrief = await pool.query<{ id: string }>(
+    `INSERT INTO problem_brief (investigation_id) VALUES ($1) RETURNING id`,
+    [investigationId],
+  );
+  const briefVersion = await pool.query<{ id: string }>(
+    `INSERT INTO brief_version (
+       problem_brief_id, version_number, generation_run_id,
+       problem_statement_ids, claim_version_ids,
+       demand_confidence_classification, uncertainty_statement, recommendation
+     ) VALUES ($1, 1, $2, $3, $4, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb)
+     RETURNING id`,
+    [problemBrief.rows[0].id, generationRunId, [randomUUID()], [randomUUID()]],
+  );
+  return briefVersion.rows[0].id;
+}
+
 describe('createGenerationRun / recordGenerationStep / finalizeGenerationRun — happy path', () => {
   it('persists an in-progress run, appends sequential steps in order, and finalizes to succeeded', async () => {
     const investigationId = await insertInvestigation();
@@ -67,7 +88,7 @@ describe('createGenerationRun / recordGenerationStep / finalizeGenerationRun —
       },
     });
 
-    const briefVersionId = randomUUID();
+    const briefVersionId = await insertBriefVersion(investigationId, run.id);
     const finalized = await finalizeGenerationRun({
       generationRunId: run.id,
       outcome: 'succeeded',

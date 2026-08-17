@@ -233,10 +233,23 @@ export class BriefGenerationFailedError extends Error {
   constructor(
     public readonly reason: string,
     public readonly generationRunId: string,
-    public readonly investigationStatus: 'blocked' | 'generation-failed' | 'brief-generated',
-    // 'brief-generated' is a NEW valid value here (finding 8): a failed CORRECTION leaves the
-    // Investigation at 'brief-generated' — its pre-existing healthy status — not
-    // 'generation-failed'. Only a failed INITIAL generation moves it to 'generation-failed'.
+    public readonly investigationStatus: InvestigationStatus,
+    // THE FULL UNION, NOT A SHORTLIST (Composer ruling, 2026-08-17, final gate on d3c0619). This
+    // was previously narrowed to `'blocked' | 'generation-failed' | 'brief-generated'`. That
+    // shortlist is not truthful: this field carries an OBSERVED status, read back from the
+    // database after every status-mutating attempt on the path has completed or declined, and an
+    // honest read-back cannot be pre-constrained to the values the throwing branch expected. After
+    // a rollback, a concurrent update landing before the read-back can legitimately produce
+    // `'open'` — a value the shortlist excludes, so the narrowed type would be a lie about what
+    // the code can return. Narrowing an observation to the set you expected is the same class of
+    // error as reporting an ASSUMED status instead of the actual one, which is what findings 2
+    // and 3 of the 2026-08-16 gate were about; this is that error surviving in the type.
+    //
+    // Retained from finding 8, still true and still the COMMON case rather than the whole set: a
+    // failed CORRECTION leaves the Investigation at `'brief-generated'` — its pre-existing healthy
+    // status — not `'generation-failed'`. Only a failed INITIAL generation moves it to
+    // `'generation-failed'`. Those remain the statuses this field usually carries; they are simply
+    // no longer the statuses it is permitted to carry.
   ) {
     super(reason);
     this.name = 'BriefGenerationFailedError';
@@ -505,6 +518,20 @@ likewise valid provenance, not an out-of-universe citation.
 1. **Extraction & Clustering Engine** (`extractClaimsAndEvidence(investigationId)`) →
    `ExtractionResult`. Q-2 precheck (class 1): `generationFailed === true` OR
    `problemStatementCandidates.length === 0` → hard stop, §5 row I-1/C-1.
+
+   **1b. ClaimVersion ownership enforcement — runs HERE, immediately after a successful
+   Extraction, BEFORE step 2 (Composer ruling, 2026-08-16).** Enforce phase 3's checks **(a)**
+   zero-foreign `ClaimVersion` evidence and **(b)** this-run `ClaimVersion` provenance at this
+   point, not after the full pipeline. Rationale, on the merits and not because a test expected
+   it: both checks depend ONLY on the completed `ExtractionResult` and its persisted rows, so
+   every input they need already exists; their failure is TERMINAL; and running the Demand
+   Analyzer, Landscape Researcher, Gap Hypothesis Generator, Uncertainty Compiler and
+   Recommendation Engine afterwards would spend LLM calls on a run that is already doomed — the
+   same reasoning as G-1 precedence and the preflight's zero-LLM-spend rule. Moving the
+   enforcement point changes NOTHING else: not the ownership rule itself, not the persisted
+   result, not status behaviour, not the failure taxonomy. Check **(c)** stays in phase 3, because
+   it validates citations produced by LATER components and cannot run before they do. See §5 row
+   I-4/C-4: one failure class, two enforcement points.
 2. **Demand Analyzer** (`analyzeDemand(investigationId)`) → `DemandAnalysisResult`.
    `generationFailed === true` → hard stop immediately (class 2), §5 row I-2/C-2. Only on
    `generationFailed === false` does the pipeline proceed to step 3.
@@ -604,6 +631,15 @@ here), reworked for the three-class scheme:**
 ### Phase 3 — Validation (read-only against persisted rows + in-memory candidate checks)
 
 Runs after all non-hard-stopping phase-2 steps complete. Two checks, in order.
+
+> **Enforcement-point correction (Composer ruling, 2026-08-16).** Check 1's sub-checks **(a)** and
+> **(b)** — zero-foreign `ClaimVersion` evidence, and this-run `ClaimVersion` provenance — are
+> ENFORCED EARLIER, in phase 2 immediately after a successful Extraction (see §3 Phase 2 step 1b),
+> because they depend only on the `ExtractionResult` and its persisted rows and their failure is
+> terminal; deferring them to here would spend the whole pipeline's LLM budget on a doomed run.
+> They are still DEFINED here, in full, as part of check 1 — this is one rule with two enforcement
+> points, not two rules. Check **(c)** genuinely runs here: it validates citations produced by the
+> later components and cannot be evaluated before they have run.
 
 1. **Evidence-chain verification, WITH FULL ownership check (revision 6, BLOCKING 3 — strengthened
    again from revision 4's finding 10).** Revision 4's ownership fix (requiring AT LEAST ONE local
@@ -907,7 +943,20 @@ BEGIN
                                                                                            -- client
     THROW BriefGenerationFailedError(
       'Investigation status transition to brief-generated failed unexpectedly during assembly',
-      generationRunId, 'generation-failed')
+      generationRunId, readActualInvestigationStatus(investigationId))
+      -- ^^ REPORT THE OBSERVED STATUS, NOT A HARDCODED ONE (Composer ruling, 2026-08-16, gate on
+      -- review commit 96ede94). This passage previously hardcoded 'generation-failed' here. That
+      -- was wrong, and wrong in a way that defeats G-13: this path never even ATTEMPTS to write
+      -- 'generation-failed' — it rolled back after a DECLINED 'brief-generated' transition — so
+      -- reporting that status asserts something no code path made true. Worse, a 'blocked'
+      -- Investigation would be reported as 'generation-failed', and the two statuses exist as
+      -- distinct type-level values precisely so the UI can offer the correct remedy (the
+      -- Generation Failed state must never offer "add a source"; blocked specifically must).
+      -- The implementation reads the actual status back after every status-mutating attempt on
+      -- the path has completed or declined, via the pool (never a possibly-rolled-back client),
+      -- and reports that. The Composer ruled the implementation correct and this document wrong.
+      -- The reported value is therefore the full `InvestigationStatus` union, not a shortlist —
+      -- an honest read-back cannot be pre-constrained to the statuses this branch expected.
       -- this path does NOT call transitionInvestigationStatus again (the one call already made
       -- returned false — a second call is not retried; see §6's note on why retrying here would
       -- itself be another ignored-edge-case risk)
@@ -1019,10 +1068,10 @@ two diverge, and unified where they don't.**
 | I-1 / C-1 | Extraction fails: `generationFailed: true` OR zero `ProblemStatementCandidate`s (class 1) | Phase 2, step 1 | `'failed'`, `briefVersionId: null` | `'generation-failed'` | **`'brief-generated'` — UNCHANGED (finding 8).** `transitionInvestigationStatus` is not even called on this path | `GenerationRun` + partial `stepLog` (step 1 only); no `BriefVersion` |
 | I-2 / C-2 | Demand Analyzer, Landscape Researcher, or Gap Hypothesis Generator's OWN `generationFailed: true` (class 2 — hard stop, revision 5) | Phase 2, step 2, 4, or 5 (whichever fails first) | `'failed'`, `briefVersionId: null` | `'generation-failed'` | **`'brief-generated'` — UNCHANGED** | `GenerationRun` + `stepLog` through the failing step ONLY — Uncertainty Compiler and Recommendation Engine never run; no `BriefVersion` |
 | I-3 / C-3 | Uncertainty Compiler's OR Recommendation Engine's OWN `generationFailed: true` (class 3) | Phase 2, step 6 or 7 | `'failed'`, `briefVersionId: null` | `'generation-failed'` | **`'brief-generated'` — UNCHANGED** | `GenerationRun` + `stepLog` through the failing step; no `BriefVersion` |
-| I-4 / C-4 | Evidence-chain / ownership verification failure — zero-foreign, this-run-provenance, ALL Brief-scoped citations (revision 6, BLOCKING 3) | Phase 3, check 1 | `'failed'`, `briefVersionId: null` | `'generation-failed'` | **`'brief-generated'` — UNCHANGED** | `GenerationRun` + full `stepLog`; no `BriefVersion` |
+| I-4 / C-4 | Evidence-chain / ownership verification failure — zero-foreign, this-run-provenance, ALL Brief-scoped citations (revision 6, BLOCKING 3). **ONE failure class with TWO enforcement points (Composer ruling, 2026-08-16):** sub-checks (a)+(b) enforced in phase 2 step 1b immediately after Extraction; sub-check (c) enforced in phase 3 check 1. Both produce IDENTICAL behaviour — the same failed-run outcome, the same statuses below, and no `BriefVersion` — so this remains a single taxonomy row, not two | Phase 2 step 1b (checks a, b) **or** Phase 3 check 1 (check c) | `'failed'`, `briefVersionId: null` | `'generation-failed'` | **`'brief-generated'` — UNCHANGED** | `GenerationRun` + full `stepLog`; no `BriefVersion` |
 | I-5 / C-5 | Four-element `negativeFindings` fail-closed rule violated — TERMINAL-FAIL DIRECTLY, no bounded-repair (revision 6 explicit correction) — reached only on an otherwise-clean pipeline run | Phase 3, check 2 | `'failed'`, `briefVersionId: null` | `'generation-failed'` | **`'brief-generated'` — UNCHANGED** | `GenerationRun` + full `stepLog`; no `BriefVersion`, no `NegativeFinding` rows |
 | **CONFLICT (revision 6, unified — widened `StaleCorrectionConflictError`, BLOCKING 2)** | The preflight-snapshotted target (§3 Phase 2 step 0 — either a specific `supersedesVersionId` or "no ProblemBrief exists yet") no longer matches what phase 4 observes under the `investigation` lock — a GENUINE race won by another concurrent call, whether that call was itself a correction OR a first-ever generation (revision 6 fixes the mislabeled first-generation-loser case, formerly `InvalidSupersedeTargetError`) | Phase 4, immediately after the lock-protected re-read, before any INSERT | `'failed'`, `briefVersionId: null`, **and the conflict reason recorded** as a `GenerationStep.error` entry (component `'Brief Assembler'`) | N/A — only reachable via a call whose target was valid at preflight time | **All four fields from the revision-3 ruling remain UNCHANGED: `Investigation.status`, `Investigation.statusReason`, `Investigation.problemBriefId`, `ProblemBrief.currentVersionId`.** No new `InvestigationStatus` value. Conflict paths BYPASS the generic failure transition entirely — `transitionInvestigationStatus` is never called on this path, initial-shaped or correction-shaped alike | Transaction rolled back in full. `GenerationRun` finalized `'failed'` exactly once, immediately after rollback (BLOCKING 5). Caller receives `StaleCorrectionConflictError` with `actualCurrentVersionId` to regenerate against |
-| **TRANSITION-FALSE (revision 6, NEW — BLOCKING 1)** | `transitionInvestigationStatus`'s guarded `UPDATE investigation` returns `false` inside phase 4's success path (zero rows affected — status was not an allowed prior state at update time, despite the investigation-row lock) | Phase 4, after all INSERTs, before `COMMIT` | `'failed'`, `briefVersionId: null` | `'generation-failed'` (via `BriefGenerationFailedError`, not a second `transitionInvestigationStatus` call — the one call already made returned `false`, it is not retried) | Same handling — this row does not distinguish initial vs. correction differently, since it represents an unexpected structural state, not a modeled concurrency case | Transaction rolled back in full — no `BriefVersion`, no child rows, `problem_brief.current_version_id` untouched. `GenerationRun` finalized `'failed'` exactly once, immediately after rollback |
+| **TRANSITION-FALSE (revision 6, NEW — BLOCKING 1)** | `transitionInvestigationStatus`'s guarded `UPDATE investigation` returns `false` inside phase 4's success path (zero rows affected — status was not an allowed prior state at update time, despite the investigation-row lock) | Phase 4, after all INSERTs, before `COMMIT` | `'failed'`, `briefVersionId: null` | **The ACTUAL OBSERVED status, read back — never a hardcoded value** (Composer ruling, 2026-08-16). This row previously said `'generation-failed'`. That was wrong: this path never ATTEMPTS that status — it rolled back after a DECLINED `'brief-generated'` transition — so naming it asserts something no code path made true, and it would misreport a `'blocked'` Investigation, collapsing the G-13 distinction the two statuses exist to preserve. The status is read back via the pool after every status-mutating attempt on this path has completed or declined, and reported as the full `InvestigationStatus` union. Reported via `BriefGenerationFailedError`, NOT a second `transitionInvestigationStatus` call — the one call already made returned `false` and is not retried. | Same handling — this row does not distinguish initial vs. correction differently, since it represents an unexpected structural state, not a modeled concurrency case | Transaction rolled back in full — no `BriefVersion`, no child rows, `problem_brief.current_version_id` untouched. `GenerationRun` finalized `'failed'` exactly once, immediately after rollback |
 | — | Any other phase-4 transaction failure (DB error, connection loss) after the lock was acquired | Phase 4 | `'failed'`, `briefVersionId: null` | `'generation-failed'` | **UNCHANGED** | `GenerationRun` + full `stepLog`; transaction rolled back — atomicity guarantees no partial rows |
 | — (RESOLVED, finding 7) | ~~`finalizeGenerationRun` throws after phase 4 committed~~ | — | — | — | — | **No longer possible on the success path** — finalization happens inside the same transaction as the Brief content, exactly once (finding 7, BLOCKING 5). Former OQ-3 is resolved, not deferred — see §9 |
 | — | Uncaught exception anywhere in phase 2/3 not represented by a component's own `generationFailed` field | Any phase-2/3 step | `'failed'` — **revision 6 correction (BLOCKING 5): the `catch` clause itself calls `finalizeGenerationRun({ outcome: 'failed', briefVersionId: null })` exactly once, then rethrows. This is NOT an unconditional `finally` — see §3 Phase 4's "Finalization contract" subsection for why that distinction matters** | `'generation-failed'` | **UNCHANGED** | `GenerationRun` + `stepLog` through the failing step; no `BriefVersion` |

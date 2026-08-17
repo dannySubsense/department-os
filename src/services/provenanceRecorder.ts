@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { PoolClient } from 'pg';
 import { pool } from '../db/pool.js';
 import { withProvenanceCollector, type CapturedToolInvocation } from './provenanceContext.js';
 import type {
@@ -42,8 +43,9 @@ function rowToGenerationStep(row: GenerationStepRow): GenerationStep {
   };
 }
 
-async function loadStepLog(generationRunId: string): Promise<GenerationStep[]> {
-  const result = await pool.query<GenerationStepRow>(
+async function loadStepLog(generationRunId: string, client?: PoolClient): Promise<GenerationStep[]> {
+  const runner = client ?? pool;
+  const result = await runner.query<GenerationStepRow>(
     `SELECT step_index, component, started_at, completed_at, outcome, error, model_identifier,
             input_refs, output_refs, step_data
        FROM generation_step
@@ -123,17 +125,25 @@ export async function recordGenerationStep(input: {
   );
 }
 
-/** Must be called from Slice 9's `generateBriefVersion` in a finally block wrapping the ENTIRE
- *  pipeline — Danny, binding: "finalize failed runs even when a component throws". Sets
- *  completedAt, outcome, briefVersionId, and the computed modelIdentifiers/toolsInvoked union.
+/** EXACTLY-ONCE FINALIZATION (Architecture §1.9 point 4, corrected 2026-08-14 — SLICE-09-DESIGN.md
+ *  §3 Phase 4 "Finalization contract"): SUCCESS finalizes INSIDE Slice 9's phase-4 assembly
+ *  transaction, using the supplied `client` for EVERY read and write it performs — including this
+ *  function's own `loadStepLog` call — so the finalize read is consistent with what that same
+ *  transaction just wrote, not a separate connection's view (a pool read inside a transaction
+ *  cannot see the transaction's own uncommitted rows). FAILURE finalizes AFTER rollback, BEFORE
+ *  the rethrow, on its own connection (no `client`). There is no unconditional `finally` anywhere
+ *  that finalizes regardless of outcome — both paths above have already finalized exactly once.
+ *  Sets completedAt, outcome, briefVersionId, and the computed modelIdentifiers/toolsInvoked union.
  *  Idempotency: calling this twice for the same generationRunId is a programming-error-level
  *  defect — enforced here as a hard assertion, not a silent overwrite. */
 export async function finalizeGenerationRun(input: {
   generationRunId: string;
   outcome: 'succeeded' | 'failed';
   briefVersionId: string | null;
+  client?: PoolClient;
 }): Promise<GenerationRun> {
-  const existing = await pool.query<{ outcome: string; investigation_id: string; started_at: Date; runtime_identifier: string }>(
+  const runner = input.client ?? pool;
+  const existing = await runner.query<{ outcome: string; investigation_id: string; started_at: Date; runtime_identifier: string }>(
     `SELECT outcome, investigation_id, started_at, runtime_identifier FROM generation_run WHERE id = $1`,
     [input.generationRunId],
   );
@@ -148,7 +158,7 @@ export async function finalizeGenerationRun(input: {
     );
   }
 
-  const stepLog = await loadStepLog(input.generationRunId);
+  const stepLog = await loadStepLog(input.generationRunId, input.client);
 
   const modelIdentifiers = Array.from(
     new Set(
@@ -176,7 +186,7 @@ export async function finalizeGenerationRun(input: {
 
   const completedAt = new Date().toISOString();
 
-  await pool.query(
+  await runner.query(
     `UPDATE generation_run
         SET outcome = $2, completed_at = $3, brief_version_id = $4,
             model_identifiers = $5, tools_invoked = $6
