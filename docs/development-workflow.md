@@ -56,6 +56,71 @@ Independence means more than different agent identities. Reviewers using the sam
 - No force-pushing shared or reviewed branches, unless Danny explicitly directs it.
 - Merge strategy (squash / merge commit / rebase) remains human-controlled until separately decided and recorded in [docs/decisions/](decisions/).
 
+## Judgment Gate Protocol (binding, every gate)
+
+Frank's gate is dispatched this way **every time**, without being requested. It is a mechanism, not
+a favour. Established 2026-08-16 after a briefed gate returned PASS on an artifact the Composer
+then failed on three reachable defects.
+
+**1. The gate reviews a frozen commit in an ISOLATED CHECKOUT — never the live working tree.**
+Create a detached worktree at the exact SHA under review and point the gate at that path. The live
+tree is disqualifying: on 2026-08-16 a cold gate pointed at the repo root found the defects by
+reading uncommitted fix comments annotated `"Composer FAIL round 2, defect 1"` — an answer key,
+not a review. The same class of leak as a stale database schema: the environment carried
+information the artifact did not. If the gate can see the fixes, the gate is not testing anything.
+
+**2. The brief is generated, not authored.** Only these fields, no free prose from the orchestrator:
+repository path (the isolated checkout), the SHA under review and its parent, the verdict required,
+and an explicit statement that nothing else is supplied deliberately. No artifact list, no summary
+of what the change does, no statement of what it claims, no list of binding documents, no prior
+review results, no test outcomes, no scope boundaries. Every one of those is a lens shaped by the
+people who produced the work. **If the Producer is typing sentences into a gate brief, the Producer
+is setting the gate's ceiling at their own.**
+
+**3. The whole package is in scope by default.** Implementation, migrations and the database they
+produce, tests and what they actually assert, the specifications said to govern them, the merged
+code depended on, status and gate records, and the review process that produced it — including
+prior briefs and the Producer's own conduct. The gate chooses its own targets, needs no permission
+for any line of inquiry, and may ignore the diff entirely to interrogate something upstream.
+
+**4. Operational facts are allowlisted; conclusions are never supplied.** A fact may be given only
+if withholding it would waste the gate's time or manufacture a false finding — e.g. "this suite
+deadlocks on TRUNCATE under concurrent database access." Anything that shapes what the gate expects
+to find is a conclusion, not a fact, and is withheld.
+
+**5. Exhaustiveness is obligatory.** Where an invariant must hold, the gate enumerates every site it
+must hold at and checks each — it does not confirm the invariant holds somewhere. A verdict carries
+its own coverage claim: how many sites, and how many checked. The 2026-08-16 miss was exactly this:
+the gate verified a return value was checked at the one call site the design foregrounds, and three
+other call sites went unexamined.
+
+**6. The gate record names the exact commit gated.** A verdict against a SHA does not transfer to a
+later SHA containing fixes. Re-gate the commit that actually contains them.
+
+**7. Prefer a different model from the one that produced the work.** Frank runs on a different model
+by frontmatter. This buys independence on the code axis only — a gate that reads the same specs,
+repo and database as the producer shares their source-axis blind spots, and no model difference
+repairs that.
+
+**8. The independent test suite is QC-only and must be STRUCTURALLY out of the implementer's
+reach.** Implementers work from the gated specification and may write and run their own
+spec-derived tests; they must not read, edit, or run the independent suite. This applies during
+corrections as much as during first implementation — a fix conformed to the tests that are meant
+to catch it recreates the shared well at the worst moment. Telling an implementer not to look is
+not sufficient: on 2026-08-16 an implementer found the independent suite in the tree, read it, and
+changed the implementation to match. Keep it in a QC-only branch or worktree so the separation is
+mechanical. When a test and the code disagree, that disagreement is escalated — neither side
+silently conforms to the other.
+
+**9. Ordering constraint on provenance records (Sol, 2026-08-16).** Any `GenerationStep` recorded
+on a failure path — including a declined-transition record — must be written BEFORE
+`finalizeGenerationRun`. Finalization computes `modelIdentifiers`/`toolsInvoked` from the step log,
+so a step appended afterwards is invisible to those aggregates and the finalized run misrepresents
+its own contents. The safe order is: attempt the transition → if declined, record the step →
+finalize once → read the actual status back → throw.
+
+---
+
 ## Architecture and scope decisions
 
 Decisions that change architecture, choose a runtime, or expand scope beyond a current milestone are recorded in [docs/decisions/](decisions/), not just discussed in passing. See [decisions/README.md](decisions/README.md) for the format.

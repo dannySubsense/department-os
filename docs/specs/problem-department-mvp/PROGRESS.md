@@ -34,8 +34,48 @@ the read-only surface where a generated Brief can actually be reviewed. Slice 9 
 exist; Slice 10 makes it visible.
 
 Slice: 10 — Investigation Screen, Completed State. NOT STARTED.
-Step: Slice 9 closed 2026-08-16 (Frank forge-gate PASS, attempt 1/3) and awaits the Composer's
-final human gate before commit/push. Nothing is dispatched for Slice 10.
+Step: Slice 9 CLOSED. Frank forge-gate PASS, Composer final human gate PASS at review commit
+83948e2, committed as 6c54fde and PUSHED to PR #6. Nothing is dispatched for Slice 10.
+
+**Product Reality Demonstration run 2026-08-17 against 6c54fde** (isolated worktree, fresh
+database `deptos_slice9_demo_20260817` with 001-008 replayed, real LLM, no mocks). Two Briefs were
+generated end to end through the real submission path and the real `generateBriefVersion` service:
+a controlled case (Investigation `e797cd56-3fa9-47f5-ae20-d5537138f675`, BriefVersion
+`16a96624-4275-4626-ab3c-7ff1dd614aa4`, recommendation Approve) and the AI Video Playbook case
+(Investigation `97f62097-e5c2-495c-958d-adb8e894b090`, BriefVersion
+`eeaeabc4-bcd7-4eae-aa46-ba888c81a668`, demand Insufficient, one `demand-signal-type`
+NegativeFinding, recommendation **Reject**). The fail-closed machinery behaved correctly: it
+recorded absence as a first-class NegativeFinding and rejected its own department's experiment on
+the evidence. A deliberately-vague submission produced a genuine `generation-failed` state.
+
+The demonstration also established the product boundary and two defects, NEITHER of which is
+fixed and neither of which any test caught:
+
+1. **DISCOVERED-BROKEN — every `type: 'url'` source fails to resolve on Node 22.**
+   `safeLookup` (`ssrfGuardedFetch.ts:178`) returns a single address via
+   `callback(null, chosen.address, chosen.family)`, but Node 22 enables `autoSelectFamily` and
+   calls a custom `lookup` with `{all: true}` expecting an ARRAY, so it reads
+   `addresses[0].address` -> `undefined` and reports `Invalid IP address: undefined`. Confirmed
+   against live reachable hosts (`curl` 200, product `unreachable`), including a URL Danny
+   submitted through the browser himself. Consequence: the Landscape Researcher's independent web
+   research retrieved NOTHING in both runs -- 219 `web_search_result` rows across 26 queries, all
+   `status='failed'` with that same reason -- while both Landscape steps still recorded
+   `outcome: 'succeeded'`. Both Briefs' landscape sections therefore rest on the submitted text
+   alone. The suite misses this because the `allowedTestHosts` branch passes Node's original
+   `options` straight through to `dns.lookup`, so fixture-server tests exercise a DIFFERENT BRANCH
+   than production.
+2. **Browser retry loop is inert.** The Generation Failed screen tells the user to retry by
+   resubmitting. Resubmission is accepted and persists new sources, but `ALLOWED_PRIOR_STATUSES.open
+   = ['blocked']` so the Investigation can never return to `open`, and no route invokes
+   `generateBriefVersion`, so nothing regenerates. Verified by resubmitting real material to
+   `f0c5bd3e-01c0-4d89-bebc-56bea3f7229f`: 3 sources persisted, status unchanged.
+
+Product boundary at Slice 9, stated exactly: **a human can start an investigation and see it fail;
+a human cannot see one succeed.** Three routes exist (`GET /investigations/new`,
+`POST /investigations`, `GET /investigations/:id`); `/` is 404; the durable URL returns
+**HTTP 501 "Brief review surface is not implemented yet."** for `brief-generated`. Nothing renders
+a Brief, its provenance, or the failed-retrieval fact; nothing triggers generation from the
+browser; nothing records a human decision.
 
 Test counts ARE now recorded for closed slices, but only as runner output taken at a quiescent
 database against a schema replayed from the migrations as written — never as an agent's report.
