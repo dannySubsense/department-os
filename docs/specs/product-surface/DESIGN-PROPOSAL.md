@@ -3,7 +3,10 @@
 **Status:** DESIGN ONLY — no application code. Written for Danny's review; NOT dispatched for
 implementation. Replaces the presumed mechanical "Slice 10" entry point per Danny's explicit
 redirection. **Revision 2** — responds to PR #7's FAIL verdict (9 binding revision items). See
-final section "Revision 2 — PR #7 Disposition" for the traceability table.
+the "Revision 2 — PR #7 Disposition" section for that traceability table. **Revision 3** —
+responds to Danny's narrow re-gate of the `0811d5d..95b46a5` diff (5 blocking contradictions). See
+the "Revision 3 — Narrow Re-gate Disposition" section (immediately after Revision 2's table) for
+that traceability table.
 
 **Base:** branch `feature/problem-department-mvp`, commit `37d91d4` (Slice 9 Brief Assembler
 closed). Grounded against `docs/product-architecture-and-direction.md` (commit `fe2ee62`,
@@ -107,7 +110,7 @@ data:
 |---|---|---|
 | **Active** | Investigations with a real in-progress `GenerationRun` | `SELECT DISTINCT investigation_id FROM generation_run WHERE outcome = 'in-progress'` — joined back to `investigation` for display fields |
 | **Needs Attention** | Investigations stalled or failed, no run currently reviving them | `SELECT * FROM investigation WHERE status IN ('blocked', 'generation-failed')` |
-| **Recent / Completed** | Investigations that reached a Brief, or whose most recent `GenerationRun` finished (succeeded or failed), ordered by recency | `investigation.status = 'brief-generated'` UNION any `generation_run` row with `outcome <> 'in-progress'`, ordered by `GREATEST(generation_run.completed_at, investigation.createdAt)` descending, deduplicated by `investigation_id` (keep the most recent row per investigation) |
+| **Recent / Completed** | Investigations that reached a Brief, or whose most recent `GenerationRun` finished (succeeded or failed), ordered by recency | `investigation.status = 'brief-generated'` UNION any `generation_run` row with `outcome <> 'in-progress'`, ordered by `GREATEST(generation_run.completed_at, investigation.created_at)` descending, deduplicated by `investigation_id` (keep the most recent row per investigation) |
 
 These three groups are mutually exclusive by construction: an Investigation with an in-progress
 `generation_run` row is Active regardless of its `status` column; `Needs Attention` only ever
@@ -186,7 +189,7 @@ SELECT i.id,
        ) AS last_activity_at
   FROM investigation i
   LEFT JOIN generation_run gr ON gr.investigation_id = i.id
-  LEFT JOIN generation_component_event gce ON gce.investigation_id = i.id
+  LEFT JOIN generation_component_event gce ON gce.generation_run_id = gr.id
   LEFT JOIN generation_step gs ON gs.generation_run_id = gr.id
   LEFT JOIN problem_brief pb ON pb.investigation_id = i.id
   LEFT JOIN brief_version bv ON bv.problem_brief_id = pb.id
@@ -255,9 +258,23 @@ order (first match wins):
 | 1 | `SourceArtifact.resolution.status === 'unresolved'` for at least one source, no `GenerationRun` yet exists for this investigation | "accepting sources — awaiting resolution" |
 | 2 | `Investigation.status === 'blocked'` | "blocked: no reachable sources" — render `statusReason` verbatim |
 | 3 | A `generation_run` row exists with `outcome = 'in-progress'` for this investigation | "generating: `<currentComponent>` running" — `<currentComponent>` read from the latest `generation_component_event` row with `event_type = 'component-started'` and no matching terminal event yet (§10a); if no `component-started` event has landed yet (race between run creation and first event), render "generating: starting" |
-| 4 | `Investigation.status === 'generation-failed'` | "generation failed" — render `statusReason` verbatim |
-| 5 | A `BriefVersion` exists for this investigation (`ProblemBrief.currentVersionId` resolves) | "brief generated — version `<versionNumber>`" |
-| 6 (fallback) | None of the above (e.g. freshly created, sources not yet all resolved, no run yet) | "accepting sources / awaiting generation" |
+| 4 (Revision 3 item 5) | No in-progress run; the most recent `GenerationRun` for this investigation (`latestRun`) has `outcome === 'failed'`, AND a `BriefVersion` already exists for this investigation | "brief generated (version `<versionNumber>`) — latest regeneration attempt failed: `<reason>`" — the existing Brief is still shown as current/authoritative (additive surfacing of the failure, not a takeover of the display); `<reason>` is read from `latestRun.stepLog`'s last `outcome: 'failed'` entry's `error` field (falls back to "no failure detail recorded" if none is present) |
+| 5 | `Investigation.status === 'generation-failed'` | "generation failed" — render `statusReason` verbatim (only reachable when no prior Brief exists yet — see the note below the table) |
+| 6 | A `BriefVersion` exists for this investigation (`ProblemBrief.currentVersionId` resolves) | "brief generated — version `<versionNumber>`" |
+| 7 (fallback) | None of the above (e.g. freshly created, sources not yet all resolved, no run yet) | "accepting sources / awaiting generation" |
+
+**Why rule 4 must run before rule 5/6 (Revision 3 item 5).** Slice 9 deliberately leaves
+`Investigation.status` UNCHANGED after a failed correction/regeneration attempt on an
+investigation that already has a prior successful Brief —
+`attemptGenerationFailedTransition`'s `isCorrection` branch never calls
+`transitionInvestigationStatus` at all for a correction (`generateBriefVersion.ts:263-288`), so
+`status` stays `'brief-generated'`, and `ALLOWED_PRIOR_STATUSES` in
+`transitionInvestigationStatus.ts:23-30` never targets `'generation-failed'` from that path either.
+This is intentional, not a bug — the existing Brief is still valid and current. Without rule 4,
+rule 6 alone would render plain "brief generated," silently hiding that the latest attempt failed.
+Rule 5 therefore only ever fires for an INITIAL generation failure (no prior Brief exists yet) —
+the one case where `transitionInvestigationStatus` really does move `status` to
+`'generation-failed'`.
 
 Pseudocode (evaluated top to bottom, first match returned):
 
@@ -279,6 +296,17 @@ function deriveWorkflowStage(input: {
     return input.currentComponentEvent
       ? { kind: 'generating', component: input.currentComponentEvent.component }
       : { kind: 'generating-starting' };
+  }
+  // Revision 3 item 5 — a failed regeneration attempt must not silently hide behind a still-valid
+  // prior Brief: Slice 9 intentionally leaves `status` unchanged in exactly this case (see the
+  // note above the table), so this check must run BEFORE the plain 'brief-generated' check below.
+  if (input.latestRun?.outcome === 'failed' && input.briefVersion !== null) {
+    const failedStep = [...(input.latestRun.stepLog ?? [])].reverse().find(s => s.outcome === 'failed');
+    return {
+      kind: 'brief-generated-with-failed-regeneration',
+      versionNumber: input.briefVersion.versionNumber,
+      reason: failedStep?.error ?? 'no failure detail recorded',
+    };
   }
   if (input.investigation.status === 'generation-failed') {
     return { kind: 'generation-failed', reason: input.investigation.statusReason };
@@ -318,6 +346,19 @@ Each view renders, per active or recent `GenerationRun`:
 - Completed/failed steps so far, from the existing `GenerationStep` rows (`component`, `outcome`,
   `error`, `startedAt`/`completedAt`) — unchanged data, newly surfaced in a live-activity list
   rather than only inside a finished Brief's provenance section.
+
+**Brief Assembly is not part of this live component-activity surface (Revision 3 item 4).** The
+`generation_component_event` chokepoint (§10a) only wraps the 7 extraction/analysis components of
+`generateBriefVersion`'s pipeline — after the Recommendation Engine's terminal event, no further
+`component-started` row is ever written, even though real work (assembly and persistence) still
+happens. The activity feed's last visible live component is therefore Recommendation; Brief
+Assembly's outcome only becomes visible once the request completes — via the endpoint response
+(§9's `GenerationRunResponse`) or the finished `BriefForReview`/workflow-stage data (§5a rule 4
+for a failed correction). This is a stated scope choice for this revision, not an oversight:
+instrumenting Brief Assembly itself (a `component-started`/`component-completed` pair around
+Phase 4 in `generateBriefVersion.ts`) is a small, well-understood follow-up if Danny wants full
+live coverage — §10a's `recordComponentEvent` API already supports it; only the call site is
+missing.
 
 No presence animation, no swarm visualization, no simulated concurrency — a plain list of
 real, persisted-or-derivable rows (binding constraint: agent activity requirement, "smallest
@@ -430,6 +471,7 @@ type WorkflowStage =
   | { kind: 'blocked'; reason?: string }
   | { kind: 'generating'; component: string }
   | { kind: 'generating-starting' }
+  | { kind: 'brief-generated-with-failed-regeneration'; versionNumber: number; reason: string }  // Revision 3 item 5
   | { kind: 'generation-failed'; reason?: string }
   | { kind: 'brief-generated'; versionNumber: number }
   | { kind: 'awaiting-generation' };
@@ -752,68 +794,113 @@ POST /api/investigations/:id/generation-runs
   single long-held synchronous call that only resolves at the very end. This is why item 2 phrases
   it as "server awaits, browser polls concurrently" rather than "browser waits on the POST" — the
   POST and the polling are two independent request streams from the same page, not sequential.
-- **Active-run duplicate protection.** Before calling `generateBriefVersion`, the handler checks
-  for an existing in-progress run:
+- **Active-run duplicate protection — DB-enforced, not check-then-act (Revision 3 item 1).** A
+  partial unique index is the single source of truth for "is a run in progress" for a given
+  investigation, matching this schema's existing pattern of enforcing invariants via CHECK/UNIQUE
+  constraints at the DB (migration 006) rather than app-level locking or a racy pre-check-then-act:
 
 ```sql
-SELECT id FROM generation_run
- WHERE investigation_id = $1 AND outcome = 'in-progress';
+CREATE UNIQUE INDEX idx_generation_run_one_in_progress
+  ON generation_run (investigation_id)
+  WHERE outcome = 'in-progress';
 ```
 
-  If a row is found, the handler returns `409 Conflict` immediately (no new `generateBriefVersion`
-  call, no new `GenerationRun` created) with a body referencing the existing run:
+  `generateBriefVersion`'s Phase 1 (`createGenerationRun`, `provenanceRecorder.ts:62-89`) performs
+  the one and only `INSERT INTO generation_run` on this path, and it runs before any of
+  `generateBriefVersion`'s own try/catch blocks (`generateBriefVersion.ts:230-232`). Two concurrent
+  `POST` requests for the same investigation race on that single INSERT; the index makes the
+  second one fail at the DB with a unique-violation (Postgres error code `23505`) instead of
+  silently succeeding — there is no SELECT-then-INSERT window for a second request to slip
+  through, because no pre-check SELECT is relied on for the correctness decision at all.
+
+  The handler distinguishes this specific race outcome from every other failure by catching the
+  `23505` unique-violation on `idx_generation_run_one_in_progress` and turning it into
+  `409 Conflict`. A SELECT MAY still be issued at that point purely to populate the error body with
+  the existing run's id — reporting only, never the basis for the 409 decision itself:
 
 ```typescript
 // 409 response body
 interface GenerationRunConflict {
   error: 'generation-already-in-progress';
-  existingGenerationRunId: string;   // GenerationRun.id of the in-progress row found above
+  existingGenerationRunId: string;   // looked up via a reporting-only SELECT after the INSERT's
+                                       // unique-violation is caught — never used to decide the 409
 }
 ```
 
-  This reuses `generation_run.outcome = 'in-progress'` — a real, existing column per migration
-  006 (§ header: "`generation_run` is NOT append-only ... `outcome = 'in-progress'`") — as the
-  lock check. No new lock table is introduced; the existing `generation_run` row already carries
-  exactly the state needed to detect an active run, so a separate lock table would duplicate
-  information the schema already has. This check-then-act is not perfectly race-free under
-  concurrent requests without a `SELECT ... FOR UPDATE`/unique-constraint backstop; that
-  concurrency-control detail (row lock vs. a partial unique index on `(investigation_id) WHERE
-  outcome = 'in-progress'`) is an implementation choice deferred to Forge, not a design gap — a
-  partial unique index of that shape is the natural DB-level backstop and is called out here so
-  Forge does not have to rediscover it.
+- **Endpoint response shape — distinct from `generateBriefVersion`'s actual return type (Revision
+  3 item 3).** `generateBriefVersion` (`src/services/generateBriefVersion.ts:222-226`) resolves
+  with a bare `BriefVersion` (`src/types/domain.ts:563-589`) on success — `BriefVersion` has no
+  `outcome` field — or rejects with `BriefGenerationFailedError`
+  (`generateBriefVersion.ts:39-48`), which carries `reason`, `generationRunId`, and
+  `investigationStatus`. The endpoint's JSON response is a handler-constructed shape built from
+  those real fields, not a passthrough of either:
+
+```typescript
+type GenerationRunResponse =
+  | { outcome: 'succeeded'; generationRunId: string; briefVersionId: string }
+  | { outcome: 'failed'; generationRunId: string; reason: string };
+```
+
+  - **Success** — the handler wraps the resolved `BriefVersion` as `{ outcome: 'succeeded',
+    generationRunId: briefVersion.generationRunId, briefVersionId: briefVersion.id }`. Both ids
+    are already fields on the resolved `BriefVersion` (`generationRunId` and `id` respectively,
+    `domain.ts:563-589`) — no extra query needed.
+  - **Failure** — the handler catches `BriefGenerationFailedError` and responds
+    `{ outcome: 'failed', generationRunId: err.generationRunId, reason: err.reason }`. Both fields
+    are already on the thrown error (`generateBriefVersion.ts:39-48`); the handler never performs
+    its own `INSERT INTO generation_run` (that INSERT is internal to `generateBriefVersion`, per
+    the duplicate-protection note above), so it has no separate id to look up — it reads the same
+    id `generateBriefVersion` itself already generated.
 
 ```typescript
 // Handler sketch — the ENTIRE new wiring, no new orchestration layer beyond the duplicate check:
 async function handleGenerationRunPost(investigationId: string, req, res) {
-  const inProgress = await pool.query(
-    `SELECT id FROM generation_run WHERE investigation_id = $1 AND outcome = 'in-progress'`,
-    [investigationId],
-  );
-  if (inProgress.rows.length > 0) {
-    return res.status(409).json({
-      error: 'generation-already-in-progress',
-      existingGenerationRunId: inProgress.rows[0].id,
-    });
-  }
-
   try {
-    const result = await generateBriefVersion({
+    const briefVersion = await generateBriefVersion({
       investigationId,
       runtimeIdentifier: RUNTIME_IDENTIFIER,   // existing constant/config, not newly designed here
     });
-    return res.status(200).json({ generationRunId: result.generationRunId, outcome: result.outcome });
+    return res.status(200).json({
+      outcome: 'succeeded',
+      generationRunId: briefVersion.generationRunId,
+      briefVersionId: briefVersion.id,
+    });
   } catch (err) {
-    // generateBriefVersion already transitions the Investigation to 'generation-failed' and
-    // finalizes its own GenerationRun on failure (existing Slice 9 behavior) — the handler
-    // reports the failure, it does not need to do anything further to Investigation state.
-    return res.status(500).json({ error: 'generation-failed', message: String(err) });
+    if (isUniqueViolation(err, 'idx_generation_run_one_in_progress')) {   // Postgres code 23505
+      const existing = await pool.query(
+        `SELECT id FROM generation_run WHERE investigation_id = $1 AND outcome = 'in-progress'`,
+        [investigationId],
+      );
+      return res.status(409).json({
+        error: 'generation-already-in-progress',
+        existingGenerationRunId: existing.rows[0]?.id ?? null,
+      });
+    }
+    if (err instanceof BriefGenerationFailedError) {
+      // generateBriefVersion already transitions the Investigation to 'generation-failed' (or,
+      // for a failed correction attempt against an investigation with an existing valid Brief,
+      // deliberately leaves status unchanged — §5a rule 4) and finalizes its own GenerationRun on
+      // failure (existing Slice 9 behavior). The handler reports the failure via the typed
+      // response above; it does nothing further to Investigation state.
+      return res.status(200).json({
+        outcome: 'failed',
+        generationRunId: err.generationRunId,
+        reason: err.reason,
+      });
+    }
+    // Unexpected error not represented by BriefGenerationFailedError or the unique-violation case
+    // above — surfaced as a real 500, not silently reshaped into the outcome union.
+    return res.status(500).json({ error: 'unexpected-error', message: String(err) });
   }
 }
 ```
 
 This is the entire connection — no new queue, no new retry logic beyond the duplicate-protection
-check above. `RUNTIME_IDENTIFIER`'s exact value remains an open item (§15 item 2, unchanged by
-this revision — Danny has not supplied a sourced value).
+index above. `isUniqueViolation` is a small helper (`err.code === '23505' && err.constraint ===
+<index name>`, the standard `pg` driver error shape) — not a new concept, the same discrimination
+pattern any `pg` caller already uses for a constraint-backed conflict. `RUNTIME_IDENTIFIER`'s
+exact value remains an open item (§15 item 2, unchanged by this revision — Danny has not supplied
+a sourced value).
 
 ---
 
@@ -905,11 +992,11 @@ CREATE UNIQUE INDEX idx_generation_component_event_one_terminal
 
 Investigation-scoped queries (e.g. §4a's last-activity computation, the Investigation-level
 activity feed in §6) now join through `generation_run_id → generation_run.investigation_id`
-explicitly — reflected in §4a's SQL above (`LEFT JOIN generation_component_event gce ON
-gce.investigation_id = i.id` in the earlier draft is corrected here to join via `generation_run`;
-see the corrected §4a query, which already joins `gce` directly to `generation_run` scope through
-`gr` — restated precisely: `gce.generation_run_id = gr.id` is the actual join key, not a direct
-`investigation_id` column on `gce`).
+explicitly. §4a's query is corrected accordingly (Revision 3 item 2): `LEFT JOIN
+generation_component_event gce ON gce.generation_run_id = gr.id`, where `gr` is the already-joined
+`generation_run` (itself joined and filtered by `gr.investigation_id = i.id`) — `gce.generation_run_id
+= gr.id` is the actual join key; `generation_component_event` has no `investigation_id` column of
+its own to join on.
 
 **Defect 4 fixed — one-directional `error` CHECK.** The prior CHECK only enforced `error IS NULL`
 for non-failed events; it did not enforce `error IS NOT NULL` for failed ones, and did not reject
@@ -978,10 +1065,20 @@ Called at the START of `runStepWithProvenance` (`provenanceRecorder.ts:328-390`)
 `componentExecutionId` minted at the start of this call — not a new one per event.
 
 This remains intentionally NOT a general event bus — one function, one table, three fixed event
-types, wired into exactly the one existing chokepoint (`runStepWithProvenance`) every Slice 4-9
-component call already passes through. No swarm concept, no presence, no polling design decided
-here (SSE vs. client polling is left to implementation, §15 item 3, since both read the same
-table).
+types, wired into exactly the one existing chokepoint (`runStepWithProvenance`) that the 7
+extraction/analysis components of `generateBriefVersion`'s pipeline call: Extraction & Clustering
+Engine, Demand Analyzer, Personal Pull Extractor, Landscape Researcher, Gap Hypothesis Generator,
+Uncertainty Compiler, Recommendation Engine (`generateBriefVersion.ts:333-461`).
+
+**Brief Assembly itself is NOT wired into this chokepoint (Revision 3 item 4).**
+`generateBriefVersion.ts`'s final assembly/persistence phase (Phase 4, `generateBriefVersion.ts:
+548-679`) calls `recordGenerationStep` directly, component name `'Brief Assembler'`, on its
+failure paths only (`generateBriefVersion.ts:272-285, 573-584, 649-662`) — and records nothing at
+all, via either `GenerationStep` or `generation_component_event`, on successful assembly. This
+proposal deliberately narrows the claim rather than instrumenting Brief Assembly (smallest honest
+choice, not a silent gap): see §6 for the resulting product-visible consequence. No swarm concept,
+no presence, no polling design decided here (SSE vs. client polling is left to implementation,
+§15 item 3, since both read the same table).
 
 ---
 
@@ -1043,12 +1140,15 @@ separate "confirmation" screen — while the Sources panel reflects the real
 **PRODUCT CHECKPOINT 3:** PRODUCT CHANGE: Danny can, from inside the Investigation Workspace,
 trigger generation via the real browser-facing `POST /api/investigations/:id/generation-runs`
 endpoint (§9) — no server-console call, no test harness — and watch it run live: the activity
-panel shows the currently-executing component changing over the run's lifetime (via §10a's
-lifecycle events, polled concurrently with the in-flight POST per §9), the Workspace's workflow
-stage indicator (§5a) reflects "generating: `<component>` running," and on completion the
-Workspace transitions to show the assembled Brief (§8's `BriefForReview`) — or the
-`generation-failed` state if the pipeline genuinely fails — without any additional user action or
-page reload. This single checkpoint closes what the prior revision split across two checkpoints
+panel shows the currently-executing component changing over the run's lifetime through the 7
+extraction/analysis components (via §10a's lifecycle events, polled concurrently with the
+in-flight POST per §9), the Workspace's workflow stage indicator (§5a) reflects "generating:
+`<component>` running." Live component visibility ends at the Recommendation Engine's terminal
+event — Brief Assembly itself is not part of the live surface (§6, Revision 3 item 4) — and on
+completion the Workspace transitions to show the assembled Brief (§8's `BriefForReview`), or,
+for a correction attempt against an investigation with an existing valid Brief, the still-current
+Brief annotated with the failed-regeneration notice (§5a rule 4), or the `generation-failed` state
+for an initial-generation failure — without any additional user action or page reload. This single checkpoint closes what the prior revision split across two checkpoints
 (manual trigger with live activity, then later automatic wiring) — the browser-triggered path and
 the live activity view arrive together, per Revision 2 item 9's binding requirement.
 
@@ -1175,14 +1275,10 @@ removed from this list (see the disposition table below); what remains is genuin
    should it wait until Prototype Department or a second Department exists to give it real
    cross-Department content? Unchanged by this revision, per Danny's explicit instruction to
    resolve evidence/runs only, not Knowledge, in this pass.
-8. **Concurrency backstop for §9's duplicate-run check.** The check-then-act
-   `SELECT ... WHERE outcome = 'in-progress'` followed by a conditional `generateBriefVersion` call
-   is not perfectly race-free under truly concurrent requests without an additional DB-level
-   backstop (e.g. a partial unique index on `generation_run(investigation_id) WHERE outcome =
-   'in-progress'`). Named explicitly in §9 as a Forge-level implementation choice rather than a
-   design gap, but flagged here too since it is a genuine judgment call about how much
-   defense-in-depth this MVP needs before a second concurrent submission from the same browser
-   tab (double-click) becomes a real risk versus a theoretical one.
+8. ~~Concurrency backstop for §9's duplicate-run check~~ — **RESOLVED**, Revision 3 item 1 (§9):
+   a partial unique index (`idx_generation_run_one_in_progress`) makes the DB the single source of
+   truth for "is a run in progress," and the second concurrent request's `INSERT` fails with a
+   unique-violation the handler catches and turns into `409 Conflict` — no check-then-act window.
 
 ---
 
@@ -1203,6 +1299,21 @@ each links to the section that resolves it.
 | 7 | Mission Control "Active work" restructure | Three explicit groups (Active / Needs Attention / Recent-Completed), each with its own named backing query and stated precedence | §2a |
 | 8 | "Last recorded activity" instead of `updatedAt` | `GREATEST` across real persisted timestamps (`investigation.created_at`, `generation_run` start/complete, `generation_component_event.occurred_at`, `generation_step.completed_at`, `brief_version.created_at`) — no invented column | §4a |
 | 9 | Checkpoint merge (no manual-trigger checkpoint ahead of browser wiring) | Checkpoints reduced from 4 to 3; the checkpoint that first shows live generation already uses the browser-triggered `POST .../generation-runs` endpoint | §12, §13 |
+
+---
+
+## Revision 3 — Narrow Re-gate Disposition
+
+Danny's narrow re-gate of the `0811d5d..95b46a5` diff returned FAIL with 5 blocking
+contradictions. All 5 are disposed of below.
+
+| # | Item | Resolution | Section |
+|---|---|---|---|
+| 1 | Duplicate-run protection was check-then-act (racy) | Replaced with a partial unique index `idx_generation_run_one_in_progress` on `generation_run(investigation_id) WHERE outcome = 'in-progress'`; the second concurrent `INSERT` (inside `generateBriefVersion`'s `createGenerationRun`) fails with a unique-violation the handler catches and turns into `409`, not a separate pre-check SELECT | §9 |
+| 2 | Last-activity SQL referenced deleted column / camelCase-in-SQL slips | §4a's query fixed to `LEFT JOIN generation_component_event gce ON gce.generation_run_id = gr.id`; §2a's `investigation.createdAt` fixed to `investigation.created_at`; §10a's own restatement of the fix corrected to match | §4a, §2a, §10a |
+| 3 | Endpoint sketch used `result.outcome`, which doesn't exist on `generateBriefVersion`'s real `Promise<BriefVersion>` return type | Defined a handler-constructed `GenerationRunResponse` union, sourced from `BriefVersion.generationRunId`/`.id` on success and `BriefGenerationFailedError.generationRunId`/`.reason` on rejection — both already real fields, no extra query needed | §9 |
+| 4 | Brief Assembly absent from live lifecycle instrumentation despite "every component" language | Narrowed the claim (chose option b): `runStepWithProvenance`/`generation_component_event` cover only the 7 extraction/analysis components; Brief Assembly is explicitly NOT part of the live activity surface — last live component is Recommendation, Brief Assembly's outcome surfaces only via the endpoint response or finished Brief data | §10b, §6, §12 |
+| 5 | Workflow derivation hid a failed regeneration behind an existing valid Brief | Added precedence rule 4: no in-progress run + latest `GenerationRun.outcome === 'failed'` + a `BriefVersion` already exists → `brief-generated-with-failed-regeneration`, surfacing both facts together instead of just "brief generated" | §5a, §8 |
 
 ---
 
