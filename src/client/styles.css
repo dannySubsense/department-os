@@ -337,3 +337,125 @@ body {
   font-size: 13px;
   margin: 0;
 }
+
+/* Problem Department overview screen */
+
+.problem-department-screen__thesis {
+  color: var(--color-text-muted);
+  margin: 0 0 var(--space-2);
+}
+
+.department-status-badge {
+  display: inline-block;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px var(--space-2);
+  border-radius: 4px;
+  border: 1px solid var(--color-border);
+}
+
+.department-status-badge--installed {
+  color: var(--color-installed);
+}
+
+.department-status-badge--planned {
+  color: var(--color-planned);
+}
+
+.investigation-portfolio-table__filter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+.investigation-portfolio-table__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.investigation-portfolio-table__table th {
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.investigation-portfolio-table__table td {
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  font-size: 13px;
+}
+
+.investigation-portfolio-empty-state {
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: var(--space-4);
+  background: var(--color-surface);
+}
+
+.investigation-portfolio-empty-state__copy {
+  color: var(--color-text-muted);
+  margin: 0 0 var(--space-3);
+}
+
+.sources-evidence-counts {
+  display: flex;
+  gap: var(--space-5);
+  margin: 0;
+}
+
+.sources-evidence-counts__item dt {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-1);
+}
+
+.start-investigation-form {
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: var(--space-3);
+  background: var(--color-surface);
+  max-width: 480px;
+}
+
+.start-investigation-form__label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+  margin: 0 0 var(--space-3);
+}
+
+.start-investigation-form__row {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.start-investigation-form__row input {
+  flex: 1;
+}
+
+.start-investigation-form__actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.start-investigation-form__error {
+  color: var(--color-attention);
+  font-size: 13px;
+  margin-top: var(--space-2);
+}
