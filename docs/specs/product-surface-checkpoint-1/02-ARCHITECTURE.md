@@ -16,8 +16,10 @@ Grounded against the real, currently-checked-out repo state (branch
 ## 1. Scope Boundary (binding, re-stated for implementers)
 
 In scope: four new Express JSON routes (three GET, one POST), three new read-model query functions, a React SPA with
-three screens (Mission Control, Departments directory, Problem Department overview) plus one
-catch-all fallback route (`InvestigationWorkspacePlaceholder`, §2/§6), Vite build tooling, and the
+three screens (Mission Control, Departments directory, Problem Department overview) — no fourth
+SPA route and no client-side placeholder for Screen D (§2/§6: the last-active-Investigation link
+instead does a full-page navigation to the existing legacy Express route,
+`GET /investigations/:id`, per Danny's correction below) — Vite build tooling, and the
 static-serving / dev-proxy integration boundary with the existing Express app.
 
 Out of scope, not designed here even partially: Investigation Workspace (Screen D), any
@@ -39,12 +41,11 @@ one of these, that is a signal to stop and re-read the boundary, not to design a
 | `departmentRegistry` | Static, in-process list of the four `Department` config literals (id, name, thesis, installed flag) — single source for both `getDepartmentsView` and `getMissionControlView`/`getProblemDepartmentOverview` so the four entries are never independently retyped | `src/config/departments.ts` (new) |
 | `lastActivitySql` | Shared SQL fragment implementing `DESIGN-PROPOSAL.md` §4a's `GREATEST` computation, restricted to tables that exist this checkpoint (excludes `generation_component_event`, `generation_step`'s `gs` alias stays since `generation_step` DOES exist — see §4 below for the exact restriction) | inlined as a named SQL constant in `src/services/lastActivity.ts` (new), imported by both `getMissionControlView.ts` and `getProblemDepartmentOverview.ts` — one query text, not two divergent copies (US-4 AC3 / Constraint) |
 | Express routes: `GET /api/mission-control`, `GET /api/departments`, `GET /api/problem-department`, `POST /api/investigations` (JSON) | Thin HTTP adapters — parse request, call the corresponding service, serialize JSON, map thrown errors to status codes | `src/web/apiRoutes.ts` (new), mounted from `src/web/server.ts` |
-| `App` (React root) | Client-side router (three screen routes — `/`, `/departments`, `/departments/problem-department` — plus one catch-all fallback route, `/departments/problem-department/investigations/*`, §6) and top-level layout shell; mounts `PersistentNav` once at the shell level (sibling to `<Routes>`, not inside any route's element), so it renders on every screen and does not remount on navigation | `src/client/App.tsx` (new) |
+| `App` (React root) | Client-side router (exactly three screen routes — `/`, `/departments`, `/departments/problem-department` — no catch-all, §6) and top-level layout shell; mounts `PersistentNav` once at the shell level (sibling to `<Routes>`, not inside any route's element), so it renders on every screen and does not remount on navigation | `src/client/App.tsx` (new) |
 | `PersistentNav` | Persistent left-nav rendered once in `App`'s layout shell, outside the `<Routes>` switch, so it survives client-side route changes. Renders exactly two nav links this checkpoint: "Mission Control" (`/`) and "Departments" (`/departments`) — per `DESIGN-PROPOSAL.md` §1's Checkpoint-1-relevant subset, no `/activity` or `/knowledge` link is rendered (those routes are not built this checkpoint, §1 Scope Boundary). Highlights the active link via `react-router-dom`'s `NavLink` (no bespoke active-state logic). Presentational only — no data fetching, no props beyond the current location supplied by the router. | `src/client/components/PersistentNav.tsx` (new) |
-| `MissionControlScreen` | Renders `MissionControlView`: Installed Departments strip, three Active-work groups, `activeActivity` panel (GenerationRun-level only), recent lists, planned-Departments note | `src/client/screens/MissionControlScreen.tsx` (new) |
+| `MissionControlScreen` | Renders `MissionControlView`: Installed Departments strip, four Active-work groups (Active / Ready-Not-Started / Needs Attention / Recent-Completed), `activeActivity` panel (GenerationRun-level only), recent lists, planned-Departments note | `src/client/screens/MissionControlScreen.tsx` (new) |
 | `DepartmentsScreen` | Renders `DepartmentsView`: four rows, click target only on `installed` entries | `src/client/screens/DepartmentsScreen.tsx` (new) |
 | `ProblemDepartmentScreen` | Renders `ProblemDepartmentOverview`: header, portfolio (status filter/sort), counts, recent runs, Start Investigation, empty state | `src/client/screens/ProblemDepartmentScreen.tsx` (new) |
-| `InvestigationWorkspacePlaceholder` | Static, presentational catch-all matched by `/departments/problem-department/investigations/*` (any suffix — real id, malformed id, or trailing sub-path). Renders the fixed text "Investigation Workspace — not built yet (Checkpoint 2/3)" immediately and synchronously — no fetch, no loading state, no error state, no props. Exists so the last-active-Investigation link (already real and correctly targeted, §6) resolves to an honest placeholder instead of a blank page or silent no-op (US-7) | `src/client/screens/InvestigationWorkspacePlaceholder.tsx` (new) |
 | `StartInvestigationForm` | Presentational form wrapping `POST /api/investigations`; on success, triggers portfolio refetch | `src/client/components/StartInvestigationForm.tsx` (new) |
 | `InvestigationPortfolioTable` | Presentational: renders `InvestigationSummary[]`, client-side status filter/sort only (no server round trip needed — full portfolio is already fetched) | `src/client/components/InvestigationPortfolioTable.tsx` (new) |
 | `apiClient` | Thin `fetch` wrappers for the three GET routes + the POST route, typed against the shared response interfaces (§5) | `src/client/api.ts` (new) |
@@ -127,7 +128,12 @@ export type DepartmentsView = DepartmentSummary[];
 export interface MissionControlView {
   departments: DepartmentSummary[];
   activeWork: {
-    active: InvestigationSummary[];
+    active: InvestigationSummary[];         // has an in-progress GenerationRun — a real run IS
+                                             // running right now (Danny's correction, §5.3)
+    readyNotStarted: InvestigationSummary[]; // status='open', zero GenerationRun rows at all —
+                                             // was previously folded into `active`; split out per
+                                             // Danny's correction so "Active" only ever means a
+                                             // real run in progress
     needsAttention: InvestigationSummary[];
     recentCompleted: InvestigationSummary[];
   };
@@ -332,26 +338,18 @@ left as a placeholder (empty strings with a "copy at implementation" comment); t
 resolved here rather than deferred, since an empty thesis string would silently fail US-2 AC1 at
 runtime while still type-checking and passing any mocked test.
 
-**`getMissionControlView`** — the following independent queries (§8's `activeWork` mutual-exclusivity note:
-Active is evaluated first and is the DB-level filter; the other two queries independently exclude
-rows already captured by Active's condition so no post-hoc dedup across groups is needed):
+**`getMissionControlView`** — the following independent queries (queries 2/3/4/5 are each an
+independent DB-level filter over `activeWork`'s four groups; no post-hoc dedup or client-side
+bucketing across groups is used — see the mutual-exclusivity proof below the query list):
 
 ```sql
 -- 1. departments — from departmentRegistry, no query.
 
--- 2. activeWork.active — InvestigationSummary[]. Extended beyond DESIGN-PROPOSAL.md §2a's
--- original definition (in-progress GenerationRun only) to also cover a brand-new
--- status='open' Investigation with ZERO GenerationRun rows at all — §2a did not anticipate this
--- case, and it falls through all three groups as originally defined:
--- it is not blocked/generation-failed (Needs Attention), and it has neither reached
--- brief-generated nor has any non-in-progress run (Recent/Completed). Resolution: a genuinely
--- new/unstarted Investigation is "active" in the sense of being open/actionable, not stalled —
--- Needs Attention is reserved for states requiring human intervention on a stuck run
--- (blocked/generation-failed), which a never-started Investigation is not. Mutual exclusivity
--- with the other two groups is preserved: Needs Attention's WHERE clause only matches
--- status IN ('blocked', 'generation-failed'), and Recent/Completed's WHERE clause requires
--- status='brief-generated' or a non-in-progress run to exist — neither can match a status='open'
--- Investigation with zero generation_run rows, so no row is ever double-counted.
+-- 2. activeWork.active — InvestigationSummary[]. Danny's correction, overruling a prior fix round
+-- that had widened this query to also include a brand-new status='open' Investigation with ZERO
+-- GenerationRun rows ("recreates the exact confusion US-6 was intended to eliminate" — a real
+-- GenerationRun must be in progress for an Investigation to count as Active). That widened case is
+-- now its own group, query 3 below (readyNotStarted), not folded into Active.
 SELECT i.id, i.status, i.status_reason, i.created_at, la.last_activity_at
   FROM investigation i
   JOIN (${LAST_ACTIVITY_SUBQUERY}) la ON la.investigation_id = i.id
@@ -359,13 +357,20 @@ SELECT i.id, i.status, i.status_reason, i.created_at, la.last_activity_at
      SELECT 1 FROM generation_run gr
       WHERE gr.investigation_id = i.id AND gr.outcome = 'in-progress'
    )
-   OR (
-     i.status = 'open'
-     AND NOT EXISTS (SELECT 1 FROM generation_run gr2 WHERE gr2.investigation_id = i.id)
-   )
  ORDER BY la.last_activity_at DESC, i.id ASC;
 
--- 3. activeWork.needsAttention — InvestigationSummary[]
+-- 3. activeWork.readyNotStarted — InvestigationSummary[]. NEW group (Danny's correction): a
+-- status='open' Investigation with zero GenerationRun rows at all — genuinely never started, not
+-- "active" in the sense of a run actually running, and not stalled/blocked either. This is exactly
+-- the case the prior fix round had (incorrectly) folded into query 2's Active group above.
+SELECT i.id, i.status, i.status_reason, i.created_at, la.last_activity_at
+  FROM investigation i
+  JOIN (${LAST_ACTIVITY_SUBQUERY}) la ON la.investigation_id = i.id
+ WHERE i.status = 'open'
+   AND NOT EXISTS (SELECT 1 FROM generation_run gr WHERE gr.investigation_id = i.id)
+ ORDER BY la.last_activity_at DESC, i.id ASC;
+
+-- 4. activeWork.needsAttention — InvestigationSummary[]. Unchanged by this correction.
 SELECT i.id, i.status, i.status_reason, i.created_at, la.last_activity_at
   FROM investigation i
   JOIN (${LAST_ACTIVITY_SUBQUERY}) la ON la.investigation_id = i.id
@@ -376,14 +381,15 @@ SELECT i.id, i.status, i.status_reason, i.created_at, la.last_activity_at
    )
  ORDER BY la.last_activity_at DESC, i.id ASC;
 
--- 4. activeWork.recentCompleted — InvestigationSummary[], deduplicated to one row per investigation
+-- 5. activeWork.recentCompleted — InvestigationSummary[], deduplicated to one row per investigation.
+-- Unchanged by this correction (query logic identical to the prior round's query 4).
 --
 -- DECLARED DEVIATION from DESIGN-PROPOSAL.md §2a: §2a's Recent/Completed row specifies ordering
 -- by `GREATEST(generation_run.completed_at, investigation.created_at)` computed inline for this
 -- query alone. This document instead orders by `la.last_activity_at` — the shared
 -- `LAST_ACTIVITY_SUBQUERY` this document's own §4 already establishes as the single source of
 -- truth for "how recently did this investigation do something" (used identically by queries
--- 2, 3, 6, and getProblemDepartmentOverview's `investigations`/`lastActiveInvestigationId`).
+-- 2, 3, 4, 7, and getProblemDepartmentOverview's `investigations`/`lastActiveInvestigationId`).
 -- Recomputing a narrower two-term GREATEST inline here, alongside the five-term GREATEST already
 -- shared everywhere else, would give this one query a different recency definition than the rest
 -- of the document for no behavioral gain (`la.last_activity_at` is >= the §2a formula's value in
@@ -406,19 +412,19 @@ SELECT i.id, i.status, i.status_reason, i.created_at, la.last_activity_at
    )
  ORDER BY la.last_activity_at DESC, i.id ASC;
 
--- 5. activeActivity — GenerationRunSummary[], Core-wide (today: Problem Department only)
+-- 6. activeActivity — GenerationRunSummary[], Core-wide (today: Problem Department only)
 SELECT id, investigation_id, runtime_identifier, outcome, started_at, completed_at
   FROM generation_run
  WHERE outcome = 'in-progress'
  ORDER BY started_at DESC, id ASC;
 
--- 6. recent.investigations — InvestigationSummary[], ordered by shared last_activity_at
+-- 7. recent.investigations — InvestigationSummary[], ordered by shared last_activity_at
 SELECT i.id, i.status, i.status_reason, i.created_at, la.last_activity_at
   FROM investigation i
   JOIN (${LAST_ACTIVITY_SUBQUERY}) la ON la.investigation_id = i.id
  ORDER BY la.last_activity_at DESC, i.id ASC;
 
--- 7. recent.briefs — BriefSummary[]
+-- 8. recent.briefs — BriefSummary[]
 SELECT bv.id, pb.investigation_id, bv.version_number, bv.created_at, bv.recommendation
   FROM brief_version bv
   JOIN problem_brief pb ON pb.id = bv.problem_brief_id
@@ -426,14 +432,61 @@ SELECT bv.id, pb.investigation_id, bv.version_number, bv.created_at, bv.recommen
 -- bv.recommendation is JSONB {decision, rationale} (migration 007) — recommendationDecision reads
 -- recommendation->>'decision', cast to RecommendationDecision.
 
--- 8. recent.evidence — EvidenceSummary[]
+-- 9. recent.evidence — EvidenceSummary[]
 SELECT e.id, sa.investigation_id, e.label, e.excerpt_or_summary
   FROM evidence_item e
   JOIN source_artifact sa ON sa.id = e.source_artifact_id
  ORDER BY e.created_at DESC NULLS LAST, e.id ASC;
 ```
 
-Queries 2/3/4 are run independently against the database (three separate round trips or three CTEs
+**Mutual-exclusivity proof — four `activeWork` groups.** Let `P` = "this Investigation has at
+least one `generation_run` row with `outcome = 'in-progress'`" and `R` = "this Investigation has at
+least one `generation_run` row at all" (note `P` implies `R`). Every Investigation's `status` is
+exactly one of the four `InvestigationStatus` values: `open`, `blocked`, `generation-failed`,
+`brief-generated` (`src/types/domain.ts`).
+
+- **Active (query 2)** := `P`.
+- **Ready/Not Started (query 3)** := `status = 'open' AND NOT R`.
+- **Needs Attention (query 4)** := `status IN ('blocked', 'generation-failed') AND NOT P`.
+- **Recent/Completed (query 5)** := `NOT P AND (status = 'brief-generated' OR (R AND NOT P))` —
+  i.e. `NOT P AND (status = 'brief-generated' OR R)`, since the inner clause's `NOT P` is already
+  implied by the outer `NOT P`.
+
+Case split on `P`:
+- **`P` = true**: matches Active only. It cannot match Ready/Not Started (`R` is implied true by
+  `P`, so `NOT R` is false), Needs Attention (`NOT P` is false), or Recent/Completed (`NOT P` is
+  false). Disjoint from the other three by construction.
+- **`P` = false**: Active does not match (requires `P`). The remaining three groups partition on
+  `status` and `R`:
+  - Ready/Not Started requires `status = 'open' AND NOT R`.
+  - Needs Attention requires `status IN ('blocked', 'generation-failed')`.
+  - Recent/Completed requires `status = 'brief-generated' OR R`.
+  - `status = 'open'` is disjoint from `status IN ('blocked', 'generation-failed')` and from
+    `status = 'brief-generated'` (the four enum values are mutually exclusive) — so an `open`,
+    `P`-false Investigation can only match Ready/Not Started (if `NOT R`) or Recent/Completed
+    (if `R`, since `R` alone satisfies Recent/Completed's `OR` when `status ≠ 'brief-generated'`),
+    and `NOT R`/`R` are themselves mutually exclusive, so never both.
+  - A `blocked`/`generation-failed` Investigation can only match Needs Attention among the
+    status-gated groups above; it also satisfies Recent/Completed's clause whenever `R` is true
+    (i.e. a `generation-failed` Investigation with a completed/failed run row already exists — a
+    `blocked` Investigation, by definition "zero reachable sources — no Brief can be generated",
+    never reaches a state where a `generation_run` row could exist, so `R` is false for every
+    `blocked` row and no overlap arises there). **`generation-failed AND R` overlapping Needs
+    Attention and Recent/Completed is a pre-existing condition of the unmodified query 4/5 pair,
+    not introduced or resolved by this correction** — flagged here as an inherited open item
+    (Needs Attention and Recent/Completed were explicitly out of scope for this correction, per
+    Danny's ruling) rather than silently asserted as proven; a future correction should confirm
+    whether `generation-failed` investigations can, in practice, ever have a non-in-progress
+    `generation_run` row, and resolve the overlap if so.
+  - A `brief-generated` Investigation can only match Recent/Completed among the status-gated
+    groups (its status excludes Ready/Not Started and Needs Attention outright).
+
+Every Investigation therefore falls into exactly one of the four groups, with the single named
+exception above (inherited from the unmodified Needs-Attention/Recent-Completed pair, not created
+by this correction) flagged for separate follow-up rather than silently claimed as resolved.
+
+
+Queries 2/3/4/5 are run independently against the database (four separate round trips or four CTEs
 in one statement — implementer's choice; the AC's binding requirement is independence of the
 *query logic*, i.e. no single combined result set filtered client-side into three buckets, per
 US-6 AC4), not independence of transport.
@@ -483,21 +536,30 @@ SELECT id, investigation_id, runtime_identifier, outcome, started_at, completed_
 
 ## 6. React SPA — Route Structure and Component Boundaries
 
-The three screen routes below match `DESIGN-PROPOSAL.md` §1's Checkpoint-1 subset exactly, plus
-one catch-all fallback route (`InvestigationWorkspacePlaceholder`, §2) that is not part of that
-Checkpoint-1 subset — it exists to make the out-of-scope Screen D destination resolve honestly
-rather than as a blank page or silent no-op (US-7, UI Spec § Screen D Link Target):
+The three screen routes below match `DESIGN-PROPOSAL.md` §1's Checkpoint-1 subset exactly — no
+fourth route and no client-side placeholder for the out-of-scope Screen D. Per Danny's correction,
+any link that would previously have pointed at a Screen-D placeholder (e.g. the "last-active
+Investigation" link on `ProblemDepartmentScreen`, §UI Spec Screen C) instead does a real, full-page
+navigation — a plain `<a href="/investigations/{id}">`, not a React Router `<Link>` — to the
+EXISTING legacy Express route `GET /investigations/:id` (`src/web/server.ts:115-158`), labeled as
+the current view. That leaves the SPA entirely and hits the already-working server-rendered screen
+(`src/web/views.ts`'s `renderInvestigationGeneratingScreen`/`renderInvestigationBlockedScreen`/
+`renderInvestigationGenerationFailedScreen`, or the `brief-generated` 501 stub) rather than a
+purpose-built placeholder announcing its own future replacement:
 
 | Route | Component | Data source |
 |---|---|---|
 | `/` | `MissionControlScreen` | `GET /api/mission-control` on mount, one fetch, no polling (no live-update requirement this checkpoint) |
 | `/departments` | `DepartmentsScreen` | `GET /api/departments` on mount |
 | `/departments/problem-department` | `ProblemDepartmentScreen` | `GET /api/problem-department` on mount; re-fetches after a successful `StartInvestigationForm` submission (US-5 AC2 — "next load/refresh") |
-| `/departments/problem-department/investigations/*` | `InvestigationWorkspacePlaceholder` | none — static text, no fetch (§2) |
-
 No route exists for `/departments/:otherDepartmentSlug` — `DepartmentsScreen` renders no click
 target for `planned` Departments (US-2 AC2), so no navigation path ever reaches an undefined route;
 this matches the Edge Cases table's explicit "no route is defined for one" resolution.
+
+No client-side route exists for `/departments/problem-department/investigations/*` either — there
+is no React-side destination for that URL shape. The "last-active Investigation" link is a plain
+anchor tag, not a `Route`/`Link`, so it is not part of the router's route table at all (§App's
+router description above lists exactly three `<Route>` elements, no catch-all).
 
 Client-side data fetching uses plain `fetch` via `apiClient` (`src/client/api.ts`) and React's
 built-in `useEffect`/`useState` — no state-management library is added (none exists in the repo
@@ -535,11 +597,11 @@ interface StartInvestigationFormProps {
 }
 ```
 
-`MissionControlScreen` renders `activeWork.active`/`needsAttention`/`recentCompleted` as three
-visually distinct, independently-labeled lists (US-6 AC1-3) — never merged into one list with a
-computed tag, since the requirement is that the three groups are "never confused," which a shared
-render path with a badge would risk; three sibling sections is the more literal satisfaction of the
-AC.
+`MissionControlScreen` renders `activeWork.active`/`readyNotStarted`/`needsAttention`/`recentCompleted`
+as four visually distinct, independently-labeled lists (US-6 AC1-3, plus the new Ready/Not-Started
+group per Danny's correction) — never merged into one list with a computed tag, since the
+requirement is that the groups are "never confused," which a shared render path with a badge would
+risk; four sibling sections is the more literal satisfaction of the AC.
 
 Empty-state rendering (`ProblemDepartmentScreen`, zero Investigations): a dedicated
 `InvestigationPortfolioEmptyState` presentational component rendering the exact copy
@@ -559,15 +621,55 @@ not a generic placeholder.
   client subtree rather than a project-root `vite.config.ts`, so the client build's config is
   discoverable alongside the code it configures, matching the existing pattern of `src/db/`,
   `src/services/` each owning their own concerns without a shared root config file.
-- **Build output**: `src/web/public/` — the EXISTING `express.static` mount point
-  (`src/web/server.ts:22`, unchanged). Vite's `build.outDir` is configured to
-  `../web/public` (relative to `src/client/`). This directory remains build OUTPUT ONLY — no
-  hand-authored file is ever added there (explicit distinction from
+- **Build output** (Danny's correction — `root` must be explicit): Vite's default `root` is
+  `process.cwd()`, the directory the `vite`/`vite build` process is invoked from — NOT the
+  directory the config file itself lives in. Because `src/client/vite.config.ts` is run via
+  `--config src/client/vite.config.ts` from the repo root (`dev:client`/`build` scripts, below),
+  an implicit/default `root` would resolve to the repo root, not `src/client/`, and
+  `outDir: '../web/public'` would then resolve relative to the WRONG base — one level above the
+  repo root, not one level above `src/client/`. The fix: `root` is set explicitly, computed the
+  same way `src/db/migrate.ts` computes `MIGRATIONS_DIR` — `path.dirname(fileURLToPath(import.meta.url))`
+  — so it resolves to the config file's own directory (`src/client/`) regardless of invocation cwd.
+  Once `root` is explicit, `outDir: '../web/public'` correctly resolves to `src/web/public/`, the
+  EXISTING `express.static` mount point (`src/web/server.ts:22`, unchanged). This directory remains
+  build OUTPUT ONLY — no hand-authored file is ever added there (explicit distinction from
   `src/client/` as SOURCE).
+
+  ```typescript
+  // src/client/vite.config.ts — full sketch, copy verbatim for implementation
+  import { defineConfig } from 'vite';
+  import react from '@vitejs/plugin-react';
+  import path from 'node:path';
+  import { fileURLToPath } from 'node:url';
+
+  // Mirrors src/db/migrate.ts's MIGRATIONS_DIR pattern — resolves to this config file's own
+  // directory regardless of the cwd the `vite`/`vite build` process is invoked from.
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+  export default defineConfig({
+    root: __dirname, // explicit: Vite's default root is process.cwd(), not this file's directory —
+                      // without this, outDir below resolves relative to the wrong base (Danny's
+                      // correction).
+    plugins: [react()],
+    build: {
+      outDir: path.resolve(__dirname, '../web/public'), // now correct, because root above is
+                                                          // no longer implicit
+      emptyOutDir: true,
+    },
+    server: {
+      proxy: {
+        '/api': {
+          target: 'http://localhost:3000', // existing Express PORT default, server.ts:167
+          changeOrigin: true,
+        },
+      },
+    },
+  });
+  ```
 - **Production integration**: unchanged Express app serves `src/web/public/`'s built
   `index.html`/JS/CSS bundle via the existing `express.static` middleware — already mounted, no new
   middleware needed for static serving. A catch-all route (`app.get('*', ...)`) serves `index.html`
-  for any of the client-side routes (the three screen routes plus the catch-all, §6) on a hard
+  for any of the client-side routes (the three screen routes, §6) on a hard
   page load/refresh, enabling client-side routing to
   resolve `/departments/problem-department` directly. Its guard condition, explicit and binding:
   registered LAST, strictly AFTER the existing `/investigations/*` routes, `express.static`, and
@@ -581,14 +683,21 @@ not a generic placeholder.
   the SPA's client-side routes are plain page loads/refreshes) falls through to `index.html`.
 - **Dev integration**: `npm run dev` continues to run the existing Express server
   (`tsx watch src/web/server.ts`) unchanged. A new `npm run dev:client` script runs
-  `vite --config src/client/vite.config.ts` as a second process, with Vite's dev server proxying
-  `/api/*` requests to the Express server's port (`server.proxy` in `vite.config.ts`, targeting
-  `http://localhost:3000` — the existing `PORT` default in `server.ts:167`). This is the standard
-  Vite-behind-Express dev pattern named in `DESIGN-PROPOSAL.md` §11; both processes run
-  side-by-side in development, only the built bundle ships in production. No new `PORT`-style env
-  var is introduced (Constraint "Deferred: RUNTIME_IDENTIFIER-style config...
-  this checkpoint introduces no new runtime/env config") — Vite's own default dev port (5173) is
-  its own tool default, not a Department OS config convention, so it needs no owner/citation here.
+  `vite --config src/client/vite.config.ts` as a second process. The `--config` flag only tells
+  Vite WHERE the config file is — it does NOT imply `root`; that is why `root` must be (and now is,
+  above) set explicitly inside `vite.config.ts` itself, not left to be inferred from the config
+  file's location or the invoking shell's cwd. With `root` explicit, the dev server correctly
+  serves `src/client/` regardless of whether `dev:client` is run from the repo root or elsewhere.
+  Vite's dev server proxies `/api/*` requests to the Express server's port (`server.proxy` in
+  `vite.config.ts`, targeting `http://localhost:3000` — the existing `PORT` default in
+  `server.ts:167`). The `build` script similarly runs `vite build --config src/client/vite.config.ts`
+  from the repo root — same reasoning, `root` inside the config (not the invocation cwd) is what
+  makes `outDir` resolve correctly. This is the standard Vite-behind-Express dev pattern named in
+  `DESIGN-PROPOSAL.md` §11; both processes run side-by-side in development, only the built bundle
+  ships in production. No new `PORT`-style env var is introduced (Constraint "Deferred:
+  RUNTIME_IDENTIFIER-style config... this checkpoint introduces no new runtime/env config") —
+  Vite's own default dev port (5173) is its own tool default, not a Department OS config
+  convention, so it needs no owner/citation here.
 - **`src/web/views.ts`'s legacy screens**: untouched, continue being served by the existing
   `/investigations/*` routes, unaffected by the new `/api/*` routes or the catch-all (which only
   matches routes not already handled — Express matches routes in registration order, and the
@@ -628,7 +737,7 @@ not a generic placeholder.
 |---|---|---|
 | `react` | ^18.3.1 | SPA UI library — not currently in `package.json` |
 | `react-dom` | ^18.3.1 | React DOM renderer |
-| `react-router-dom` | ^6.26.0 | Client-side route matching for the three screen routes plus one catch-all fallback route (§6) |
+| `react-router-dom` | ^6.26.0 | Client-side route matching for the three screen routes (§6) |
 | `vite` | ^5.4.0 | Dev server + production bundler, per this checkpoint’s design decision |
 | `@vitejs/plugin-react` | ^4.3.0 | JSX/Fast-Refresh support for Vite |
 | `@types/react` | ^18.3.0 | TypeScript types |
@@ -681,7 +790,7 @@ dependency needed since `vitest` already supports a `jsdom` environment per-file
 | US-3 (Problem Department overview) — see 01-REQUIREMENTS.md's US-3 Acceptance Criteria for the full list | `getProblemDepartmentOverview`, `ProblemDepartmentOverview`, `ProblemDepartmentScreen`, `InvestigationPortfolioTable`, `InvestigationPortfolioEmptyState`, source/evidence COUNT queries (§5.3) |
 | US-4 (last recorded activity) — see 01-REQUIREMENTS.md's US-4 Acceptance Criteria for the full list | `LAST_ACTIVITY_SUBQUERY` (§4), shared import across both services (§2) |
 | US-5 (Start Investigation) — see 01-REQUIREMENTS.md's US-5 Acceptance Criteria for the full list | `POST /api/investigations` (§5.1), `StartInvestigationForm`, post-submit refetch (§6) |
-| US-6 (active-work grouping) — see 01-REQUIREMENTS.md's US-6 Acceptance Criteria for the full list | Queries 2/3/4 in `getMissionControlView` (§5.3), three independent result sets, `MissionControlView.activeWork` shape (§3) |
+| US-6 (active-work grouping) — see 01-REQUIREMENTS.md's US-6 Acceptance Criteria for the full list | Queries 2/3/4/5 in `getMissionControlView` (§5.3), four independent result sets, `MissionControlView.activeWork` shape (§3) |
 | US-7 (persistent cross-screen navigation) — see 01-REQUIREMENTS.md's US-7 Acceptance Criteria for the full list | `PersistentNav` component (§2) |
 
 Every Edge Case in `01-REQUIREMENTS.md` is addressed: zero-Investigation empty state (§6),

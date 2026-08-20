@@ -3,12 +3,180 @@
 **Status**: Draft — pending Frank spec-gate
 **Traces to**: `01-REQUIREMENTS.md` (see its User Stories section for the full list, and its
 Acceptance Criteria section for the AC count), `02-ARCHITECTURE.md`,
-`DESIGN-PROPOSAL.md` §2/§2a/§3/§4/§4a/§11 (Checkpoint-1 subset only).
+`DESIGN-PROPOSAL.md` §2/§2a/§3/§4/§4a/§11 (Checkpoint-1 subset only),
+`docs/product-architecture-and-direction.md` §6 (Mission Control character, quoted below).
 
 Scope boundary restated (binding): exactly three screens — Mission Control (`/`), Departments
 directory (`/departments`), Problem Department overview (`/departments/problem-department`).
 Investigation Workspace (Screen D), generation-trigger UI, and any live/per-component activity
 display are out of scope this checkpoint (Checkpoint 2/3).
+
+---
+
+## Visual Direction (Binding)
+
+This section is binding on every screen below — it is foundational styling, not final polish.
+Implementers building the four canonical files' React components must be able to derive concrete
+CSS/styling decisions from it. Exact hex values are intentionally left PROVISIONAL where noted;
+the direction and constraints are not.
+
+### Grounding
+
+`docs/product-architecture-and-direction.md` §6 ("Mission Control: What the Product Should Feel
+Like"): "The visible operating environment is part of the product, not end-stage decoration.
+Department OS should feel like a serious research and build command center: navigable, stateful,
+evidence-rich, and operational." §6 further states: "No fake agent theater. If the backend cannot
+supply a state, event, agent, metric, or relationship honestly, the interface should not invent
+it." This document's visual treatment applies that same discipline to styling, not only to data
+honesty (see Explicit Rejections below).
+
+### Department OS identity and persistent institutional shell
+
+The product has one consistent, recognizable visual identity across all screens — not a
+collection of independently-styled pages loosely sharing a nav bar. `PersistentNav` (mounted once
+at the `App` shell level, §6 of `02-ARCHITECTURE.md`) is part of this shell, not a bolt-on
+sidebar: it shares the same typographic scale, spacing unit, border treatment, and palette as the
+screens it sits beside, and it is visually continuous with the header/chrome of whichever screen
+is active. A user should be able to tell from a screenshot alone that a screen belongs to
+Department OS, independent of which of the three screens it is.
+
+### Mission-control/workbench character
+
+Dense information display, operational tone — like a real command center or engineering
+dashboard, not a marketing site or a consumer app. Concretely: no large decorative hero regions,
+no illustration/photography, no marketing-style copy ("Welcome!", "Let's get started!"). Screens
+open directly on real data (or an honest empty/loading/error state per § Interactions) — the
+content IS the interface, not a wrapper around it.
+
+### Dense but readable hierarchy
+
+Information density is a feature here — this is "a serious research and build command center,"
+not a sparse landing page — but density must not come at the cost of scannability. Concrete rules:
+
+- A clear typographic scale separates three tiers: **section headers** (e.g. "Active Work",
+  "Investigation Portfolio"), **field/column labels** (e.g. "status", "createdAt"), and **data
+  values** (e.g. an actual `InvestigationStatus` string, a timestamp, a count). Each tier is
+  visually distinct (weight and/or size), so a user scanning the page can distinguish structure
+  from content without reading every word.
+- Distinct data groups (e.g. Mission Control's four Active-work groups, or a screen's major
+  sections such as "Investigation portfolio" vs. "Sources / Evidence counts" vs. "Runs /
+  Activity") get generous-enough spacing between them that they read as separate groups even
+  though the overall layout is dense — spacing is the primary tool for grouping, not boxes/shadows
+  (see Spacing/Borders below).
+- Section boundaries are delineated with a thin hairline border or a subtle background-shade
+  change, not heavy card-shadow chrome — enough to separate sections at a glance, not so much that
+  the page reads as a stack of separate "cards" competing for attention (rejecting generic-SaaS
+  card styling, see Explicit Rejections).
+
+### Typography
+
+Two-family split, chosen to fit "evidence-rich, operational":
+
+- **Data/status values** (`InvestigationStatus` strings, IDs, timestamps, counts, run outcomes,
+  filter values) render in a monospace or semi-monospace typeface. This is a deliberate choice,
+  not a decorative one: monospace reads as instrumentation/console output — the honest visual
+  register for values sourced directly from the database and rendered without embellishment
+  (matching this checkpoint's "never a placeholder, never invented" discipline, § Interactions).
+  It also gives tabular data (the Investigation portfolio table, run lists) natural column
+  alignment.
+- **Prose, labels, and navigation** (section headers, field labels, form copy, `PersistentNav`
+  link text, the Planned-Departments note) render in a clean, plain sans-serif — legible at small
+  sizes, no display/decorative typeface.
+- Exact font families are PROVISIONAL (e.g. a system monospace stack such as
+  `ui-monospace, "SF Mono", "Cascadia Code", monospace` paired with a system sans-serif stack such
+  as `ui-sans-serif, system-ui`) — implementer's choice among standard system-font stacks; no
+  custom webfont is required or implied by this section, and none should be added without a
+  reason beyond aesthetics, since a webfont load is unjustified weight for a desktop-only internal
+  tool at this checkpoint's scale.
+
+### Palette
+
+A restrained, mostly-neutral base with a small, deliberate set of semantic accent colors — not a
+rainbow of decorative color. This checkpoint's content needs the following semantic roles, each
+visually distinct from the others but calibrated so that "attention needed" reads as the only
+alarming treatment — the rest read as informational, not urgent:
+
+- **Neutral base** — the dominant surface, text, and border colors used everywhere that isn't a
+  semantic status. Direction: a restrained near-black-on-near-white (or the inverse, dark mode —
+  implementer's call, either fits "command center," but pick one and apply it consistently; do
+  not mix). Exact values PROVISIONAL.
+- **`installed` vs `planned` Department status** — `installed` reads as the neutral/normal
+  "operational" treatment (this is the expected, healthy state for Problem Department); `planned`
+  reads as visually muted/deprioritized (e.g. lower-contrast text, no accent color at all) — it is
+  not an error or a warning, just "not yet built," so it must not share any hue with the
+  Needs-Attention treatment below.
+- **Active-work groups (4)**, each its own distinguishable-but-non-alarming treatment:
+  - **Active** (a `GenerationRun` is actually in progress right now) — the one group that may
+    carry a "live/running" visual cue (e.g. a small accent dot or label in an "in-progress" hue,
+    distinct from any alarm color) since this is the only group where something is happening in
+    real time.
+  - **Ready / Not Started** (`readyNotStarted` — `status='open'`, zero `GenerationRun` rows) —
+    reads as "waiting/ready," not alarming and not identical to Active: per Danny's correction
+    (`02-ARCHITECTURE.md` §5.3/§3), Active means a real run IS running; Ready/Not-Started means
+    nothing has started yet. Direction: a neutral or cool "standby" treatment (e.g. the neutral
+    base with a quiet label, no pulsing/live cue at all, since nothing is actually in motion) —
+    visually calmer than Active, and never sharing Active's "live" cue.
+  - **Needs Attention** (`blocked`, `generation-failed`) — the one group that should read as
+    "attention needed": a warm/alarm-adjacent hue (e.g. amber or red-orange family), used
+    nowhere else in the palette, so it is unambiguous at a glance.
+  - **Recent / Completed** — a calm "done" treatment (e.g. a muted green or simply the neutral
+    base with a checkmark/label), read as healthy/normal, not urgent.
+- **`InvestigationStatus` values** (`open`, `blocked`, `generation-failed`, `brief-generated`,
+  used in the portfolio table and status filter) reuse the SAME semantic hues as the Active-work
+  groups above wherever the two overlap conceptually, so a user does not have to learn two color
+  systems: `open` reads as neutral/standby, `blocked`/`generation-failed` read in the
+  attention/alarm hue, `brief-generated` reads in the "done" hue.
+- Exact hex values are PROVISIONAL — the direction (restrained neutral base, 3-4 named semantic
+  accents, no decorative rainbow, alarm color reserved exclusively for Needs-Attention/
+  blocked/generation-failed) is binding.
+
+### Spacing and borders
+
+- A consistent base spacing unit (e.g. an 8px scale — implementer's call on the exact base, but
+  ONE base unit used consistently, not ad hoc pixel values scattered per component) drives all
+  padding/margin/gap decisions, so density stays readable rather than cramped.
+- Section delineation uses thin hairline borders (1px, low-contrast neutral) or a subtle
+  background-shade step between adjacent sections — not heavy drop-shadows or card-elevation
+  effects. This is consistent with "dense but readable" (§ above) and explicitly rejects
+  default admin-template card styling (§ Explicit Rejections).
+
+### Desktop layout behavior
+
+This checkpoint is desktop-only in practice — no responsive/mobile requirement exists anywhere in
+`01-REQUIREMENTS.md` or `02-ARCHITECTURE.md`. Binding assumption: a minimum viewport width of
+1280px (a conservative, common desktop/laptop minimum; no narrower layout is designed or tested
+this checkpoint). Layout behavior at typical desktop widths:
+
+- `PersistentNav` is a fixed-width left column (narrow enough to read as navigation chrome, not a
+  content column — implementer's call on exact width, e.g. in the 200-240px range).
+- The main content area is fluid, filling the remaining width, with a max-width cap on
+  text-heavy/table content (e.g. the Investigation portfolio table) so rows don't stretch
+  illegibly wide on very large monitors — the cap applies to content readability, not to the
+  overall page, which remains fluid.
+- No hamburger menu, no responsive breakpoint collapsing `PersistentNav` into an off-canvas
+  drawer — that pattern belongs to a mobile/responsive requirement this checkpoint does not have.
+
+### Explicit rejections (binding negative constraints)
+
+Quoting Danny's ruling directly — these are binding, not stylistic suggestions:
+
+- **NOT generic Bootstrap/admin-template styling** — the default look of an off-the-shelf admin
+  dashboard template (default Bootstrap component styling, generic card grids with drop shadows,
+  default form-control chrome). Every screen must read as purpose-built for Department OS's
+  identity (§ above), not as an unstyled scaffold.
+- **NOT fake sci-fi styling** — no glowing borders, no terminal/hacker aesthetic (green-on-black
+  CRT styling, scanline effects, etc.) that isn't earned by real functionality. The monospace
+  typography direction above is chosen for instrumentation honesty, not for a sci-fi look — it
+  should read as a real data tool, not a prop from a movie about hackers.
+- **NOT fake agent theater** — no animated "agent thinking" indicators, spinners implying live
+  agent activity, or decorative motion that isn't backed by real state. This directly echoes and
+  extends `docs/product-architecture-and-direction.md` §6's "No fake agent theater. If the backend
+  cannot supply a state, event, agent, metric, or relationship honestly, the interface should not
+  invent it" — applied here to visual treatment specifically, not only to data honesty. Concretely:
+  the Page-Load Fetch loading indicator (§ Interactions) is a plain, static loading treatment (e.g.
+  a simple spinner or skeleton, not an "agent is thinking" animation with simulated steps), and no
+  screen implies live agent activity beyond what `activeActivity`/`activeWork.active`'s real,
+  fetched `GenerationRun` data actually supports.
 
 ---
 
@@ -30,16 +198,16 @@ display are out of scope this checkpoint (Checkpoint 2/3).
 2. User sees: loading state (see Interactions § Page-Load Fetch), then `MissionControlScreen`
    populated from `GET /api/mission-control`.
 3. User sees: Installed Departments strip (1 installed, 3 planned, no counts on planned tiles),
-   three Active-work groups, Active orchestrations panel (GenerationRun-level only), Recent lists,
+   four Active-work groups, Active orchestrations panel (GenerationRun-level only), Recent lists,
    Planned-Departments note.
 4. User action: none required — this is a read-only orientation screen.
 5. End state: user either stays on Mission Control or navigates onward (to `/departments` or
    directly to a linked Investigation-in-portfolio target — see Flow: US-4).
 
 **Success path:** every `MissionControlView` section renders with real data or an honest empty
-array — the departments strip, each of the three active-work groups (active, needs-attention,
-recent-completed) independently, the active-orchestrations/activity panel, and each of the recent
-lists (investigations, briefs, evidence) independently.
+array — the departments strip, each of the four active-work groups (active, readyNotStarted,
+needsAttention, recentCompleted) independently, the active-orchestrations/activity panel, and each
+of the recent lists (investigations, briefs, evidence) independently.
 **Error path:** fetch fails → screen renders a single error message in place of the sections
 (see Interactions § Page-Load Fetch, Error state). No partial/mixed render of stale + new data.
 
@@ -78,22 +246,27 @@ Empty State.
 **Error path:** fetch fails → single error message in place of the whole screen body below the
 header (see § Interactions).
 
-### Flow: US-4 — Follow last-active Investigation link (link target only)
+### Flow: US-4 — Follow last-active Investigation link (legacy destination)
 
 1. User starts at: Mission Control or Problem Department overview, either of which surfaces a
    "last-active Investigation" as a link (Mission Control: within `recent.investigations`,
    top-ordered; Problem Department overview: `lastActiveInvestigationId`-derived link).
-2. User sees: the link is rendered pointing at
-   `/departments/problem-department/investigations/:id` (Screen D's route).
+2. User sees: the link is rendered as a real, plain `<a href="/investigations/{id}">` — a full
+   HTML anchor, not a React Router `<Link>` — labeled honestly (e.g. "View current status" or
+   equivalent copy naming that this is the current, legacy view, not a new workspace) so the user
+   is not misled into expecting a client-side transition.
 3. User action: clicks the link.
-4. System response: this checkpoint does not build Screen D — the link target exists (route
-   string is correct) and client-side routing resolves it to an honest, explicit placeholder
-   screen rather than a blank page or silent no-op. This is an explicit, documented gap inherited
-   from `02-ARCHITECTURE.md` §6 ("link target only — Screen D itself is not built this
-   checkpoint") — see § Interactions, Screen D Link Target for the exact rendering contract.
-5. End state: user is shown `InvestigationWorkspacePlaceholder`, not Screen D itself — out of this
-   checkpoint's scope, but never a broken or blank result from the app's own routing perspective
-   (Screen D not existing is documented scope, not a defect to disguise).
+4. System response: this is a real, full-page navigation — the user LEAVES the SPA entirely (a
+   genuine UX discontinuity, named here rather than hidden) and the browser performs a normal
+   network request to the EXISTING legacy Express route `GET /investigations/:id`
+   (`src/web/server.ts:115-158`, per `02-ARCHITECTURE.md` §2/§6). This is a genuinely working
+   existing page (`src/web/views.ts`'s `renderInvestigationGeneratingScreen` /
+   `renderInvestigationBlockedScreen` / `renderInvestigationGenerationFailedScreen`, or the
+   `brief-generated` 501 stub), not a stub or placeholder.
+5. End state: user is shown the legacy server-rendered Investigation screen at
+   `/investigations/{id}` — outside the SPA, with no `PersistentNav` (the legacy screen predates
+   and is unaffected by this checkpoint's shell). This is documented, intentional scope (Screen D
+   itself is not built this checkpoint, `02-ARCHITECTURE.md` §1/§6), not a defect to disguise.
 
 ### Flow: US-5 — Start Investigation from the Problem Department overview
 
@@ -113,18 +286,21 @@ header (see § Interactions).
 adjacent to the form; the portfolio is NOT re-fetched (no successful submission occurred), no
 optimistic row is added.
 
-### Flow: US-6 — Distinguish Active / Needs Attention / Recent-Completed on Mission Control
+### Flow: US-6 — Distinguish Active / Ready-Not-Started / Needs Attention / Recent-Completed on Mission Control
 
 1. User starts at: `/`, viewing the Active-work section.
-2. User sees: three separately labeled, separately rendered lists — "Active", "Needs Attention",
-   "Recent / Completed" — each backed by its own independent query result
-   (`activeWork.active` / `.needsAttention` / `.recentCompleted`).
+2. User sees: four separately labeled, separately rendered lists — "Active", "Ready / Not
+   Started", "Needs Attention", "Recent / Completed" — each backed by its own independent query
+   result (`activeWork.active` / `.readyNotStarted` / `.needsAttention` / `.recentCompleted`).
 3. User action: none required (read-only); user may follow an Investigation link within any group
-   (see Flow US-4's link-target caveat if it targets Screen D).
-4. End state: user has correctly distinguished "running or ready-to-run" (Active: an Investigation
-   with an in-progress `GenerationRun`, OR a brand-new `status='open'` Investigation with no
-   `GenerationRun` rows at all yet) from "stalled/blocked" (Needs Attention) from "done" (Recent/
-   Completed), per US-6's intent — no group is rendered merged with a computed badge.
+   (see Flow US-4's legacy-destination behavior for where the link goes).
+4. End state: user has correctly distinguished "a real run is running right now" (Active: an
+   Investigation with an in-progress `GenerationRun`) from "ready to run, nothing started yet"
+   (Ready/Not Started: a brand-new `status='open'` Investigation with zero `GenerationRun` rows at
+   all) from "stalled/blocked" (Needs Attention) from "done" (Recent/Completed), per US-6's intent
+   and `02-ARCHITECTURE.md` §3/§5.3's four-way split — no group is rendered merged with a computed
+   badge, and Active is never visually indistinguishable from Ready/Not Started (§ Visual
+   Direction, Palette).
 
 ### Flow: US-7 — Persistent cross-screen navigation
 
@@ -160,13 +336,14 @@ route changes.
 │              │    [Creative Practice: planned]                │
 │  Departments │                                                │
 │              ├────────────────────────────────────────────┤
-│              │ 2. Active work — three sibling sections,      │
-│              │    always all three, each independently       │
-│              │    labeled and independently empty-able:      │
-│              │    ┌──────────┐ ┌───────────────┐ ┌────────┐ │
-│              │    │ Active    │ │ Needs Attention│ │ Recent/│ │
-│              │    │           │ │                │ │Complete│ │
-│              │    └──────────┘ └───────────────┘ └────────┘ │
+│              │ 2. Active work — four sibling sections,       │
+│              │    always all four, each independently        │
+│              │    labeled and independently empty-able:       │
+│              │  ┌────────┐┌──────────────┐┌───────────┐┌────┐ │
+│              │  │ Active  ││ Ready / Not  ││Needs      ││Rec-│ │
+│              │  │         ││  Started     ││Attention  ││ent/│ │
+│              │  │         ││              ││           ││Comp│ │
+│              │  └────────┘└──────────────┘└───────────┘└────┘ │
 │              ├────────────────────────────────────────────┤
 │              │ 3. Active orchestrations / agent activity      │
 │              │    panel (GenerationRun-level rows only, no    │
@@ -187,7 +364,8 @@ route changes.
 | Section | Content | Data Source |
 |---|---|---|
 | Installed Departments strip | 4 tiles: name, status (`installed`/`planned`); no counts/activity on `planned` tiles | `MissionControlView.departments` |
-| Active | `InvestigationSummary[]` — two member kinds, unioned: (1) Investigations with an in-progress `GenerationRun`, and (2) brand-new `status='open'` Investigations with zero `GenerationRun` rows at all (not yet started, not blocked/failed, not completed — "ready/waiting to run," per `02-ARCHITECTURE.md` §5.3's `activeWork.active` query, which deliberately includes both kinds so a brand-new Investigation is never miscategorized as stalled just because no run has started yet) | `MissionControlView.activeWork.active` |
+| Active | `InvestigationSummary[]` — an Investigation with an in-progress `GenerationRun`: a real run IS running right now. Per Danny's correction (`02-ARCHITECTURE.md` §3/§5.3), this group no longer also includes brand-new `status='open'` Investigations with zero `GenerationRun` rows — that case is its own group, Ready/Not Started, below. | `MissionControlView.activeWork.active` |
+| Ready / Not Started | `InvestigationSummary[]` — `status='open'`, zero `GenerationRun` rows at all: genuinely never started, not stalled/blocked, not currently running. Reads visually as "waiting/ready," not alarming and not identical to Active (§ Visual Direction, Palette) | `MissionControlView.activeWork.readyNotStarted` |
 | Needs Attention | `InvestigationSummary[]` — `status` in (`blocked`, `generation-failed`), no in-progress run | `MissionControlView.activeWork.needsAttention` |
 | Recent / Completed | `InvestigationSummary[]` — `brief-generated` or most-recent non-in-progress run, deduped, recency-ordered | `MissionControlView.activeWork.recentCompleted` |
 | Active orchestrations panel | `GenerationRunSummary[]` rows: run id, investigation id (linked), runtime identifier, outcome, started/completed timestamps — no `currentComponent` field, ever | `MissionControlView.activeActivity` |
@@ -196,9 +374,10 @@ route changes.
 | Recent Evidence | `EvidenceSummary[]`, ordered by `createdAt` desc | `MissionControlView.recent.evidence` |
 | Planned Departments note | Static explanatory text naming Signal Foundry, Prototype Department, Creative Practice Engine as not yet built | Derived client-side from `departments` where `status === 'planned'` (no separate API field) |
 
-Each of Active / Needs Attention / Recent-Completed independently renders its own empty state
-("No investigations in this group" or equivalent honest per-group text) when its array is empty —
-never omitted or collapsed, so the three-group structure stays visible even at zero.
+Each of Active / Ready-Not-Started / Needs Attention / Recent-Completed independently renders its
+own empty state ("No investigations in this group" or equivalent honest per-group text) when its
+array is empty — never omitted or collapsed, so the four-group structure stays visible even at
+zero.
 
 ---
 
@@ -290,40 +469,11 @@ body, not the whole screen.
 | Department header | name, thesis, `installed` badge | `ProblemDepartmentOverview.department` |
 | Investigation portfolio table | every `InvestigationSummary` row: `id`, `status`, `createdAt`, `statusReason` (rendered only when present — no placeholder), `lastActivityAt` (used for the last-active link, not necessarily displayed as its own column) | `ProblemDepartmentOverview.investigations` |
 | Status filter control | client-side filter over the already-fetched list; options = `all` + every `InvestigationStatus` value present in the AC's enum (`open`, `blocked`, `generation-failed`, `brief-generated`) | `InvestigationPortfolioTableProps.statusFilter` (client state only, no refetch) |
-| Last-active Investigation link | the row (or explicit indicator) matching `lastActiveInvestigationId`, linking to Screen D's route (Flow US-4) | `ProblemDepartmentOverview.lastActiveInvestigationId` |
+| Last-active Investigation link | the row (or explicit indicator) matching `lastActiveInvestigationId`, linking via full-page navigation to the legacy `GET /investigations/:id` route (Flow US-4) | `ProblemDepartmentOverview.lastActiveInvestigationId` |
 | Sources / Evidence counts | two integers | `ProblemDepartmentOverview.sourceCount`, `.evidenceCount` |
 | Runs / Activity | `GenerationRunSummary[]` rows, same shape/columns as Mission Control's activity panel | `ProblemDepartmentOverview.recentRuns` |
 | Start Investigation | form: one or more source-artifact inputs (type + raw), submit | `StartInvestigationForm`, posts to `POST /api/investigations` |
 | Empty state | exact copy "No investigations yet — Start Investigation" plus the same `StartInvestigationForm` | rendered when `investigations.length === 0` |
-
----
-
-## Screen: Investigation Workspace Placeholder (`/departments/problem-department/investigations/*`)
-
-Not one of the three in-scope screens (§ Screens above) — documented here only because Flow US-4's
-link target must resolve to *something* honest rather than a blank page or silent no-op. This is
-the client-side fallback rendered for any path under
-`/departments/problem-department/investigations/:id` that this checkpoint does not build a real
-screen for.
-
-### Layout Structure
-
-```
-┌──────────────┬────────────────────────────────────────────┐
-│ PersistentNav │ "Investigation Workspace — not built yet       │
-│              │  (Checkpoint 2/3)"                             │
-│  Mission     │                                                │
-│  Control     │                                                │
-│              │                                                │
-│  Departments │                                                │
-└──────────────┴────────────────────────────────────────────┘
-```
-
-### Sections
-
-| Section | Content | Data Source |
-|---|---|---|
-| Placeholder message | exact copy "Investigation Workspace — not built yet (Checkpoint 2/3)" — static text, no fetch, no loading indicator, no styling that mimics the loading or error states of the three real screens | none — purely static |
 
 ---
 
@@ -337,7 +487,9 @@ screen for.
 1. On mount, state is `{ data: null, error: null }` and the screen shows a single loading
    indicator in place of its data sections — this is one uniform "loading" treatment per screen,
    not a per-section skeleton (no live-polling view exists this checkpoint, so no
-   skeleton-vs-spinner distinction is needed beyond this).
+   skeleton-vs-spinner distinction is needed beyond this). Per § Visual Direction's explicit
+   rejection of fake agent theater, this loading indicator is a plain, static treatment (e.g. a
+   simple spinner) — never an animated "agent is thinking/working" simulation.
 2. On fetch success, `data` is set and the loading indicator is replaced by the fully-populated
    screen sections described above.
 3. On fetch failure, `error` is set and a single explicit error message replaces the data sections
@@ -404,43 +556,42 @@ of `InvestigationPortfolioTable`.
 empty array — it is never rendered during loading or on error (those have their own distinct
 treatments per § Page-Load Fetch), satisfying "never a blank or loading-styled screen".
 
-### Screen D Link Target (out-of-scope destination)
+### Last-Active Investigation Link (legacy destination)
 
-**Trigger:** navigating (via click or direct/hard-loaded URL) to any path matching
-`/departments/problem-department/investigations/:id` — Screen D's durable route.
-**Component:** `InvestigationWorkspacePlaceholder`, rendered by a client-side catch-all route
-registered in `App`'s router (React Router `<Route path="/departments/problem-department/
-investigations/*" element={<InvestigationWorkspacePlaceholder />} />`, matching any suffix under
-that path so a real `:id` value, a malformed one, or a trailing sub-path all resolve the same way
-this checkpoint).
-**Behavior:** the last-active-Investigation link on Mission Control and the Problem Department
-overview renders with `href`/route target `/departments/problem-department/investigations/:id`
-(matching `DESIGN-PROPOSAL.md` §5's durable URL) — the link itself is real and correct, per
-`02-ARCHITECTURE.md` §6 ("link target only — Screen D itself is not built this checkpoint"). What
-changes from a prior draft of this document: rather than leaving that route unregistered client-
-side (which produced either a blank screen or a silent no-op, forbidden by § Page-Load Fetch item
-3), `App`’s router registers the catch-all above so navigating there — by
-click or by hard-loading the URL directly — always renders `InvestigationWorkspacePlaceholder`'s
-static text, "Investigation Workspace — not built yet (Checkpoint 2/3)", immediately and
-synchronously (no fetch, so no loading state to distinguish; no error state, because nothing is
-attempted that could fail). This satisfies the same honesty discipline the rest of this document
-applies elsewhere: never a blank page, never a silent no-op, never a state styled to look like
-loading or a working feature. `InvestigationWorkspacePlaceholder` is not Screen D and does not
-attempt any part of Screen D's real functionality (no data fetch, no workspace UI) — it exists
-solely to make the checkpoint-1 scope boundary visible to the user instead of invisible.
+**Trigger:** clicking (or hard-loading the URL of) the "last-active Investigation" link rendered
+on Mission Control (`recent.investigations`, top-ordered) or the Problem Department overview
+(`lastActiveInvestigationId`-derived).
+**Component:** a plain `<a href="/investigations/{id}">` element — NOT a React Router `<Link>`,
+and not part of the client-side route table at all (`02-ARCHITECTURE.md` §6: no client-side route
+exists for `/departments/problem-department/investigations/*`, and there is no fourth SPA screen).
+**Behavior:** the link's `href` points directly at the EXISTING legacy Express route,
+`GET /investigations/:id` (`src/web/server.ts:115-158`). Clicking it performs an ordinary browser
+navigation — the user leaves the SPA entirely, the router is torn down, and the browser loads the
+legacy server-rendered page fresh. This is a genuine UX discontinuity and is named honestly here
+rather than hidden: the link's visible label makes clear it goes to the current, legacy view (not
+a new workspace and not a stub), per `02-ARCHITECTURE.md` §2/§6's "labeled as the current view."
+The destination is a genuinely working existing page (`src/web/views.ts`'s
+`renderInvestigationGeneratingScreen` / `renderInvestigationBlockedScreen` /
+`renderInvestigationGenerationFailedScreen`, or the `brief-generated` 501 stub) — never a stub or
+placeholder built for this checkpoint. This satisfies the same honesty discipline the rest of this
+document applies elsewhere: never a blank page, never a silent no-op — but here the honest
+resolution is a real full-page link to a real existing screen, not a client-side placeholder
+component.
 
-**Loading state:** none — the placeholder is static and renders synchronously on route match.
-**Error state:** none — no fetch occurs, so no failure mode exists to represent.
-**Success state:** N/A in the usual sense; the "success" outcome is the placeholder text itself,
-always rendered identically for any matching path.
+**Loading state:** none owned by the SPA — this is a normal browser navigation; the legacy page's
+own loading behavior (if any) is unchanged and out of this document's scope.
+**Error state:** none owned by the SPA — a failure at the legacy route (e.g. an unmatched
+`:id`) is the legacy route's own existing behavior, unchanged by this checkpoint.
+**Success state:** the browser is now showing the legacy server-rendered Investigation screen,
+outside the SPA and outside `PersistentNav`'s scope.
 
 ---
 
 ## Component Hierarchy
 
 ```
-App (client-side router: /, /departments, /departments/problem-department,
-     /departments/problem-department/investigations/* [catch-all])
+App (client-side router: /, /departments, /departments/problem-department — exactly three
+     routes, no catch-all, no fourth route)
 ├── PersistentNav                              (mounted once, sibling to <Routes>, rendered as a
 │                                                left-side navigation panel, persists across all
 │                                                route changes — not remounted per-route)
@@ -448,9 +599,10 @@ App (client-side router: /, /departments, /departments/problem-department,
 │   ├── InstalledDepartmentsStrip
 │   │   └── DepartmentTile (×4, installed | planned variant)
 │   ├── ActiveWorkSection
-│   │   ├── ActiveGroupList          (InvestigationSummary[])
-│   │   ├── NeedsAttentionGroupList  (InvestigationSummary[])
-│   │   └── RecentCompletedGroupList (InvestigationSummary[])
+│   │   ├── ActiveGroupList             (InvestigationSummary[])
+│   │   ├── ReadyNotStartedGroupList    (InvestigationSummary[])
+│   │   ├── NeedsAttentionGroupList     (InvestigationSummary[])
+│   │   └── RecentCompletedGroupList    (InvestigationSummary[])
 │   ├── ActiveActivityPanel                    (GenerationRunSummary[])
 │   ├── RecentSection
 │   │   ├── RecentInvestigationsList
@@ -460,26 +612,28 @@ App (client-side router: /, /departments, /departments/problem-department,
 ├── DepartmentsScreen                          (route: /departments)
 │   └── DepartmentRow (×4)
 │       └── DepartmentEntryLink                (installed only)
-├── ProblemDepartmentScreen                    (route: /departments/problem-department)
-│   ├── DepartmentHeader
-│   ├── InvestigationPortfolioTable            (non-empty case)
-│   │   └── StatusFilterControl
-│   ├── InvestigationPortfolioEmptyState        (zero-investigation case)
-│   │   └── StartInvestigationForm (inline)
-│   ├── SourcesEvidenceCounts
-│   ├── RunsActivityPanel                       (GenerationRunSummary[])
-│   └── StartInvestigationForm                  (non-empty case, section 5)
-└── InvestigationWorkspacePlaceholder           (route: /departments/problem-department/
-                                                  investigations/* — catch-all fallback,
-                                                  Flow US-4 / § Screen D Link Target)
+└── ProblemDepartmentScreen                    (route: /departments/problem-department)
+    ├── DepartmentHeader
+    ├── InvestigationPortfolioTable            (non-empty case)
+    │   └── StatusFilterControl
+    ├── InvestigationPortfolioEmptyState        (zero-investigation case)
+    │   └── StartInvestigationForm (inline)
+    ├── SourcesEvidenceCounts
+    ├── RunsActivityPanel                       (GenerationRunSummary[])
+    └── StartInvestigationForm                  (non-empty case, section 5)
 ```
 
-`PersistentNav` is a top-level sibling of the four route destinations (`MissionControlScreen`,
-`DepartmentsScreen`, `ProblemDepartmentScreen`, `InvestigationWorkspacePlaceholder`), not nested
-inside any of them, matching `02-ARCHITECTURE.md` §2's description of it mounting once at the
-`App` shell level outside the `<Routes>` switch and rendering as a left-side navigation panel
-(matching `docs/product-architecture-and-direction.md` §13's compass table, "Persistent left
-navigation").
+The last-active-Investigation link (Mission Control's `RecentInvestigationsList` and
+`ProblemDepartmentScreen`'s portfolio) is a plain `<a>` element pointing at the legacy
+`GET /investigations/:id` route (§ Interactions, Last-Active Investigation Link) — it is not a
+component in the router's route table and has no corresponding node in this hierarchy, since a
+plain anchor tag is markup, not a component `02-ARCHITECTURE.md` §6 defines.
+
+`PersistentNav` is a top-level sibling of the three route destinations (`MissionControlScreen`,
+`DepartmentsScreen`, `ProblemDepartmentScreen`), not nested inside any of them, matching
+`02-ARCHITECTURE.md` §2's description of it mounting once at the `App` shell level outside the
+`<Routes>` switch and rendering as a left-side navigation panel (matching
+`docs/product-architecture-and-direction.md` §13's compass table, "Persistent left navigation").
 
 `InvestigationPortfolioTable` and `InvestigationPortfolioEmptyState` are mutually exclusive
 renders within `ProblemDepartmentScreen` (never both mounted at once), matching
@@ -500,8 +654,9 @@ renders within `ProblemDepartmentScreen` (never both mounted at once), matching
 
 No state is shared across screens or persisted client-side between navigations — every screen
 refetches its full data set on every mount, consistent with `02-ARCHITECTURE.md` §6/§8's
-no-state-management-library, no-polling design. `InvestigationWorkspacePlaceholder` holds no state
-at all — it is static.
+no-state-management-library, no-polling design. The last-active-Investigation link carries no
+client-side state at all — it is a plain anchor whose `href` is derived directly from fetched data
+on each render.
 
 ---
 
@@ -511,15 +666,18 @@ at all — it is static.
   the full list; each has a corresponding flow above, including the persistent cross-screen
   navigation story (Flow US-7).
 - Every flow has a screen: yes.
-- Every screen has a layout: yes (3 in-scope layouts, plus the out-of-scope
-  `InvestigationWorkspacePlaceholder` fallback documented for Flow US-4's honesty requirement).
+- Every screen has a layout: yes — the three in-scope screens (Mission Control, Departments
+  directory, Problem Department overview) each have a layout diagram; there is no fourth screen
+  and no placeholder screen this checkpoint (`02-ARCHITECTURE.md` §1/§2/§6 — the last-active-
+  Investigation link is a full-page navigation to an existing legacy route, not a built screen).
 - Interactions cover success, loading, and error states: yes (Page-Load Fetch, Start Investigation
-  Submission, Empty State, Screen D Link Target, Client-Side Route Navigation).
+  Submission, Empty State, Last-Active Investigation Link, Client-Side Route Navigation).
 - Component hierarchy matches architecture components: yes — every component named in
   `02-ARCHITECTURE.md` §2's table appears in the hierarchy above (including `PersistentNav`), plus
-  `InvestigationWorkspacePlaceholder`, this document's own name for the honest fallback required by
-  Flow US-4 / § Screen D Link Target — no component
-  invented beyond that list except purely presentational sub-elements (`DepartmentTile`,
-  `DepartmentRow`, `DepartmentEntryLink`, group-list/panel components) which are layout
-  subdivisions of the screens/components architecture already assigns responsibility to, not new
-  services or data-owning components.
+  purely presentational sub-elements (`DepartmentTile`, `DepartmentRow`, `DepartmentEntryLink`,
+  group-list/panel components) which are layout subdivisions of the screens/components
+  architecture already assigns responsibility to, not new services or data-owning components. No
+  placeholder component is defined for the legacy-link destination — it is a plain anchor tag, per
+  `02-ARCHITECTURE.md` §2/§6's removal of `InvestigationWorkspacePlaceholder` and the fourth
+  client-side route.
+</content>
