@@ -536,20 +536,49 @@ Ready/Not-Started vs. any other boundary?** No; both are already closed by const
 different reason than query 5's fix:
 - **Active vs. Needs Attention**: could a `blocked` Investigation ever have an in-progress
   `generation_run` row (making it match both Active's `P` and Needs Attention's `status IN (...)`)?
-  No. Per `src/services/transitionInvestigationStatus.ts`, `ALLOWED_PRIOR_STATUSES` only permits
-  `open -> blocked` (line 28: `open: ['blocked']`) — there is no `generation-failed -> blocked` or
-  any other path into `blocked` once a `generation_run` row could exist, and
-  `src/services/generateBriefVersion.ts` (lines 34-35, 205, 242-243) explicitly documents that a
-  concurrently-observed `blocked` row is excluded from `ALLOWED_PRIOR_STATUSES['generation-failed']`
-  precisely because `'blocked' must never be silently overwritten` — i.e. `blocked` is set by
-  `resolveInvestigationSources`'s zero-reachable-sources check (`src/web/server.ts`), a path that
-  runs before `generateBriefVersion` and never creates a `generation_run` row at all (matching this
-  document's own `domain.ts` comment: `'blocked' // zero reachable sources — no Brief can be
-  generated`). So `R` is false for every `blocked` Investigation, `P` (which implies `R`) is
-  therefore also always false, and `blocked` can never appear in Active. No fix needed here — this
-  is the same fact the original proof already used to rule out `blocked AND R`, independently
-  re-verified here against `transitionInvestigationStatus.ts` and `generateBriefVersion.ts`, not
-  merely re-asserted.
+  YES — CORRECTED (Frank narrow re-gate 2). The prior version of this passage claimed `R` is false
+  for every `blocked` Investigation and that `blocked` can never appear in Active; that claim is
+  false and is withdrawn. Direct evidence from this repo:
+  `src/services/generateBriefVersion.test.ts`'s "blocked distinct from generation-failed (G-13)"
+  test (~lines 461-496) calls `generateBriefVersion` for real against an Investigation already left
+  `blocked` (zero reachable sources) — the test's own comment (~lines 452-459) states that
+  "generateBriefVersion's phase-1 GenerationRun creation and pipeline execution proceed against an
+  Investigation a prior Slice-3 pass already left 'blocked' (nothing in this slice checks that
+  before running)." So a real `generation_run` row IS created — transiently `outcome:
+  'in-progress'`, then finalized to `outcome: 'failed'` on the run's failure (the guarded UPDATE to
+  `Investigation.status = 'generation-failed'` affects zero rows because the Investigation was
+  already `blocked`, per `ALLOWED_PRIOR_STATUSES` excluding `blocked` from that transition's
+  allowed-prior set — `src/services/transitionInvestigationStatus.ts` line 28,
+  `src/services/generateBriefVersion.ts` lines 34-35, 205, 242-243). `Investigation.status` stays
+  `blocked` throughout. So `R` is NOT always false for `blocked` Investigations — `blocked`
+  Investigations CAN carry `generation_run` rows, including transiently in-progress ones during the
+  window between phase-1 GenerationRun creation and phase-4 failure finalization.
+
+  Mutual exclusivity STILL HOLDS despite this — no query change is needed, only this proof's claim
+  about WHY was wrong. Active's predicate is `P` alone (query 2's `EXISTS ... outcome =
+  'in-progress'`), independent of `status`; Needs Attention's predicate (query 4) already requires
+  `NOT P` as a conjunct alongside `status IN ('blocked', 'generation-failed')`. So for a `blocked`
+  Investigation, exactly one of two cases holds and each lands in exactly one group:
+  - `blocked ∧ P` (an in-progress `generation_run` row exists, i.e. the race window above): matches
+    Active only — Needs Attention's `NOT P` conjunct is false, so it cannot also match there.
+  - `blocked ∧ ¬P` (no in-progress row — either none was ever created, or one was created and has
+    already finalized to `outcome: 'failed'`, the G-13 test's end state): matches Needs Attention
+    only — Active's `P` requirement fails.
+
+  Every combination still lands in exactly one group; the case-split argument two paragraphs below
+  ("Case split on `P`") already covers this correctly and did not depend on the withdrawn claim —
+  only the prose asserting `blocked` can never satisfy `P` was wrong, and is corrected here.
+
+  Real-world consequence (ACCEPTED, not a defect): a `blocked` Investigation with a concurrent
+  in-progress race run — i.e. the pipeline is actively re-running against it, as G-13's test
+  scenario begins before the run finalizes — will display under "Active," not "Needs Attention,"
+  for the duration of that race window (typically brief, ending when the run finalizes to
+  `succeeded` or `failed`). This is a faithful implementation of Danny's ruling that Active is
+  defined purely by run-state (`P`), not by `status` — the group definitions as specified produce
+  this outcome by design, not by omission. Flagged here as an accepted consequence rather than
+  silently absorbed; if Danny judges this transient display placement undesirable, that is a
+  scope/requirements question for a future checkpoint, not a defect in this architecture's query
+  logic.
 - **Ready/Not-Started vs. any other boundary**: Ready/Not Started requires `status = 'open' AND NOT
   R`; every other group either requires `status ≠ 'open'` (Needs Attention, and Recent/Completed's
   `brief-generated` disjunct) or requires `R`/`P` (Active, and Recent/Completed's `R` disjunct for
