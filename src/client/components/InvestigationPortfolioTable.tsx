@@ -53,8 +53,8 @@ export function InvestigationPortfolioTable({
           <tr>
             <th>id</th>
             <th>status</th>
-            <th>createdAt</th>
-            <th>statusReason</th>
+            <th>Created</th>
+            <th>Status reason</th>
           </tr>
         </thead>
         <tbody>
