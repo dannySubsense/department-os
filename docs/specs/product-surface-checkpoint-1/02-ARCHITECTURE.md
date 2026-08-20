@@ -2,8 +2,7 @@
 
 **Status**: Draft — pending Frank spec-gate
 **Traces to**: `01-REQUIREMENTS.md` (see its User Stories section for the full list — not
-restated here per repo-wide no-manually-asserted-counts discipline), `INTAKE.md` §3, `INTERVIEW.md`,
-`NORTH-STAR.md`, `docs/specs/product-surface/DESIGN-PROPOSAL.md` §1/§2/§2a/§3/§4/§4a/§7/§8/§11
+restated here per repo-wide no-manually-asserted-counts discipline), `docs/specs/product-surface/DESIGN-PROPOSAL.md` §1/§2/§2a/§3/§4/§4a/§7/§8/§11
 (Checkpoint-1 subset only — §5/§6/§8's `ActivityFeedEntry`/`InvestigationWorkspaceView`/§9/§10/
 §10a/§10b are explicitly out of scope and not designed here).
 
@@ -38,7 +37,7 @@ one of these, that is a signal to stop and re-read the boundary, not to design a
 | `getDepartmentsView` | Assemble `DepartmentsView` (`DepartmentSummary[]`) directly from the static `departmentRegistry` — no database query. `DepartmentSummary` carries no counts (US-2 AC1: name/thesis/status only), so no `investigation`-table check is needed to produce this view | `src/services/getDepartmentsView.ts` (new) |
 | `getProblemDepartmentOverview` | Assemble `ProblemDepartmentOverview` — full portfolio, counts, last-active id, recent runs | `src/services/getProblemDepartmentOverview.ts` (new) |
 | `departmentRegistry` | Static, in-process list of the four `Department` config literals (id, name, thesis, installed flag) — single source for both `getDepartmentsView` and `getMissionControlView`/`getProblemDepartmentOverview` so the four entries are never independently retyped | `src/config/departments.ts` (new) |
-| `lastActivitySql` | Shared SQL fragment implementing §4a's `GREATEST` computation, restricted to tables that exist this checkpoint (excludes `generation_component_event`, `generation_step`'s `gs` alias stays since `generation_step` DOES exist — see §4 below for the exact restriction) | inlined as a named SQL constant in `src/services/lastActivity.ts` (new), imported by both `getMissionControlView.ts` and `getProblemDepartmentOverview.ts` — one query text, not two divergent copies (US-4 AC3 / Constraint) |
+| `lastActivitySql` | Shared SQL fragment implementing `DESIGN-PROPOSAL.md` §4a's `GREATEST` computation, restricted to tables that exist this checkpoint (excludes `generation_component_event`, `generation_step`'s `gs` alias stays since `generation_step` DOES exist — see §4 below for the exact restriction) | inlined as a named SQL constant in `src/services/lastActivity.ts` (new), imported by both `getMissionControlView.ts` and `getProblemDepartmentOverview.ts` — one query text, not two divergent copies (US-4 AC3 / Constraint) |
 | Express routes: `GET /api/mission-control`, `GET /api/departments`, `GET /api/problem-department`, `POST /api/investigations` (JSON) | Thin HTTP adapters — parse request, call the corresponding service, serialize JSON, map thrown errors to status codes | `src/web/apiRoutes.ts` (new), mounted from `src/web/server.ts` |
 | `App` (React root) | Client-side router (three screen routes — `/`, `/departments`, `/departments/problem-department` — plus one catch-all fallback route, `/departments/problem-department/investigations/*`, §6) and top-level layout shell; mounts `PersistentNav` once at the shell level (sibling to `<Routes>`, not inside any route's element), so it renders on every screen and does not remount on navigation | `src/client/App.tsx` (new) |
 | `PersistentNav` | Persistent left-nav rendered once in `App`'s layout shell, outside the `<Routes>` switch, so it survives client-side route changes. Renders exactly two nav links this checkpoint: "Mission Control" (`/`) and "Departments" (`/departments`) — per `DESIGN-PROPOSAL.md` §1's Checkpoint-1-relevant subset, no `/activity` or `/knowledge` link is rendered (those routes are not built this checkpoint, §1 Scope Boundary). Highlights the active link via `react-router-dom`'s `NavLink` (no bespoke active-state logic). Presentational only — no data fetching, no props beyond the current location supplied by the router. | `src/client/components/PersistentNav.tsx` (new) |
@@ -65,7 +64,7 @@ These interfaces are copied **verbatim** from `DESIGN-PROPOSAL.md` §8 for the C
 `MissionControlView.activeActivity` is typed as `GenerationRunSummary[]` this checkpoint, not
 `ActivityFeedEntry[]` — `ActivityFeedEntry` (§8) carries a `currentComponent` field sourced from
 `generation_component_event`, a table that does not exist this checkpoint (Checkpoint 3 scope, per
-`INTAKE.md` §3 and `01-REQUIREMENTS.md` AC "no live-component-level field"). Reusing
+`01-REQUIREMENTS.md`’s AC "no live-component-level field"). Reusing
 `ActivityFeedEntry`'s name while silently never populating `currentComponent` would be a type lying
 about a capability that doesn't exist yet; `GenerationRunSummary` is the honest, checkpoint-scoped
 type. This is a structural narrowing, not a scope creep — every other field matches §8 exactly.
@@ -151,7 +150,7 @@ export interface ProblemDepartmentOverview {
 ```
 
 **PROVISIONAL constants** (per repo-wide no-fabricated-constants discipline): none needed this
-checkpoint. `01-REQUIREMENTS.md`/`INTERVIEW.md` establish this checkpoint has no polling interval,
+checkpoint. `01-REQUIREMENTS.md` establishes this checkpoint has no polling interval,
 cache TTL, or page-size limit — every list returned by these three read models is the full,
 unpaginated result set (Investigation count is small enough in this MVP's local-dev scope that no
 LIMIT is introduced; adding one un-sourced would itself violate the no-fabricated-constants rule).
@@ -290,7 +289,7 @@ export async function getProblemDepartmentOverview(): Promise<ProblemDepartmentO
 
 No parameters on any of the three — Checkpoint 1 has exactly one installed Department and no
 per-Department parameterization is needed yet (`getProblemDepartmentOverview` is hard-scoped to
-Problem Department internally, matching `INTAKE.md` §3's "exactly one Department has a working
+Problem Department internally, matching this checkpoint’s "exactly one Department has a working
 service layer" assumption). Adding a `departmentId` parameter ahead of a second Department existing
 would be speculative generality with no current caller — not introduced here.
 
@@ -382,14 +381,14 @@ SELECT i.id, i.status, i.status_reason, i.created_at, la.last_activity_at
 -- DECLARED DEVIATION from DESIGN-PROPOSAL.md §2a: §2a's Recent/Completed row specifies ordering
 -- by `GREATEST(generation_run.completed_at, investigation.created_at)` computed inline for this
 -- query alone. This document instead orders by `la.last_activity_at` — the shared
--- `LAST_ACTIVITY_SUBQUERY` this document's own §4a already establishes as the single source of
+-- `LAST_ACTIVITY_SUBQUERY` this document's own §4 already establishes as the single source of
 -- truth for "how recently did this investigation do something" (used identically by queries
 -- 2, 3, 6, and getProblemDepartmentOverview's `investigations`/`lastActiveInvestigationId`).
 -- Recomputing a narrower two-term GREATEST inline here, alongside the five-term GREATEST already
 -- shared everywhere else, would give this one query a different recency definition than the rest
 -- of the document for no behavioral gain (`la.last_activity_at` is >= the §2a formula's value in
 -- every case, since it's a superset of the same terms) — that inconsistency, not consistency, is
--- the actual risk. Kept as `la.last_activity_at`; flagged here per INTAKE.md §5 (named open
+-- the actual risk. Kept as `la.last_activity_at`; flagged here as a declared, not silent, deviation (named open
 -- question, not a silent rewrite).
 SELECT i.id, i.status, i.status_reason, i.created_at, la.last_activity_at
   FROM investigation i
@@ -443,7 +442,7 @@ US-6 AC4), not independence of transport.
 
 ```sql
 -- investigations — every row, all statuses, row-for-row matching the Demonstration criteria's
--- `SELECT id, status, created_at FROM investigation` (INTAKE.md §3, 01-REQUIREMENTS.md AC)
+-- `SELECT id, status, created_at FROM investigation` (01-REQUIREMENTS.md AC)
 SELECT i.id, i.status, i.status_reason, i.created_at, la.last_activity_at
   FROM investigation i
   JOIN (${LAST_ACTIVITY_SUBQUERY}) la ON la.investigation_id = i.id
@@ -464,7 +463,7 @@ SELECT i.id
 -- sourceCount
 SELECT COUNT(*)::int AS count FROM source_artifact;
 -- Scoped "to this Department's Investigations" (US-3 AC) — today every investigation row belongs
--- to Problem Department (INTAKE.md §3 assumption), so an unscoped COUNT(*) is currently equivalent
+-- to Problem Department (this checkpoint’s only installed Department), so an unscoped COUNT(*) is currently equivalent
 -- to a department-scoped one. No department_id column exists on investigation to scope by (§7).
 
 -- evidenceCount
@@ -550,12 +549,12 @@ not a generic placeholder.
 
 ---
 
-## 7. Dev/Build Tooling and Integration Boundary (DESIGN-PROPOSAL.md §11, INTERVIEW.md #1/#2)
+## 7. Dev/Build Tooling and Integration Boundary (DESIGN-PROPOSAL.md §11)
 
-- **Build tool**: Vite (`INTERVIEW.md` #1, assumed/confirmed — the design doc's own named example,
+- **Build tool**: Vite (design decision, this checkpoint — the design doc's own named example,
   no counter-indication in the repo).
 - **Source location**: `src/client/`, sibling to `src/services/`, `src/web/`, `src/db/`
-  (`INTERVIEW.md` #2). Contains `App.tsx`, `main.tsx` (entry), `screens/`, `components/`, `api.ts`,
+  (design decision, this checkpoint). Contains `App.tsx`, `main.tsx` (entry), `screens/`, `components/`, `api.ts`,
   and its own `vite.config.ts` at the client root (`src/client/vite.config.ts`) — kept local to the
   client subtree rather than a project-root `vite.config.ts`, so the client build's config is
   discoverable alongside the code it configures, matching the existing pattern of `src/db/`,
@@ -563,7 +562,7 @@ not a generic placeholder.
 - **Build output**: `src/web/public/` — the EXISTING `express.static` mount point
   (`src/web/server.ts:22`, unchanged). Vite's `build.outDir` is configured to
   `../web/public` (relative to `src/client/`). This directory remains build OUTPUT ONLY — no
-  hand-authored file is ever added there (`INTERVIEW.md` #2's explicit distinction from
+  hand-authored file is ever added there (explicit distinction from
   `src/client/` as SOURCE).
 - **Production integration**: unchanged Express app serves `src/web/public/`'s built
   `index.html`/JS/CSS bundle via the existing `express.static` middleware — already mounted, no new
@@ -587,7 +586,7 @@ not a generic placeholder.
   `http://localhost:3000` — the existing `PORT` default in `server.ts:167`). This is the standard
   Vite-behind-Express dev pattern named in `DESIGN-PROPOSAL.md` §11; both processes run
   side-by-side in development, only the built bundle ships in production. No new `PORT`-style env
-  var is introduced (`INTERVIEW.md` #2/Constraint "Deferred: RUNTIME_IDENTIFIER-style config...
+  var is introduced (Constraint "Deferred: RUNTIME_IDENTIFIER-style config...
   this checkpoint introduces no new runtime/env config") — Vite's own default dev port (5173) is
   its own tool default, not a Department OS config convention, so it needs no owner/citation here.
 - **`src/web/views.ts`'s legacy screens**: untouched, continue being served by the existing
@@ -630,11 +629,11 @@ not a generic placeholder.
 | `react` | ^18.3.1 | SPA UI library — not currently in `package.json` |
 | `react-dom` | ^18.3.1 | React DOM renderer |
 | `react-router-dom` | ^6.26.0 | Client-side route matching for the three screen routes plus one catch-all fallback route (§6) |
-| `vite` | ^5.4.0 | Dev server + production bundler, per `INTERVIEW.md` #1 |
+| `vite` | ^5.4.0 | Dev server + production bundler, per this checkpoint’s design decision |
 | `@vitejs/plugin-react` | ^4.3.0 | JSX/Fast-Refresh support for Vite |
 | `@types/react` | ^18.3.0 | TypeScript types |
 | `@types/react-dom` | ^18.3.0 | TypeScript types |
-| `@testing-library/react` | ^16.0.0 | Render/basic-interaction tests for React components (`INTERVIEW.md` #3 — no e2e framework) |
+| `@testing-library/react` | ^16.0.0 | Render/basic-interaction tests for React components (this checkpoint’s design decision — no e2e framework) |
 | `@testing-library/jest-dom` | ^6.4.0 | DOM assertion matchers for the above, works with Vitest's existing `jsdom` devDependency already in `package.json` |
 
 All version numbers above are the current stable major/minor release lines as of this checkpoint's
@@ -698,7 +697,7 @@ the no-route-for-other-Departments case (§6, no route table entry exists).
 
 ---
 
-## Open Items for Human Review (not HALTs — flagged for Danny's post-hoc review per `INTAKE.md` §6)
+## Open Items for Human Review (not HALTs — flagged for Danny’s post-hoc review)
 
 1. No pagination/page-size limit exists anywhere in this design (§3's PROVISIONAL note) — flagged
    in case Danny wants one for a larger dataset than local dev currently has; not added without a

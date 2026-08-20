@@ -343,9 +343,8 @@ screen for.
 3. On fetch failure, `error` is set and a single explicit error message replaces the data sections
    (not a silent blank screen, and not styled identically to the loading state — the loading state
    and the error state must be visually distinguishable from each other and both distinguishable
-   from a populated-but-empty screen, matching the same "never blank/loading-styled" discipline
-   INTERVIEW.md #5 establishes for zero-Investigations specifically, applied to the general
-   page-load case).
+   from a populated-but-empty screen, matching the same "never blank/loading-styled" discipline established for the
+   zero-Investigations empty state (§ Empty State), applied to the general page-load case).
 
 **Loading state:** one loading indicator per screen, shown until the single fetch resolves.
 **Error state:** one error message per screen, no partial data shown.
@@ -403,8 +402,7 @@ of `InvestigationPortfolioTable`.
 **Behavior:** renders the exact copy "No investigations yet — Start Investigation" plus the
 `StartInvestigationForm`. This state is only reachable after a successful fetch resolves to an
 empty array — it is never rendered during loading or on error (those have their own distinct
-treatments per § Page-Load Fetch), satisfying "never a blank or loading-styled screen"
-(INTERVIEW.md #5).
+treatments per § Page-Load Fetch), satisfying "never a blank or loading-styled screen".
 
 ### Screen D Link Target (out-of-scope destination)
 
@@ -421,7 +419,7 @@ overview renders with `href`/route target `/departments/problem-department/inves
 `02-ARCHITECTURE.md` §6 ("link target only — Screen D itself is not built this checkpoint"). What
 changes from a prior draft of this document: rather than leaving that route unregistered client-
 side (which produced either a blank screen or a silent no-op, forbidden by § Page-Load Fetch item
-3 and INTERVIEW.md #5), `App`'s router registers the catch-all above so navigating there — by
+3), `App`’s router registers the catch-all above so navigating there — by
 click or by hard-loading the URL directly — always renders `InvestigationWorkspacePlaceholder`'s
 static text, "Investigation Workspace — not built yet (Checkpoint 2/3)", immediately and
 synchronously (no fetch, so no loading state to distinguish; no error state, because nothing is
@@ -520,7 +518,7 @@ at all — it is static.
 - Component hierarchy matches architecture components: yes — every component named in
   `02-ARCHITECTURE.md` §2's table appears in the hierarchy above (including `PersistentNav`), plus
   `InvestigationWorkspacePlaceholder`, this document's own name for the honest fallback required by
-  Flow US-4 / § Screen D Link Target (per INTAKE.md §6 delegation to Ledger) — no component
+  Flow US-4 / § Screen D Link Target — no component
   invented beyond that list except purely presentational sub-elements (`DepartmentTile`,
   `DepartmentRow`, `DepartmentEntryLink`, group-list/panel components) which are layout
   subdivisions of the screens/components architecture already assigns responsibility to, not new

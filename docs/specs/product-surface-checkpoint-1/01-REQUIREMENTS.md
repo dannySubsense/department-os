@@ -7,8 +7,7 @@ surface: a Mission Control home screen, an honest Departments directory, and a l
 Department Investigation portfolio — replacing the current situation where the only access path is
 `GET /investigations/:id` for one Investigation ID at a time. This checkpoint is additive read
 models plus a new React/Express UI shell only; no schema, service, or business-logic change.
-Traces to `INTAKE.md` §3, `DESIGN-PROPOSAL.md` §1-§4a/§7/§8 (subset), `INTERVIEW.md`, and
-`NORTH-STAR.md`.
+Traces to `DESIGN-PROPOSAL.md` §1-§4a/§7/§8 (subset).
 
 ## User Stories
 
@@ -156,17 +155,17 @@ work yet.
 - [ ] Given a click on either nav link, when navigation completes, then the URL changes to the
   link's target and the screen updates via client-side routing, with no full page reload.
 - [ ] Given the persistent nav is rendered, then it contains no link to `/activity`, `/knowledge`,
-  or any other Core-wide route not built this checkpoint (`INTAKE.md` §3).
+  or any other Core-wide route not built this checkpoint.
 
 ## Edge Cases
 
 | Case | Expected Behavior |
 |------|-------------------|
-| Problem Department has zero Investigations | Explicit empty state ("No investigations yet — Start Investigation"), never blank/loading-styled (INTERVIEW.md #5). |
-| User targets a `planned` Department (Signal Foundry, Prototype Department, Creative Practice Engine) | No click target rendered at all — not a disabled-looking button (`DESIGN-PROPOSAL.md` §3; INTERVIEW.md #6). |
+| Problem Department has zero Investigations | Explicit empty state ("No investigations yet — Start Investigation"), never blank/loading-styled. |
+| User targets a `planned` Department (Signal Foundry, Prototype Department, Creative Practice Engine) | No click target rendered at all — not a disabled-looking button (`DESIGN-PROPOSAL.md` §3). |
 | Investigation has no `GenerationRun`, `GenerationStep`, or `BriefVersion` rows at all | `last_activity_at` equals `investigation.created_at` (every `COALESCE` falls back to it). |
 | Investigation has `statusReason` unset | Portfolio row renders without a `statusReason` field/value — never a placeholder string. |
-| Two Investigations tie exactly on `last_activity_at` | Any stable, deterministic ordering between them is acceptable — no requirement on tie-break order beyond determinism (not specified further upstream; not a scope gap since neither DESIGN-PROPOSAL.md nor INTERVIEW.md specifies a tie-break rule). |
+| Two Investigations tie exactly on `last_activity_at` | Any stable, deterministic ordering between them is acceptable — no requirement on tie-break order beyond determinism (not specified further upstream; not a scope gap, since no tie-break rule is specified anywhere in this checkpoint’s design). |
 | `GET /api/mission-control`, `/api/departments`, or `/api/problem-department` is called when the dev database has no `investigation` rows anywhere | Each read model still returns its full documented shape with empty arrays/zero counts — never a 500 or omitted field. |
 | A Department other than Problem Department is requested directly via its (nonexistent) overview route | Out of scope this checkpoint — no Screen C exists for planned Departments; no route is defined for one (per Screen B behavior, no entry link is ever offered). |
 
@@ -184,14 +183,13 @@ work yet.
   additive read models and a new UI shell only.
 - NOT: retirement of `src/web/views.ts`'s server-rendered screens — they remain running, untouched.
 - NOT: any new auth, CORS, or error-handling posture change to the existing Express app — the new
-  routes inherit the existing no-auth, same-origin posture (INTERVIEW.md #4).
+  routes inherit the existing no-auth, same-origin posture.
 - NOT: an e2e test framework — React components get render/basic-interaction tests only this
-  checkpoint (INTERVIEW.md #3).
+  checkpoint.
 - NOT: nav links to `/activity` or `/knowledge`, or any Core-wide route beyond `/` and
-  `/departments` — the persistent nav ships with exactly two links this checkpoint (`INTAKE.md`
-  §3).
+  `/departments` — the persistent nav ships with exactly two links this checkpoint.
 - Deferred: `RUNTIME_IDENTIFIER`-style config conventions extending to new config — this checkpoint
-  introduces no new runtime/env config (INTAKE.md §4, confirmed by INTERVIEW.md).
+  introduces no new runtime/env config.
 - Deferred: `Department` config's long-term home (static list vs. persisted) — remains an open
   question noted in `DESIGN-PROPOSAL.md` §7/§15, not resolved by this checkpoint.
 
@@ -201,7 +199,7 @@ work yet.
   over existing tables (`DESIGN-PROPOSAL.md` §7, North Star Success Criteria).
 - Must: Investigation portfolio row-for-row matches `SELECT id, status, created_at FROM
   investigation` against the live local dev database exactly — no extra or missing rows
-  (`INTAKE.md` §3 Demonstration criteria).
+  (row-for-row fidelity is this checkpoint’s core demonstration criterion).
 - Must: the three read models this checkpoint needs (`GET /api/mission-control`,
   `GET /api/departments`, `GET /api/problem-department`) conform to `MissionControlView`,
   `DepartmentsView`, and `ProblemDepartmentOverview` respectively per `DESIGN-PROPOSAL.md` §8,
@@ -213,7 +211,7 @@ work yet.
   — no change to that service's signature or logic.
 - Must: React SPA built with Vite, source living in `src/client/` (sibling to `src/services/`,
   `src/web/`, `src/db/`), served same-origin behind the existing Express app, with
-  `src/web/public/` remaining the build OUTPUT directory only (INTERVIEW.md #1, #2).
+  `src/web/public/` remaining the build OUTPUT directory only.
 - Must: the persistent nav (`PersistentNav`, `src/client/components/PersistentNav.tsx`) is the only
   in-app mechanism for navigating to/from Mission Control and the Departments directory — the two
   links defined by US-7's ACs — mounted once so it persists across route changes; this does not
@@ -222,7 +220,7 @@ work yet.
   per US-4).
 - Must not: introduce `POST /api/investigations/:id/generation-runs`, the
   `generation_component_event` table, `recordComponentEvent`, Screen D, `BriefForReview`, or any
-  Checkpoint 2/3 scope item listed in `INTAKE.md` §3.
+  Checkpoint 2/3 scope item listed above under Out of Scope.
 - Must not: change any Slices 1-9 persisted schema, service signature, or business logic.
 - Must not: introduce any new auth, CORS, or cross-origin request handling.
 - Must not: the persistent nav link to `/activity`, `/knowledge`, or any other surface not built
@@ -234,4 +232,4 @@ work yet.
   recency ordering derives from the `GREATEST` computation over real timestamps only.
 - Assumes: new read-model queries get the same test discipline as existing services (unit/
   integration test per query asserting results match real persisted rows), and new React
-  components get render/basic-interaction tests only (INTERVIEW.md #3).
+  components get render/basic-interaction tests only.

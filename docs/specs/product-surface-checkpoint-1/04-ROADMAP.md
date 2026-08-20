@@ -367,4 +367,4 @@ tackled)
   question noted in `DESIGN-PROPOSAL.md` §7/§15; Slice 1's static `departmentRegistry` is not a
   resolution of it.
 - E2E test framework — all four slices above use React Testing Library render/interaction tests
-  only, per `INTERVIEW.md` #3; no Playwright/Cypress-equivalent is introduced.
+  only; no Playwright/Cypress-equivalent is introduced.
