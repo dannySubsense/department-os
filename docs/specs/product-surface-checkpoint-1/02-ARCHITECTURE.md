@@ -1,6 +1,6 @@
 # Architecture: Product Surface — Checkpoint 1
 
-**Status**: Draft — pending Frank spec-gate
+**Status**: Approved — human gate PASSED at `4757c37` (Danny, 2026-08-20)
 **Traces to**: `01-REQUIREMENTS.md` (see its User Stories section for the full list — not
 restated here per repo-wide no-manually-asserted-counts discipline), `docs/specs/product-surface/DESIGN-PROPOSAL.md` §1/§2/§2a/§3/§4/§4a/§7/§8/§11
 (Checkpoint-1 subset only — §5/§6/§8's `ActivityFeedEntry`/`InvestigationWorkspaceView`/§9/§10/
@@ -579,6 +579,46 @@ different reason than query 5's fix:
   silently absorbed; if Danny judges this transient display placement undesirable, that is a
   scope/requirements question for a future checkpoint, not a defect in this architecture's query
   logic.
+
+  **Danny's (Composer's) ruling on this race window — accepted, folded in at closeout (this
+  package already PASSED the full binding gate at commit `4757c37`; this is a closeout
+  refinement, not a re-open):**
+
+  > "Ruling on blocked + in-progress: accept Active precedence while the run is genuinely
+  > executing. The row must retain its blocked status/status reason and alarm treatment. Once the
+  > run finalizes, it moves to Needs Attention. It must not appear in both groups."
+
+  The "must not appear in both groups" half is already satisfied by the mutual-exclusivity proof
+  above — no query change follows from it. What the ruling adds is a **data-contract** requirement
+  on the row itself while it sits in Active under the `blocked ∧ P` case:
+
+  - **The Active group is not visually/structurally uniform.** A row's real `status` (`'open'` or
+    `'blocked'`) and `statusReason` (when present) are always populated on the returned
+    `InvestigationSummary`, regardless of which of the four `activeWork` groups it is bucketed
+    into. This is already true by construction — query 2 (`activeWork.active`, above) selects
+    `i.status, i.status_reason` alongside every other query — but is stated explicitly here as a
+    binding contract, not an incidental consequence: no future revision to query 2 or its mapping
+    into `InvestigationSummary` may drop, overwrite, hardcode, or default away `status`/
+    `statusReason` for Active-group rows on the theory that "it's in Active, so it must be open."
+  - **A `blocked ∧ P` row in Active must be distinguishable from a normal `open ∧ P` Active row.**
+    Concretely, it must receive alarm/attention-level visual treatment, not the calmer treatment a
+    `status='open'` Active row gets. This is a UI-rendering concern that `03-UI-SPEC.md` owns
+    concretely (mapping `status`/`statusReason` to a visual treatment); the data contract this
+    architecture guarantees is that the row's real `status` field is present and unaltered on every
+    Active-group `InvestigationSummary`, which is what that downstream treatment keys off. No
+    schema change to `InvestigationSummary` (`src/types/domain.ts` usage in this doc, lines
+    103-106) is required — `status` and `statusReason` are already unconditional fields on that
+    interface, not group-specific.
+  - **Movement out of Active happens on next fetch, not live.** Once the race-window run finalizes
+    (`outcome` transitions out of `'in-progress'` to `'succeeded'` or `'failed'`), `P` becomes false
+    for that Investigation and it naturally satisfies Needs Attention's predicate (`blocked ∧ ¬P`)
+    on the next evaluation of these queries — this requires no additional logic, since it falls
+    directly out of the existing predicates proven mutually exclusive above. This checkpoint has no
+    polling or live-update mechanism (out of scope per `01-REQUIREMENTS.md`), so this transition is
+    only observed on the next page load/refetch, never live within an open session — stated
+    explicitly here so it is not mistaken for a live-update guarantee this architecture does not
+    provide.
+
 - **Ready/Not-Started vs. any other boundary**: Ready/Not Started requires `status = 'open' AND NOT
   R`; every other group either requires `status ≠ 'open'` (Needs Attention, and Recent/Completed's
   `brief-generated` disjunct) or requires `R`/`P` (Active, and Recent/Completed's `R` disjunct for

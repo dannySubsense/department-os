@@ -1,6 +1,6 @@
 # UI Spec: Product Surface — Checkpoint 1
 
-**Status**: Draft — pending Frank spec-gate
+**Status**: Approved — human gate PASSED at `4757c37` (Danny, 2026-08-20)
 **Traces to**: `01-REQUIREMENTS.md` (see its User Stories section for the full list, and its
 Acceptance Criteria section for the AC count), `02-ARCHITECTURE.md`,
 `DESIGN-PROPOSAL.md` §2/§2a/§3/§4/§4a/§11 (Checkpoint-1 subset only),
@@ -126,9 +126,21 @@ alarming treatment — the rest read as informational, not urgent:
   groups above wherever the two overlap conceptually, so a user does not have to learn two color
   systems: `open` reads as neutral/standby, `blocked`/`generation-failed` read in the
   attention/alarm hue, `brief-generated` reads in the "done" hue.
+- **Blocked-while-Active row (race-window case)** — per Danny's ruling (2026-08-20): an
+  Active-group row whose real `status` is `'blocked'` (the race-window case documented in
+  `02-ARCHITECTURE.md`, where a `GenerationRun` is genuinely in progress for an Investigation that
+  is also `blocked`) renders with the SAME alarm/attention-level treatment defined above for
+  Needs Attention — the warm/alarm-adjacent hue — NOT the calmer Active "live/running" cue a
+  normal `open ∧` in-progress-run row gets, even though the row is positioned within the Active
+  group/section. Its `statusReason` (when present) renders alongside it exactly as it would in
+  Needs Attention — never hidden or omitted because the row happens to be grouped under Active.
+  This is the one exception to "Active" implying the calm live-cue treatment above, and it exists
+  because `02-ARCHITECTURE.md` guarantees every Active-group row carries its real `status` and
+  `statusReason` unconditionally, never overwritten or defaulted away by its group placement. See
+  § Screen: Mission Control, Sections, "Active" row for the full rule and its transition behavior.
 - Exact hex values are PROVISIONAL — the direction (restrained neutral base, 3-4 named semantic
   accents, no decorative rainbow, alarm color reserved exclusively for Needs-Attention/
-  blocked/generation-failed) is binding.
+  blocked/generation-failed, including the blocked-while-Active exception above) is binding.
 
 ### Spacing and borders
 
@@ -364,7 +376,7 @@ route changes.
 | Section | Content | Data Source |
 |---|---|---|
 | Installed Departments strip | 4 tiles: name, status (`installed`/`planned`); no counts/activity on `planned` tiles | `MissionControlView.departments` |
-| Active | `InvestigationSummary[]` — an Investigation with an in-progress `GenerationRun`: a real run IS running right now. Per Danny's correction (`02-ARCHITECTURE.md` §3/§5.3), this group no longer also includes brand-new `status='open'` Investigations with zero `GenerationRun` rows — that case is its own group, Ready/Not Started, below. | `MissionControlView.activeWork.active` |
+| Active | `InvestigationSummary[]` — an Investigation with an in-progress `GenerationRun`: a real run IS running right now. Per Danny's correction (`02-ARCHITECTURE.md` §3/§5.3), this group no longer also includes brand-new `status='open'` Investigations with zero `GenerationRun` rows — that case is its own group, Ready/Not Started, below. **Row-level rendering rule (Danny's ruling, 2026-08-20 — the blocked+in-progress race window):** a row in this group whose real `status` is `'blocked'` (the race-window case: the Investigation is blocked, but a `GenerationRun` is genuinely in progress for it right now, per `02-ARCHITECTURE.md`'s binding data contract that Active-group rows always carry their real `status`/`statusReason` unconditionally) renders with the SAME alarm/attention-level visual treatment as a Needs Attention row (§ Visual Direction, Palette), NOT the calmer Active live/running cue a normal `open ∧` in-progress-run row gets — even though it is positioned within the Active group/section. The row's real `statusReason` (when present) renders alongside it exactly as it would in Needs Attention — never hidden or omitted because the row happens to be grouped under Active. Once the race-window run finalizes, the row moves to Needs Attention on the next page load/refetch (this checkpoint has no live-update mechanism, per `02-ARCHITECTURE.md`) and receives that group's normal treatment there — no special transition animation or live-update is implied or required this checkpoint. A row is never rendered with both treatments simultaneously and never appears in both groups' lists at once — this is a rendering-level restatement of `02-ARCHITECTURE.md`'s data-level exclusivity guarantee, not a new behavior. | `MissionControlView.activeWork.active` |
 | Ready / Not Started | `InvestigationSummary[]` — `status='open'`, zero `GenerationRun` rows at all: genuinely never started, not stalled/blocked, not currently running. Reads visually as "waiting/ready," not alarming and not identical to Active (§ Visual Direction, Palette) | `MissionControlView.activeWork.readyNotStarted` |
 | Needs Attention | `InvestigationSummary[]` — `status` in (`blocked`, `generation-failed`), no in-progress run | `MissionControlView.activeWork.needsAttention` |
 | Recent / Completed | `InvestigationSummary[]` — `brief-generated` or most-recent non-in-progress run, deduped, recency-ordered | `MissionControlView.activeWork.recentCompleted` |
