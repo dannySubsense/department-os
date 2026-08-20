@@ -3,8 +3,11 @@ import { pool } from '../db/pool.js';
 import { getMissionControlView } from './getMissionControlView.js';
 import { DEPARTMENTS } from '../config/departments.js';
 
-// Integration coverage for getMissionControlView's 9 independent queries (Architecture §5.3),
-// run against the real dev Postgres (DDR-0001) — 04-ROADMAP.md Slice 1 Tests list.
+// Integration coverage for getMissionControlView's 9 independent queries (Architecture §5.3,
+// POST-CORRECTION §0a), run against the real dev Postgres (DDR-0001) — 04-ROADMAP.md Slice 1
+// Tests list.
+
+const problemDepartmentConfig = DEPARTMENTS.find((d) => d.id === 'problem-department')!;
 
 afterAll(async () => {
   await pool.end();
@@ -90,7 +93,15 @@ async function insertBriefVersion(
 describe('getMissionControlView', () => {
   it('returns the fully honest empty shape when zero Investigations exist (Edge Cases table row 6)', async () => {
     const view = await getMissionControlView();
-    expect(view.departments).toEqual([...DEPARTMENTS]);
+    expect(view.problemDepartment).toEqual({
+      id: problemDepartmentConfig.id,
+      name: problemDepartmentConfig.name,
+      thesis: problemDepartmentConfig.thesis,
+      investigationCount: 0,
+      activeCount: 0,
+      needsAttentionCount: 0,
+      recentCompletedCount: 0,
+    });
     expect(view.activeWork.active).toEqual([]);
     expect(view.activeWork.readyNotStarted).toEqual([]);
     expect(view.activeWork.needsAttention).toEqual([]);
@@ -99,6 +110,18 @@ describe('getMissionControlView', () => {
     expect(view.recent.investigations).toEqual([]);
     expect(view.recent.briefs).toEqual([]);
     expect(view.recent.evidence).toEqual([]);
+  });
+
+  it('has no `departments` field on the response (Danny\'s ruling — DepartmentsStrip data removed)', async () => {
+    const view = await getMissionControlView();
+    expect(view).not.toHaveProperty('departments');
+  });
+
+  it('problemDepartment.name/thesis/id match departmentRegistry verbatim', async () => {
+    const view = await getMissionControlView();
+    expect(view.problemDepartment.id).toBe(problemDepartmentConfig.id);
+    expect(view.problemDepartment.name).toBe(problemDepartmentConfig.name);
+    expect(view.problemDepartment.thesis).toBe(problemDepartmentConfig.thesis);
   });
 
   it('every one of the 9 queries matches real persisted rows across a mixed-status dataset', async () => {
@@ -132,7 +155,7 @@ describe('getMissionControlView', () => {
 
     const view = await getMissionControlView();
 
-    expect(view.departments).toEqual([...DEPARTMENTS]);
+    expect(view).not.toHaveProperty('departments');
 
     expect(view.activeWork.active.map((i) => i.id)).toEqual([investigationA]);
     expect(view.activeWork.readyNotStarted.map((i) => i.id)).toEqual([investigationB]);
@@ -146,6 +169,18 @@ describe('getMissionControlView', () => {
 
     expect(view.recent.briefs.map((b) => b.briefVersionId)).toEqual([briefVersionD]);
     expect(view.recent.evidence.map((e) => e.evidenceItemId)).toEqual([evidenceA]);
+
+    // problemDepartment.investigationCount === real COUNT(*)
+    expect(view.problemDepartment.investigationCount).toBe(4);
+    // active/needsAttention/recentCompleted counts match the corresponding array's .length
+    expect(view.problemDepartment.activeCount).toBe(view.activeWork.active.length);
+    expect(view.problemDepartment.needsAttentionCount).toBe(view.activeWork.needsAttention.length);
+    expect(view.problemDepartment.recentCompletedCount).toBe(
+      view.activeWork.recentCompleted.length,
+    );
+    expect(view.problemDepartment.activeCount).toBe(1);
+    expect(view.problemDepartment.needsAttentionCount).toBe(1);
+    expect(view.problemDepartment.recentCompletedCount).toBe(1);
   });
 
   it('a status=open Investigation with zero GenerationRun rows appears ONLY in readyNotStarted (US-6, Edge Cases row 5)', async () => {

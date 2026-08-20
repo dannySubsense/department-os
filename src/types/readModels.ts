@@ -25,6 +25,22 @@ export interface DepartmentSummary {
   status: 'installed' | 'planned';
 }
 
+/** POST-CORRECTION (§0a) — Mission Control's Problem-Department card summary. Deliberately
+ *  separate from `DepartmentSummary`: carries no `status` field, so it structurally cannot leak
+ *  an installed/planned label onto Mission Control (Danny's ruling item 1). Every count below is
+ *  either a direct COUNT(*) (`investigationCount`) or the `.length` of an array
+ *  `getMissionControlView` already assembles for `activeWork` (§5.3) — no fabricated field
+ *  (Danny's ruling item 3). */
+export interface MissionControlProblemDepartmentSummary {
+  id: string; // 'problem-department', from departmentRegistry
+  name: string; // from departmentRegistry
+  thesis: string; // from departmentRegistry
+  investigationCount: number; // COUNT(*) of all Investigation rows
+  activeCount: number; // activeWork.active.length
+  needsAttentionCount: number; // activeWork.needsAttention.length
+  recentCompletedCount: number; // activeWork.recentCompleted.length
+}
+
 export interface InvestigationSummary {
   id: string;
   status: InvestigationStatus;
@@ -51,7 +67,7 @@ export interface EvidenceSummary {
 export type DepartmentsView = DepartmentSummary[];
 
 export interface MissionControlView {
-  departments: DepartmentSummary[];
+  problemDepartment: MissionControlProblemDepartmentSummary;
   activeWork: {
     active: InvestigationSummary[]; // has an in-progress GenerationRun — a real run IS
     // running right now (Danny's correction, §5.3)

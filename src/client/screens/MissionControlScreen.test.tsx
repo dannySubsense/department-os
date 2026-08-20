@@ -3,18 +3,21 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { MissionControlScreen } from './MissionControlScreen.js';
 import * as api from '../api.js';
-import { DEPARTMENTS } from '../../config/departments.js';
 import type {
   MissionControlView,
   InvestigationSummary,
   GenerationRunSummary,
 } from '../../types/readModels.js';
 
-// Render/behavior coverage for MissionControlScreen (04-ROADMAP.md Slice 1 Tests list).
-// MissionControlScreen is rendered with NO Router wrapper anywhere in this file — a deliberate
-// choice, not an oversight: react-router-dom's <Link>/<NavLink> throw an invariant violation when
-// rendered outside a Router context, so a render that succeeds here is itself evidence the
-// last-active-Investigation link is a plain <a>, not a router <Link> (US-4 AC2).
+// Render/behavior coverage for MissionControlScreen (04-ROADMAP.md Slice 1 Tests list,
+// POST-CORRECTION §0a). MissionControlScreen is rendered with NO Router wrapper anywhere in this
+// file except where a Router is explicitly needed for ProblemDepartmentCard's <Link> — a
+// deliberate choice, not an oversight: react-router-dom's <Link>/<NavLink> throw an invariant
+// violation when rendered outside a Router context, so a render that succeeds here is itself
+// evidence the last-active-Investigation link is a plain <a>, not a router <Link> (US-4 AC2).
+//
+// NOTE: MissionControlScreen now always renders <ProblemDepartmentCard>, which itself renders a
+// react-router <Link>. All renders in this file therefore need a MemoryRouter wrapper.
 
 vi.mock('../api.js', () => ({
   fetchMissionControl: vi.fn(),
@@ -46,7 +49,15 @@ function run(overrides: Partial<GenerationRunSummary>): GenerationRunSummary {
 
 function buildView(overrides: Partial<MissionControlView> = {}): MissionControlView {
   return {
-    departments: [...DEPARTMENTS],
+    problemDepartment: {
+      id: 'problem-department',
+      name: 'Problem Department',
+      thesis: 'What do people genuinely need, and where is the unresolved demand?',
+      investigationCount: 0,
+      activeCount: 0,
+      needsAttentionCount: 0,
+      recentCompletedCount: 0,
+    },
     activeWork: { active: [], readyNotStarted: [], needsAttention: [], recentCompleted: [] },
     activeActivity: [],
     recent: { investigations: [], briefs: [], evidence: [] },
@@ -55,23 +66,31 @@ function buildView(overrides: Partial<MissionControlView> = {}): MissionControlV
 }
 
 async function renderWithView(view: MissionControlView) {
+  const { MemoryRouter } = await import('react-router-dom');
   vi.mocked(api.fetchMissionControl).mockResolvedValue(view);
-  render(<MissionControlScreen />);
-  await waitFor(() => expect(screen.getByText('Departments')).toBeInTheDocument());
+  render(
+    <MemoryRouter>
+      <MissionControlScreen />
+    </MemoryRouter>,
+  );
+  await waitFor(() =>
+    expect(screen.getByText('Problem Department')).toBeInTheDocument(),
+  );
 }
 
-describe('MissionControlScreen — Departments strip', () => {
-  it('shows exactly 1 installed tile and 3 planned tiles, with no activity numbers on planned tiles', async () => {
+describe('MissionControlScreen — Problem Department card', () => {
+  it('renders the ProblemDepartmentCard and no Installed-Departments strip / planned-Departments footer', async () => {
     await renderWithView(buildView());
 
-    const installedTiles = document.querySelectorAll('.department-tile--installed');
-    const plannedTiles = document.querySelectorAll('.department-tile--planned');
-    expect(installedTiles).toHaveLength(1);
-    expect(plannedTiles).toHaveLength(3);
-
-    plannedTiles.forEach((tile) => {
-      expect(tile.textContent).not.toMatch(/\d/);
-    });
+    expect(screen.getByText('Problem Department')).toBeInTheDocument();
+    expect(document.querySelector('.department-tile--installed')).toBeNull();
+    expect(document.querySelector('.department-tile--planned')).toBeNull();
+    expect(document.querySelector('.departments-strip')).toBeNull();
+    expect(screen.queryByText('installed')).not.toBeInTheDocument();
+    expect(screen.queryByText('planned')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Signal Foundry/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Prototype Department/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Creative Practice Engine/)).not.toBeInTheDocument();
   });
 });
 
@@ -88,9 +107,9 @@ describe('MissionControlScreen — Active-work groups', () => {
       }),
     );
 
-    expect(screen.getByText('Active')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Active' })).toBeInTheDocument();
     expect(screen.getByText('Ready / Not Started')).toBeInTheDocument();
-    expect(screen.getByText('Needs Attention')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Needs Attention' })).toBeInTheDocument();
     expect(screen.getByText('Recent / Completed')).toBeInTheDocument();
 
     // active is populated -> no empty text for it
@@ -174,7 +193,7 @@ describe('MissionControlScreen — loading/error states', () => {
 
     await waitFor(() => expect(screen.getByRole('alert')).toHaveClass('page-error'));
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
-    expect(screen.queryByText('Departments')).not.toBeInTheDocument();
+    expect(screen.queryByText('Problem Department')).not.toBeInTheDocument();
   });
 
   it('the populated state renders neither the loading nor error marker', async () => {

@@ -21,12 +21,12 @@ export function PersistentNav() {
         </li>
         <li>
           <NavLink
-            to="/departments"
+            to="/departments/problem-department"
             className={({ isActive }) =>
               isActive ? 'persistent-nav__link persistent-nav__link--active' : 'persistent-nav__link'
             }
           >
-            Departments
+            Problem Department
           </NavLink>
         </li>
       </ul>

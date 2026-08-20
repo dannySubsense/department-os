@@ -18,9 +18,21 @@ Per Danny's explicit instruction (2026-08-20): stop after Slice 1's Forge checks
 demonstration for his product review. Do not proceed to Slice 2 without his go-ahead.
 
 ## Current
-Slice: 1 COMPLETE, stopped for product review (Danny's explicit instruction)
-Step: awaiting Danny's browser-visible product review before Slice 2
+Slice: 1 correction COMPLETE (product-gate FAIL resolved), proceeding to Slice 2
+Step: @code-executor (Slice 2)
 Last updated: 2026-08-20
+
+## Slice 1 — Human product gate: FAIL then corrected
+Danny FAILED Slice 1's IA on product grounds (planned-Department tiles dominated the page, PD not
+actionable, installed/planned labels exposed, wrong nav). All 4 canonical docs revised (02 §0a
+records his ruling verbatim), then Slice 1 corrected: ProblemDepartmentCard (live counts, dual
+click-target+affordance, no install labels) replaces the Departments strip; nav is now Mission
+Control / Problem Department; /departments route removed entirely. QC PASS (all 5 ruling items +
+2 cross-checks verified against actual source, not reports). 302/302 tests. QC flagged the build
+bundle is stale pre-correction — must rebuild before any browser demo. Roadmap resequenced to 2
+slices; Slice 2 (Problem Department Overview) is now the direct target of the corrected card/link.
+Danny's follow-up explicitly requires seeing the REAL destination screen, not the stub — so Slice
+2 proceeds now, in the same session, before the next demo.
 
 ## Slice 1 — browser demonstration COMPLETE
 Real dev-server run (production build, since port 3000/3001 were held by unrelated host processes;

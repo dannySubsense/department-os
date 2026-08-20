@@ -66,6 +66,11 @@ function mapGenerationRunRow(row: GenerationRunRow): GenerationRunSummary {
 /** Assembles `MissionControlView` from independent queries — Architecture §5.3. Every array
  *  degrades honestly to `[]` on an empty database; never fabricated data (§5.1). */
 export async function getMissionControlView(): Promise<MissionControlView> {
+  // 1. problemDepartment.investigationCount
+  const investigationCountResult = await pool.query<{ count: number }>(
+    `SELECT COUNT(*)::int AS count FROM investigation`,
+  );
+
   // 2. activeWork.active
   const activeResult = await pool.query<InvestigationRow>(
     `SELECT i.id, i.status, i.status_reason, i.created_at, la.last_activity_at
@@ -174,14 +179,29 @@ export async function getMissionControlView(): Promise<MissionControlView> {
     })),
   };
 
+  const activeWork = {
+    active: activeResult.rows.map(mapInvestigationRow),
+    readyNotStarted: readyNotStartedResult.rows.map(mapInvestigationRow),
+    needsAttention: needsAttentionResult.rows.map(mapInvestigationRow),
+    recentCompleted: recentCompletedResult.rows.map(mapInvestigationRow),
+  };
+
+  const problemDepartmentConfig = DEPARTMENTS.find((d) => d.id === 'problem-department');
+  if (!problemDepartmentConfig) {
+    throw new Error("getMissionControlView: 'problem-department' not found in DEPARTMENTS registry");
+  }
+
   return {
-    departments: [...DEPARTMENTS],
-    activeWork: {
-      active: activeResult.rows.map(mapInvestigationRow),
-      readyNotStarted: readyNotStartedResult.rows.map(mapInvestigationRow),
-      needsAttention: needsAttentionResult.rows.map(mapInvestigationRow),
-      recentCompleted: recentCompletedResult.rows.map(mapInvestigationRow),
+    problemDepartment: {
+      id: problemDepartmentConfig.id,
+      name: problemDepartmentConfig.name,
+      thesis: problemDepartmentConfig.thesis,
+      investigationCount: investigationCountResult.rows[0]?.count ?? 0,
+      activeCount: activeWork.active.length,
+      needsAttentionCount: activeWork.needsAttention.length,
+      recentCompletedCount: activeWork.recentCompleted.length,
     },
+    activeWork,
     activeActivity: activeActivityResult.rows.map(mapGenerationRunRow),
     recent,
   };

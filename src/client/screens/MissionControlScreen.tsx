@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { fetchMissionControl } from '../api.js';
+import { ProblemDepartmentCard } from '../components/ProblemDepartmentCard.js';
 import type {
   MissionControlView,
   InvestigationSummary,
@@ -13,9 +14,9 @@ interface FetchState {
   error: string | null;
 }
 
-/** Renders `MissionControlView`: Installed Departments strip, four Active-work group sections,
- *  activity panel, three recent lists, planned-Departments note (03-UI-SPEC.md Screen: Mission
- *  Control). This is the first implementation of the Visual Direction section's shared visual
+/** Renders `MissionControlView`: `ProblemDepartmentCard`, four Active-work group sections,
+ *  activity panel, three recent lists (03-UI-SPEC.md Screen: Mission Control, POST-CORRECTION
+ *  §0a). This is the first implementation of the Visual Direction section's shared visual
  *  language — Slices 2 and 3 reuse these tokens/patterns. */
 export function MissionControlScreen() {
   const [state, setState] = useState<FetchState>({ data: null, error: null });
@@ -55,29 +56,13 @@ export function MissionControlScreen() {
   }
 
   const view = state.data;
-  const plannedDepartments = view.departments.filter((d) => d.status === 'planned');
 
   return (
     <div className="screen mission-control-screen">
       <h1 className="screen__title">Mission Control</h1>
 
-      <section className="section" aria-label="Installed Departments">
-        <h2 className="section__header">Departments</h2>
-        <div className="department-strip">
-          {view.departments.map((dept) => (
-            <div
-              key={dept.id}
-              className={
-                dept.status === 'installed'
-                  ? 'department-tile department-tile--installed'
-                  : 'department-tile department-tile--planned'
-              }
-            >
-              <div className="department-tile__name">{dept.name}</div>
-              <div className="department-tile__status data-value">{dept.status}</div>
-            </div>
-          ))}
-        </div>
+      <section className="section" aria-label="Problem Department">
+        <ProblemDepartmentCard problemDepartment={view.problemDepartment} />
       </section>
 
       <section className="section" aria-label="Active work">
@@ -122,16 +107,6 @@ export function MissionControlScreen() {
           <RecentBriefsList briefs={view.recent.briefs} />
           <RecentEvidenceList evidence={view.recent.evidence} />
         </div>
-      </section>
-
-      <section className="section" aria-label="Planned Departments note">
-        <p className="planned-note">
-          {plannedDepartments.length > 0
-            ? `${plannedDepartments.map((d) => d.name).join(', ')} ${
-                plannedDepartments.length === 1 ? 'is' : 'are'
-              } planned but not yet built.`
-            : 'All Departments are currently installed.'}
-        </p>
       </section>
     </div>
   );

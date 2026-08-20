@@ -36,8 +36,16 @@ describe('GET /api/mission-control', () => {
     expect(res.status).toBe(200);
 
     const body = (await res.json()) as MissionControlView;
-    expect(Array.isArray(body.departments)).toBe(true);
-    expect(body.departments.length).toBe(4);
+    expect(body).not.toHaveProperty('departments');
+    expect(body.problemDepartment).toEqual({
+      id: 'problem-department',
+      name: 'Problem Department',
+      thesis: 'What do people genuinely need, and where is the unresolved demand?',
+      investigationCount: 0,
+      activeCount: 0,
+      needsAttentionCount: 0,
+      recentCompletedCount: 0,
+    });
     expect(body.activeWork).toEqual({
       active: [],
       readyNotStarted: [],
@@ -56,10 +64,25 @@ describe('GET /api/mission-control', () => {
     const body = (await res.json()) as MissionControlView;
     expect(body.activeWork.readyNotStarted.length).toBe(1);
     expect(body.recent.investigations.length).toBe(1);
+    expect(body.problemDepartment.investigationCount).toBe(1);
   });
 
   it('an unmatched /api/* path 404s as JSON, not the SPA catch-all', async () => {
     const res = await fetch(`${baseUrl}/api/does-not-exist`);
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body).toEqual({ error: 'not-found' });
+  });
+});
+
+describe('GET /api/departments', () => {
+  // Pre-existing behavior, not newly achieved this correction: reading the current
+  // src/web/apiRoutes.ts confirms no /api/departments route was ever registered (the earlier
+  // code-executor edit to remove it was a no-op against the live file). This test asserts the
+  // real current behavior — a 404 via the generic /api/* JSON not-found handler — regardless of
+  // which pass "achieved" it.
+  it('404s as JSON — no /api/departments route exists', async () => {
+    const res = await fetch(`${baseUrl}/api/departments`);
     expect(res.status).toBe(404);
     const body = await res.json();
     expect(body).toEqual({ error: 'not-found' });

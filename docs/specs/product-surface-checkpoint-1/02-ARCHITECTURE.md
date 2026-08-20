@@ -1,6 +1,9 @@
 # Architecture: Product Surface — Checkpoint 1
 
-**Status**: Approved — human gate PASSED at `4757c37` (Danny, 2026-08-20)
+**Status**: REVISED — human product-gate FAIL on Slice 1's browser demonstration (Danny,
+2026-08-20), correcting the design that had passed the binding spec-gate at `4757c37`. See §0a for
+the verbatim ruling and the resulting architectural changes. `01-REQUIREMENTS.md`, `03-UI-SPEC.md`,
+and `04-ROADMAP.md` are revised to match this document's decisions, not the reverse.
 **Traces to**: `01-REQUIREMENTS.md` (see its User Stories section for the full list — not
 restated here per repo-wide no-manually-asserted-counts discipline), `docs/specs/product-surface/DESIGN-PROPOSAL.md` §1/§2/§2a/§3/§4/§4a/§7/§8/§11
 (Checkpoint-1 subset only — §5/§6/§8's `ActivityFeedEntry`/`InvestigationWorkspaceView`/§9/§10/
@@ -13,21 +16,87 @@ Grounded against the real, currently-checked-out repo state (branch
 
 ---
 
+## 0a. Product-Gate Correction (Danny, 2026-08-20) — binding, supersedes the prior design
+
+Danny ran the browser demonstration for Slice 1 (Mission Control Shell) and FAILED it on product
+grounds. Verbatim ruling:
+
+> "The Problem Department is displayed as 'installed' but is not clearly actionable. Planned/
+> uninstalled Departments dominate the page even though they are configuration/catalog information,
+> not current operating information.
+>
+> Required correction:
+> 1. Mission Control shows only Departments currently available to the user. Show Problem
+>    Department. Remove the three planned Department tiles. Remove the planned-Departments footer
+>    note. Do not expose installed/planned labels here.
+> 2. Make Problem Department unmistakably actionable. The entire Department card may be clickable.
+>    Include an explicit 'Open Problem Department →' affordance. It must lead to a real Problem
+>    Department surface, not an inline 'not built' stub.
+> 3. Replace installation status with useful live state already available: investigation count,
+>    active count, needs-attention count, recent completed count. Do not fabricate values.
+> 4. Revise the left navigation for the current product: Mission Control, Problem Department. Do
+>    not use 'Departments' as an installation-management destination. A future Departments view may
+>    switch among enabled Departments. Installing or unlocking modules belongs under Settings / Add
+>    Department, outside this checkpoint.
+> 5. Re-sequence the remaining checkpoint so the next browser-visible result is a real Problem
+>    Department overview reachable from Mission Control. Do not build the planned-module catalog as
+>    Slice 2."
+
+**Net architectural effect, decided here (binding on `01-REQUIREMENTS.md`/`03-UI-SPEC.md`/
+`04-ROADMAP.md`'s revision):**
+
+- The "Departments directory" screen (previously Screen B — `DepartmentsScreen`,
+  `getDepartmentsView`, `GET /api/departments`, the `/departments` route) is **removed from this
+  checkpoint's scope entirely.** It was a catalog of all four Departments with installed/planned
+  labels — exactly the configuration information Danny ruled does not belong on the live operating
+  surface. It is not redirected or stubbed; the route, service, and screen simply do not exist this
+  checkpoint. Deferred capability: "a future Departments view may switch among enabled Departments,"
+  and "installing or unlocking modules belongs under Settings / Add Department" — both explicitly
+  out of this checkpoint, per Danny's own framing above.
+- Mission Control now links **directly** to a real Problem Department overview — a one-hop link
+  (`ProblemDepartmentCard` → `/departments/problem-department`), not the previous two-hop
+  Mission-Control → Departments-directory → Problem-Department path. This pulls the Problem
+  Department overview destination forward to be this checkpoint's second (and now only other)
+  real browser-visible screen.
+- `MissionControlView` drops the `departments: DepartmentSummary[]` catalog field and the
+  planned-Departments note entirely, replacing installation status with four real, already-derivable
+  live counts. See §3 for the exact shape.
+- `PersistentNav` drops to exactly two links: "Mission Control" and "Problem Department" — not
+  "Departments."
+
+Full detail of every affected section is inlined at point of change below (§1, §2, §3, §5, §6, §7,
+§11); this section is the single pointer for "why," not a duplicate of the mechanics.
+
+---
+
 ## 1. Scope Boundary (binding, re-stated for implementers)
 
-In scope: four new Express JSON routes (three GET, one POST), three new read-model query functions, a React SPA with
-three screens (Mission Control, Departments directory, Problem Department overview) — no fourth
-SPA route and no client-side placeholder for Screen D (§2/§6: the last-active-Investigation link
-instead does a full-page navigation to the existing legacy Express route,
-`GET /investigations/:id`, per Danny's correction below) — Vite build tooling, and the
-static-serving / dev-proxy integration boundary with the existing Express app.
+In scope, POST-CORRECTION (§0a): three new Express JSON routes (two GET, one POST — `GET
+/api/mission-control`, `GET /api/problem-department`, `POST /api/investigations`; `GET
+/api/departments` is removed, §0a), two new read-model query functions (`getMissionControlView`,
+`getProblemDepartmentOverview`; `getDepartmentsView` is removed, §0a), a React SPA with two screens
+(Mission Control, Problem Department overview — no "Departments directory" screen, §0a) — no third
+SPA route beyond `/` and `/departments/problem-department`, and no client-side placeholder for
+Screen D (§2/§6: the last-active-Investigation link instead does a full-page navigation to the
+existing legacy Express route, `GET /investigations/:id`, per Danny's correction below) — Vite
+build tooling, and the static-serving / dev-proxy integration boundary with the existing Express
+app.
+
+No `/departments` catalog screen is built this checkpoint (§0a) — that capability moves to "a
+future Departments view" (switching among enabled Departments) and "Settings / Add Department"
+(installing/unlocking modules), both explicitly out of this checkpoint per Danny's ruling.
+Mission Control links directly into the real Problem Department overview, which is this
+checkpoint's second (and only other) real browser-visible destination.
 
 Out of scope, not designed here even partially: Investigation Workspace (Screen D), any
 `/api/investigations/:id/workspace` or `/api/investigations/:id/activity` route,
 `generation_component_event` table or any migration, `BriefForReview`, `deriveWorkflowStage`/
 `WorkflowStage`, `POST /api/investigations/:id/generation-runs`, live polling of any kind, `/evidence`,
-`/runs`, `/knowledge`, `/activity` Core-wide routes. If a later step in this document seems to need
-one of these, that is a signal to stop and re-read the boundary, not to design around it.
+`/runs`, `/knowledge`, `/activity` Core-wide routes, a "Departments directory"/catalog screen or
+route (`/departments`, `GET /api/departments`, `getDepartmentsView`, `DepartmentsScreen` —
+§0a), and any Settings / Add Department / module-installation surface. If a later step in this
+document seems to need one of these, that is a signal to stop and re-read the boundary, not to
+design around it.
 
 ---
 
@@ -35,40 +104,62 @@ one of these, that is a signal to stop and re-read the boundary, not to design a
 
 | Component | Responsibility | Location |
 |---|---|---|
-| `getMissionControlView` | Assemble `MissionControlView` from `investigation`/`generation_run`/`brief_version`/`evidence_item`/`source_artifact` via the following independent queries (§5.3) | `src/services/getMissionControlView.ts` (new) |
-| `getDepartmentsView` | Assemble `DepartmentsView` (`DepartmentSummary[]`) directly from the static `departmentRegistry` — no database query. `DepartmentSummary` carries no counts (US-2 AC1: name/thesis/status only), so no `investigation`-table check is needed to produce this view | `src/services/getDepartmentsView.ts` (new) |
+| `getMissionControlView` | Assemble `MissionControlView` from `investigation`/`generation_run`/`brief_version`/`evidence_item`/`source_artifact` via the following independent queries (§5.3) — POST-CORRECTION (§0a): no longer queries/returns a Departments catalog; instead assembles the single `problemDepartment` live-counts summary | `src/services/getMissionControlView.ts` (new) |
 | `getProblemDepartmentOverview` | Assemble `ProblemDepartmentOverview` — full portfolio, counts, last-active id, recent runs | `src/services/getProblemDepartmentOverview.ts` (new) |
-| `departmentRegistry` | Static, in-process list of the four `Department` config literals (id, name, thesis, installed flag) — single source for both `getDepartmentsView` and `getMissionControlView`/`getProblemDepartmentOverview` so the four entries are never independently retyped | `src/config/departments.ts` (new) |
+| `departmentRegistry` | Static, in-process list of the four `Department` config literals (id, name, thesis, installed flag) — single source of Problem Department's name/thesis, consumed by `getMissionControlView` and `getProblemDepartmentOverview` (§0a: no longer also consumed by a `getDepartmentsView`, which is removed) so Problem Department's identity fields are never independently retyped. The other three (planned) entries remain in this registry for a future Departments/Settings view but are not read by anything this checkpoint. | `src/config/departments.ts` (new) |
 | `lastActivitySql` | Shared SQL fragment implementing `DESIGN-PROPOSAL.md` §4a's `GREATEST` computation, restricted to tables that exist this checkpoint (excludes `generation_component_event`, `generation_step`'s `gs` alias stays since `generation_step` DOES exist — see §4 below for the exact restriction) | inlined as a named SQL constant in `src/services/lastActivity.ts` (new), imported by both `getMissionControlView.ts` and `getProblemDepartmentOverview.ts` — one query text, not two divergent copies (US-4 AC3 / Constraint) |
-| Express routes: `GET /api/mission-control`, `GET /api/departments`, `GET /api/problem-department`, `POST /api/investigations` (JSON) | Thin HTTP adapters — parse request, call the corresponding service, serialize JSON, map thrown errors to status codes | `src/web/apiRoutes.ts` (new), mounted from `src/web/server.ts` |
-| `App` (React root) | Client-side router (exactly three screen routes — `/`, `/departments`, `/departments/problem-department` — no catch-all, §6) and top-level layout shell; mounts `PersistentNav` once at the shell level (sibling to `<Routes>`, not inside any route's element), so it renders on every screen and does not remount on navigation | `src/client/App.tsx` (new) |
-| `PersistentNav` | Persistent left-nav rendered once in `App`'s layout shell, outside the `<Routes>` switch, so it survives client-side route changes. Renders exactly two nav links this checkpoint: "Mission Control" (`/`) and "Departments" (`/departments`) — per `DESIGN-PROPOSAL.md` §1's Checkpoint-1-relevant subset, no `/activity` or `/knowledge` link is rendered (those routes are not built this checkpoint, §1 Scope Boundary). Highlights the active link via `react-router-dom`'s `NavLink` (no bespoke active-state logic). Presentational only — no data fetching, no props beyond the current location supplied by the router. | `src/client/components/PersistentNav.tsx` (new) |
-| `MissionControlScreen` | Renders `MissionControlView`: Installed Departments strip, four Active-work groups (Active / Ready-Not-Started / Needs Attention / Recent-Completed), `activeActivity` panel (GenerationRun-level only), recent lists, planned-Departments note | `src/client/screens/MissionControlScreen.tsx` (new) |
-| `DepartmentsScreen` | Renders `DepartmentsView`: four rows, click target only on `installed` entries | `src/client/screens/DepartmentsScreen.tsx` (new) |
+| Express routes: `GET /api/mission-control`, `GET /api/problem-department`, `POST /api/investigations` (JSON) | Thin HTTP adapters — parse request, call the corresponding service, serialize JSON, map thrown errors to status codes. POST-CORRECTION (§0a): `GET /api/departments` is removed — no catalog route exists this checkpoint. | `src/web/apiRoutes.ts` (new), mounted from `src/web/server.ts` |
+| `App` (React root) | Client-side router (exactly two screen routes — `/`, `/departments/problem-department` — no `/departments` catalog route, no catch-all `<Route>`, §6) and top-level layout shell; mounts `PersistentNav` once at the shell level (sibling to `<Routes>`, not inside any route's element), so it renders on every screen and does not remount on navigation | `src/client/App.tsx` (new) |
+| `PersistentNav` | Persistent left-nav rendered once in `App`'s layout shell, outside the `<Routes>` switch, so it survives client-side route changes. Renders exactly two nav links this checkpoint, POST-CORRECTION (§0a): "Mission Control" (`/`) and "Problem Department" (`/departments/problem-department`) — NOT "Departments"; `/departments` is not a destination this checkpoint. No `/activity` or `/knowledge` link is rendered either (those routes are not built this checkpoint, §1 Scope Boundary). Highlights the active link via `react-router-dom`'s `NavLink` (no bespoke active-state logic). Presentational only — no data fetching, no props beyond the current location supplied by the router. | `src/client/components/PersistentNav.tsx` (new) |
+| `MissionControlScreen` | Renders `MissionControlView`, POST-CORRECTION (§0a): a single `ProblemDepartmentCard` (replacing the removed Installed-Departments strip and planned-Departments note), four Active-work groups (Active / Ready-Not-Started / Needs Attention / Recent-Completed), `activeActivity` panel (GenerationRun-level only), recent lists | `src/client/screens/MissionControlScreen.tsx` (new) |
+| `ProblemDepartmentCard` | NEW (§0a, replacing the old Installed-Departments strip). Renders `MissionControlView.problemDepartment` (§3) as a single card. The entire card is a clickable navigation target (`react-router-dom` `<Link to="/departments/problem-department">` wrapping the whole card, not just a sub-element) AND contains an explicit, separately-visible "Open Problem Department →" affordance inside it (both satisfy Danny's "entire card may be clickable" + "include an explicit ... affordance" — the explicit affordance is not optional-in-practice just because the card is also clickable). Shows name, thesis, and the four live counts (`investigationCount`/`activeCount`/`needsAttentionCount`/`recentCompletedCount`) — renders no `installed`/`planned` label or badge (Danny's ruling item 1). | `src/client/components/ProblemDepartmentCard.tsx` (new) |
 | `ProblemDepartmentScreen` | Renders `ProblemDepartmentOverview`: header, portfolio (status filter/sort), counts, recent runs, Start Investigation, empty state | `src/client/screens/ProblemDepartmentScreen.tsx` (new) |
 | `StartInvestigationForm` | Presentational form wrapping `POST /api/investigations`; on success, triggers portfolio refetch | `src/client/components/StartInvestigationForm.tsx` (new) |
 | `InvestigationPortfolioTable` | Presentational: renders `InvestigationSummary[]`, client-side status filter/sort only (no server round trip needed — full portfolio is already fetched) | `src/client/components/InvestigationPortfolioTable.tsx` (new) |
-| `apiClient` | Thin `fetch` wrappers for the three GET routes + the POST route, typed against the shared response interfaces (§5) | `src/client/api.ts` (new) |
+| `apiClient` | Thin `fetch` wrappers for the two GET routes + the POST route, typed against the shared response interfaces (§5) | `src/client/api.ts` (new) |
 
 Every component above has exactly one responsibility; no component both fetches and derives
 business logic beyond what's stated (derivation — Active/Needs-Attention/Recent-Completed
-grouping, last-activity computation — lives entirely in the three `get*View` services, never
+grouping, last-activity computation — lives entirely in the two `get*View` services, never
 duplicated client-side).
+
+**Removed this checkpoint (§0a):** `getDepartmentsView` (`src/services/getDepartmentsView.ts`),
+`DepartmentsScreen` (`src/client/screens/DepartmentsScreen.tsx`), `DepartmentsView`/
+`fetchDepartments`, and the `GET /api/departments` route — the whole "Departments directory"
+component set. This capability is not silently deleted: it moves to (a) a future Departments view
+that switches among *enabled* Departments, and (b) a Settings / Add Department surface for
+installing/unlocking modules — both explicitly out of this checkpoint's scope per Danny's ruling
+(§0a), neither designed here.
 
 ---
 
 ## 3. Data Schemas
 
 These interfaces are copied **verbatim** from `DESIGN-PROPOSAL.md` §8 for the Checkpoint-1 subset
-(`MissionControlView`, `DepartmentSummary`, `InvestigationSummary`, `BriefSummary`,
-`EvidenceSummary`, `DepartmentsView`, `ProblemDepartmentOverview`), with one explicit narrowing:
-`MissionControlView.activeActivity` is typed as `GenerationRunSummary[]` this checkpoint, not
-`ActivityFeedEntry[]` — `ActivityFeedEntry` (§8) carries a `currentComponent` field sourced from
-`generation_component_event`, a table that does not exist this checkpoint (Checkpoint 3 scope, per
-`01-REQUIREMENTS.md`’s AC "no live-component-level field"). Reusing
-`ActivityFeedEntry`'s name while silently never populating `currentComponent` would be a type lying
-about a capability that doesn't exist yet; `GenerationRunSummary` is the honest, checkpoint-scoped
-type. This is a structural narrowing, not a scope creep — every other field matches §8 exactly.
+(`InvestigationSummary`, `BriefSummary`, `EvidenceSummary`, `ProblemDepartmentOverview`), with two
+explicit narrowings/departures, both binding on `01-REQUIREMENTS.md`/`03-UI-SPEC.md`:
+
+1. `MissionControlView.activeActivity` is typed as `GenerationRunSummary[]` this checkpoint, not
+   `ActivityFeedEntry[]` — `ActivityFeedEntry` (§8) carries a `currentComponent` field sourced from
+   `generation_component_event`, a table that does not exist this checkpoint (Checkpoint 3 scope,
+   per `01-REQUIREMENTS.md`'s AC "no live-component-level field"). Reusing `ActivityFeedEntry`'s
+   name while silently never populating `currentComponent` would be a type lying about a capability
+   that doesn't exist yet; `GenerationRunSummary` is the honest, checkpoint-scoped type.
+2. **POST-CORRECTION (§0a):** `MissionControlView` no longer carries a `departments:
+   DepartmentSummary[]` catalog field or `DepartmentsView` at all — Danny's ruling eliminated the
+   Departments-catalog concept from this checkpoint's live operating surface entirely. In its place,
+   `MissionControlView.problemDepartment: MissionControlProblemDepartmentSummary` (new type, defined
+   below) carries Problem Department's identity plus four live counts — `investigationCount`,
+   `activeCount`, `needsAttentionCount`, `recentCompletedCount` — replacing the removed
+   `installed`/`planned` status label per Danny's explicit "do not expose installed/planned labels
+   here." This type deliberately does NOT reuse `DepartmentSummary` (which still carries a `status:
+   'installed' | 'planned'` field, needed by `ProblemDepartmentOverview.department` for the
+   Department-overview header's "installed" badge, US-3 AC) — extending `DepartmentSummary` for
+   Mission Control's card would silently smuggle the very label field Danny ruled out back into the
+   type. `DepartmentSummary` itself is unchanged and still exists (§0a does not touch
+   `ProblemDepartmentOverview`); only its use inside `MissionControlView` is removed.
+
+Every other field matches §8 exactly, structural narrowing only, not scope creep.
 
 ```typescript
 // src/types/readModels.ts (new file — checkpoint-1-scoped read-model types)
@@ -100,6 +191,22 @@ export interface DepartmentSummary {
   status: 'installed' | 'planned';
 }
 
+/** POST-CORRECTION (§0a) — Mission Control's Problem-Department card summary. Deliberately
+ *  separate from `DepartmentSummary` (see explanatory note above): carries no `status` field, so
+ *  it structurally cannot leak an installed/planned label onto Mission Control (Danny's ruling
+ *  item 1). Every count below is either a direct COUNT(*) (`investigationCount`) or the `.length`
+ *  of an array `getMissionControlView` already assembles for `activeWork` (§5.3 query 1/2/4/5) —
+ *  no new query logic beyond one trivial COUNT, no fabricated field (Danny's ruling item 3). */
+export interface MissionControlProblemDepartmentSummary {
+  id: string;                  // 'problem-department', from departmentRegistry
+  name: string;                // from departmentRegistry
+  thesis: string;               // from departmentRegistry
+  investigationCount: number;  // COUNT(*) of all Investigation rows (§5.3 query 1)
+  activeCount: number;         // activeWork.active.length (§5.3 query 2)
+  needsAttentionCount: number; // activeWork.needsAttention.length (§5.3 query 4)
+  recentCompletedCount: number; // activeWork.recentCompleted.length (§5.3 query 5)
+}
+
 export interface InvestigationSummary {
   id: string;
   status: InvestigationStatus;
@@ -123,10 +230,10 @@ export interface EvidenceSummary {
   excerptOrSummary: string;
 }
 
-export type DepartmentsView = DepartmentSummary[];
-
 export interface MissionControlView {
-  departments: DepartmentSummary[];
+  problemDepartment: MissionControlProblemDepartmentSummary; // POST-CORRECTION (§0a) — replaces
+                                                               // the removed `departments` catalog
+                                                               // array and planned-Departments note
   activeWork: {
     active: InvestigationSummary[];         // has an in-progress GenerationRun — a real run IS
                                              // running right now (Danny's correction, §5.3)
@@ -157,7 +264,7 @@ export interface ProblemDepartmentOverview {
 
 **PROVISIONAL constants** (per repo-wide no-fabricated-constants discipline): none needed this
 checkpoint. `01-REQUIREMENTS.md` establishes this checkpoint has no polling interval,
-cache TTL, or page-size limit — every list returned by these three read models is the full,
+cache TTL, or page-size limit — every list returned by these two read models is the full,
 unpaginated result set (Investigation count is small enough in this MVP's local-dev scope that no
 LIMIT is introduced; adding one un-sourced would itself violate the no-fabricated-constants rule).
 If Danny wants a page size or "recent N" cap for Mission Control's `recent` section, that number
@@ -218,12 +325,9 @@ router.get('/api/mission-control', async (req: Request, res: Response): Promise<
   res.status(200).json(view);
 });
 
-// GET /api/departments
-// 200 -> DepartmentsView (§3).
-router.get('/api/departments', async (req: Request, res: Response): Promise<void> => {
-  const view = await getDepartmentsView();
-  res.status(200).json(view);
-});
+// GET /api/departments — REMOVED (§0a, Danny's product-gate ruling). No Departments-catalog
+// route exists this checkpoint; Problem Department's live counts are served as part of
+// GET /api/mission-control (MissionControlView.problemDepartment, §3) instead.
 
 // GET /api/problem-department
 // 200 -> ProblemDepartmentOverview (§3). Zero-Investigation case: investigations: [],
@@ -286,28 +390,24 @@ change (Constraint, Interview #4).
 // src/services/getMissionControlView.ts
 export async function getMissionControlView(): Promise<MissionControlView>;
 
-// src/services/getDepartmentsView.ts
-export async function getDepartmentsView(): Promise<DepartmentsView>;
-
 // src/services/getProblemDepartmentOverview.ts
 export async function getProblemDepartmentOverview(): Promise<ProblemDepartmentOverview>;
 ```
 
-No parameters on any of the three — Checkpoint 1 has exactly one installed Department and no
-per-Department parameterization is needed yet (`getProblemDepartmentOverview` is hard-scoped to
-Problem Department internally, matching this checkpoint’s "exactly one Department has a working
-service layer" assumption). Adding a `departmentId` parameter ahead of a second Department existing
-would be speculative generality with no current caller — not introduced here.
+`getDepartmentsView` is REMOVED (§0a) — not part of this checkpoint's service layer.
+
+No parameters on either of the two remaining services — Checkpoint 1 has exactly one installed
+Department and no per-Department parameterization is needed yet (`getProblemDepartmentOverview` is
+hard-scoped to Problem Department internally, matching this checkpoint’s "exactly one Department has
+a working service layer" assumption). Adding a `departmentId` parameter ahead of a second Department
+existing would be speculative generality with no current caller — not introduced here.
 
 ### 5.3 Backing SQL — exact shape per read model
 
-**`getDepartmentsView`** — no query at all. It returns `departmentRegistry`'s static list
-(`DEPARTMENTS`, below) as-is, mapped 1:1 into `DepartmentSummary[]`. Only Problem Department's
-`status` is `installed`; the other three are always `planned` literals (§7 "Department tile
-installed/planned status ... NOT a persisted domain fact"). `DepartmentSummary` carries no counts
-(US-2 AC1: name/thesis/status only), so there is nothing here for a database check to compute —
-the `getDepartmentsView` row in §2 previously implied an `investigation`-level existence/count
-check; that implication is removed as unnecessary (no AC requires it).
+**`getDepartmentsView`** — REMOVED (§0a). This checkpoint no longer serves a Departments
+catalog in any form; `departmentRegistry` below is retained only as the source of Problem
+Department's `id`/`name`/`thesis` for `MissionControlView.problemDepartment` and
+`ProblemDepartmentOverview.department`.
 
 `departmentRegistry`:
 
@@ -340,10 +440,22 @@ runtime while still type-checking and passing any mocked test.
 
 **`getMissionControlView`** — the following independent queries (queries 2/3/4/5 are each an
 independent DB-level filter over `activeWork`'s four groups; no post-hoc dedup or client-side
-bucketing across groups is used — see the mutual-exclusivity proof below the query list):
+bucketing across groups is used — see the mutual-exclusivity proof below the query list). Query 1
+below is new relative to the pre-correction design (§0a) — it replaces the old, no-query
+`departmentRegistry` catalog read with the one real COUNT this checkpoint now needs for
+`problemDepartment.investigationCount`. `problemDepartment.activeCount`,
+`.needsAttentionCount`, and `.recentCompletedCount` are NOT separate queries — they are the
+`.length` of the result arrays queries 2, 4, and 5 already produce for `activeWork`, computed in
+`getMissionControlView`'s TypeScript after those queries run, per Danny's "these are NOT new
+queries, they're `.length` of arrays this view already assembles" instruction:
 
 ```sql
--- 1. departments — from departmentRegistry, no query.
+-- 1. problemDepartment.investigationCount — number. POST-CORRECTION (§0a): real COUNT(*), replacing
+-- the old no-query departmentRegistry catalog read. Scoped "to this Department's Investigations"
+-- (same single-Department-today equivalence already used for getProblemDepartmentOverview's
+-- sourceCount/evidenceCount below, §5.3 — no department_id column exists on investigation to scope
+-- by, §7).
+SELECT COUNT(*)::int AS count FROM investigation;
 
 -- 2. activeWork.active — InvestigationSummary[]. Danny's correction, overruling a prior fix round
 -- that had widened this query to also include a brand-new status='open' Investigation with ZERO
@@ -680,45 +792,66 @@ SELECT id, investigation_id, runtime_identifier, outcome, started_at, completed_
 
 ## 6. React SPA — Route Structure and Component Boundaries
 
-The three screen routes below match `DESIGN-PROPOSAL.md` §1's Checkpoint-1 subset exactly — no
-fourth route and no client-side placeholder for the out-of-scope Screen D. Per Danny's correction,
-any link that would previously have pointed at a Screen-D placeholder (e.g. the "last-active
-Investigation" link on `ProblemDepartmentScreen`, §UI Spec Screen C) instead does a real, full-page
-navigation — a plain `<a href="/investigations/{id}">`, not a React Router `<Link>` — to the
-EXISTING legacy Express route `GET /investigations/:id` (`src/web/server.ts:115-158`), labeled as
-the current view. That leaves the SPA entirely and hits the already-working server-rendered screen
-(`src/web/views.ts`'s `renderInvestigationGeneratingScreen`/`renderInvestigationBlockedScreen`/
+The two screen routes below reflect Danny's product-gate correction (§0a) — the pre-correction
+design had three routes including `/departments`; that intermediate catalog route is removed
+entirely, not redirected or stubbed. No third route and no client-side placeholder for the
+out-of-scope Screen D. **Routing decision (§0a, option (a) selected):** Mission Control links
+directly to `/departments/problem-department` — the URL itself is UNCHANGED from the pre-correction
+design; only the intermediate `/departments` directory screen is removed as a real, linked-to
+destination. This is the smallest correct change given Danny's ruling is about information
+architecture/labeling/navigation (which screens exist and what the nav links to), not about the URL
+scheme for Problem Department, which was already correct. Option (b) — restructuring the URL itself
+(e.g. `/problem-department`) — was considered and rejected: it would touch every existing reference
+to `/departments/problem-department` (§7 catch-all guard, §10 integration, the UI spec, the legacy
+`/investigations/:id` cross-link context) for no requirement gain, since nothing in Danny's ruling
+objects to the URL shape. The `/departments` route itself is not kept as a redirect either — Danny's
+ruling item 4 ("do not use 'Departments' as an installation-management destination") is most
+directly satisfied by that destination not existing at all this checkpoint, rather than existing
+as a redirect stub that itself needs a description and a "why does this still exist" answer later.
+
+Per Danny's separate correction (US-4), any link that would previously have pointed at a Screen-D
+placeholder (e.g. the "last-active Investigation" link on `ProblemDepartmentScreen`, §UI Spec
+Screen C) instead does a real, full-page navigation — a plain `<a href="/investigations/{id}">`,
+not a React Router `<Link>` — to the EXISTING legacy Express route `GET /investigations/:id`
+(`src/web/server.ts:115-158`), labeled as the current view. That leaves the SPA entirely and hits
+the already-working server-rendered screen (`src/web/views.ts`'s
+`renderInvestigationGeneratingScreen`/`renderInvestigationBlockedScreen`/
 `renderInvestigationGenerationFailedScreen`, or the `brief-generated` 501 stub) rather than a
 purpose-built placeholder announcing its own future replacement:
 
 | Route | Component | Data source |
 |---|---|---|
 | `/` | `MissionControlScreen` | `GET /api/mission-control` on mount, one fetch, no polling (no live-update requirement this checkpoint) |
-| `/departments` | `DepartmentsScreen` | `GET /api/departments` on mount |
 | `/departments/problem-department` | `ProblemDepartmentScreen` | `GET /api/problem-department` on mount; re-fetches after a successful `StartInvestigationForm` submission (US-5 AC2 — "next load/refresh") |
-No route exists for `/departments/:otherDepartmentSlug` — `DepartmentsScreen` renders no click
-target for `planned` Departments (US-2 AC2), so no navigation path ever reaches an undefined route;
-this matches the Edge Cases table's explicit "no route is defined for one" resolution.
+
+`/departments` (bare, no sub-path) is REMOVED (§0a) — not a route in the SPA's router at all, and
+`GET /api/departments` does not exist server-side either (§5.1). No route exists for
+`/departments/:otherDepartmentSlug` either — no Department other than Problem Department has a
+working overview this checkpoint, and no navigation path anywhere in the app (nav, or the removed
+catalog screen) ever produces a link to one; this matches the Edge Cases table's "no route is
+defined for one" resolution, now with no intermediate catalog screen to have omitted a click target
+from in the first place.
 
 No client-side route exists for `/departments/problem-department/investigations/*` either — there
 is no React-side destination for that URL shape. The "last-active Investigation" link is a plain
 anchor tag, not a `Route`/`Link`, so it is not part of the router's route table at all (§App's
-router description above lists exactly three `<Route>` elements, no catch-all).
+router description above lists exactly two `<Route>` elements, no catch-all).
 
 Client-side data fetching uses plain `fetch` via `apiClient` (`src/client/api.ts`) and React's
 built-in `useEffect`/`useState` — no state-management library is added (none exists in the repo
-today; introducing one for three single-fetch screens with no cross-screen shared state would be
+today; introducing one for two single-fetch screens with no cross-screen shared state would be
 an unjustified dependency, see §8).
 
 ```typescript
 // src/client/api.ts
 export async function fetchMissionControl(): Promise<MissionControlView>;
-export async function fetchDepartments(): Promise<DepartmentsView>;
 export async function fetchProblemDepartmentOverview(): Promise<ProblemDepartmentOverview>;
 export async function createInvestigation(
   body: CreateInvestigationRequestBody,
 ): Promise<CreateInvestigationResponseBody>;
 ```
+
+`fetchDepartments` is REMOVED (§0a) along with `getDepartmentsView`/`GET /api/departments`.
 
 ```typescript
 // src/client/screens/ProblemDepartmentScreen.tsx — component props/state shape
@@ -741,8 +874,9 @@ interface StartInvestigationFormProps {
 }
 ```
 
-`MissionControlScreen` renders `activeWork.active`/`readyNotStarted`/`needsAttention`/`recentCompleted`
-as four visually distinct, independently-labeled lists (US-6 AC1-3, plus the new Ready/Not-Started
+`MissionControlScreen` renders a single `ProblemDepartmentCard` (§2, §0a) above
+`activeWork.active`/`readyNotStarted`/`needsAttention`/`recentCompleted`, which remain rendered as
+four visually distinct, independently-labeled lists (US-6 AC1-3, plus the new Ready/Not-Started
 group per Danny's correction) — never merged into one list with a computed tag, since the
 requirement is that the groups are "never confused," which a shared render path with a badge would
 risk; four sibling sections is the more literal satisfaction of the AC.
@@ -813,7 +947,7 @@ not a generic placeholder.
 - **Production integration**: unchanged Express app serves `src/web/public/`'s built
   `index.html`/JS/CSS bundle via the existing `express.static` middleware — already mounted, no new
   middleware needed for static serving. A catch-all route (`app.get('*', ...)`) serves `index.html`
-  for any of the client-side routes (the three screen routes, §6) on a hard
+  for any of the client-side routes (the two screen routes, §6, post-correction §0a) on a hard
   page load/refresh, enabling client-side routing to
   resolve `/departments/problem-department` directly. Its guard condition, explicit and binding:
   registered LAST, strictly AFTER the existing `/investigations/*` routes, `express.static`, and
@@ -853,10 +987,10 @@ not a generic placeholder.
 
 | Pattern | Usage | Rationale |
 |---|---|---|
-| Read model = one query function returning one typed interface, no ORM | All three `get*View` services | Matches existing `getInvestigation.ts`'s direct-`pg`-query pattern exactly — no new data-access abstraction introduced for 3 more read paths |
+| Read model = one query function returning one typed interface, no ORM | Both `get*View` services (§0a: two, not three) | Matches existing `getInvestigation.ts`'s direct-`pg`-query pattern exactly — no new data-access abstraction introduced for 2 more read paths |
 | Shared SQL fragment via exported string constant, not a view/materialized view | `LAST_ACTIVITY_SUBQUERY` | No new database object — Constraint "no new database table, migration, or schema change," and a plain parameterizable SQL fragment is joinable inline without a migration |
 | Static config array for `Department`, not a table | `departmentRegistry` | `DESIGN-PROPOSAL.md` §7/§15: Department's persisted-vs-static home is an explicitly deferred open question; a static array satisfies this checkpoint without preempting that later decision |
-| Plain `fetch` + `useEffect`/`useState`, no state-management library | All 3 screens | Each screen does exactly one fetch on mount with no cross-screen shared state; a store (Redux/Zustand/etc.) would be unjustified generality for 3 read-only page loads |
+| Plain `fetch` + `useEffect`/`useState`, no state-management library | Both screens (§0a: two, not three) | Each screen does exactly one fetch on mount with no cross-screen shared state; a store (Redux/Zustand/etc.) would be unjustified generality for 2 read-only page loads |
 | Client-side filter/sort over a fully-fetched list, no server round trip per filter change | `InvestigationPortfolioTable` | Portfolio is already fetched whole (no pagination this checkpoint, §3); filtering server-side would add a round trip with no data-volume justification at this checkpoint's scale |
 
 ### Anti-Patterns (Do Not Use)
@@ -881,7 +1015,7 @@ not a generic placeholder.
 |---|---|---|
 | `react` | ^18.3.1 | SPA UI library — not currently in `package.json` |
 | `react-dom` | ^18.3.1 | React DOM renderer |
-| `react-router-dom` | ^6.26.0 | Client-side route matching for the three screen routes (§6) |
+| `react-router-dom` | ^6.26.0 | Client-side route matching for the two screen routes (§6, post-correction §0a) |
 | `vite` | ^5.4.0 | Dev server + production bundler, per this checkpoint’s design decision |
 | `@vitejs/plugin-react` | ^4.3.0 | JSX/Fast-Refresh support for Vite |
 | `@types/react` | ^18.3.0 | TypeScript types |
@@ -910,7 +1044,7 @@ dependency needed since `vitest` already supports a `jsdom` environment per-file
   `transitionInvestigationStatus.ts`**: called by the new `POST /api/investigations` handler with
   identical signatures to their existing call sites in `server.ts:64-91` — zero changes to these
   files (US-5 AC1, Constraint "no change to any Slices 1-9 service").
-- **`src/db/pool.ts`**: the three new `get*View` services import and query the existing `pool`
+- **`src/db/pool.ts`**: the two new `get*View` services (§0a) import and query the existing `pool`
   export, same as `getInvestigation.ts` does — no new connection/pool setup.
 - **`src/db/migrate.ts` / `src/db/migrations/`**: NOT touched. No new migration file is added this
   checkpoint (Constraint — additive read-only queries over existing tables only). If a future
@@ -929,24 +1063,25 @@ dependency needed since `vitest` already supports a `jsdom` environment per-file
 
 | Requirement | Architecture element |
 |---|---|
-| US-1 (Mission Control) — see 01-REQUIREMENTS.md's US-1 Acceptance Criteria for the full list | `getMissionControlView`, `MissionControlView`/`GenerationRunSummary` (§3), `MissionControlScreen` (§6), `DEPARTMENTS` registry (§5.3) |
-| US-2 (Departments directory) — see 01-REQUIREMENTS.md's US-2 Acceptance Criteria for the full list | `getDepartmentsView`, `DepartmentsView`, `DepartmentsScreen`, click-target-omission pattern (§6) |
-| US-3 (Problem Department overview) — see 01-REQUIREMENTS.md's US-3 Acceptance Criteria for the full list | `getProblemDepartmentOverview`, `ProblemDepartmentOverview`, `ProblemDepartmentScreen`, `InvestigationPortfolioTable`, `InvestigationPortfolioEmptyState`, source/evidence COUNT queries (§5.3) |
+| US-1 (Mission Control) — see 01-REQUIREMENTS.md's US-1 Acceptance Criteria for the full list, POST-CORRECTION per §0a (superseded ACs to be revised by @requirements-analyst) | `getMissionControlView`, `MissionControlView`/`MissionControlProblemDepartmentSummary`/`GenerationRunSummary` (§3), `MissionControlScreen`, `ProblemDepartmentCard` (§2/§6), `DEPARTMENTS` registry (§5.3) |
+| US-2 (Departments directory) — RETIRED this checkpoint (§0a). The Departments-directory screen, its service, route, and click-target-omission pattern no longer exist; `01-REQUIREMENTS.md` is revised to remove or fully re-scope US-2 to match. No architecture element below implements it. | n/a — removed |
+| US-3 (Problem Department overview) — see 01-REQUIREMENTS.md's US-3 Acceptance Criteria for the full list | `getProblemDepartmentOverview`, `ProblemDepartmentOverview`, `ProblemDepartmentScreen`, `InvestigationPortfolioTable`, `InvestigationPortfolioEmptyState`, source/evidence COUNT queries (§5.3), now reached via a one-hop link from `ProblemDepartmentCard` on Mission Control (§0a) instead of the removed two-hop Departments-directory path |
 | US-4 (last recorded activity) — see 01-REQUIREMENTS.md's US-4 Acceptance Criteria for the full list | `LAST_ACTIVITY_SUBQUERY` (§4), shared import across both services (§2) |
 | US-5 (Start Investigation) — see 01-REQUIREMENTS.md's US-5 Acceptance Criteria for the full list | `POST /api/investigations` (§5.1), `StartInvestigationForm`, post-submit refetch (§6) |
 | US-6 (active-work grouping) — see 01-REQUIREMENTS.md's US-6 Acceptance Criteria for the full list | Queries 2/3/4/5 in `getMissionControlView` (§5.3), four independent result sets, `MissionControlView.activeWork` shape (§3) |
 | US-7 (persistent cross-screen navigation) — see 01-REQUIREMENTS.md's US-7 Acceptance Criteria for the full list | `PersistentNav` component (§2) |
 
-Every Edge Case in `01-REQUIREMENTS.md` is addressed: zero-Investigation empty state (§6),
-no-click-target for planned Departments (§6), `GREATEST`-degrades-to-`created_at` (§4), unset
-`statusReason` (optional field, `?` on `InvestigationSummary.statusReason`, never a placeholder),
-deterministic tie-break (every `ORDER BY` in §5.3 that sorts on a non-unique column — recency
-timestamp or `created_at` — now carries an explicit secondary key on that table's primary key
-column, e.g. `ORDER BY la.last_activity_at DESC, i.id ASC`; Postgres provides no ordering guarantee
-for ties on the primary sort key alone, so this secondary key is required, not optional, to satisfy
-the AC's determinism requirement), empty
-Departments-view degrades to zero counts/empty arrays (§5.1's 200-with-empty-shape contract), and
-the no-route-for-other-Departments case (§6, no route table entry exists).
+Every Edge Case in `01-REQUIREMENTS.md` not retired by §0a is addressed: zero-Investigation
+empty state (§6), `GREATEST`-degrades-to-`created_at` (§4), unset `statusReason` (optional field,
+`?` on `InvestigationSummary.statusReason`, never a placeholder), deterministic tie-break (every
+`ORDER BY` in §5.3 that sorts on a non-unique column — recency timestamp or `created_at` — now
+carries an explicit secondary key on that table's primary key column, e.g. `ORDER BY
+la.last_activity_at DESC, i.id ASC`; Postgres provides no ordering guarantee for ties on the primary
+sort key alone, so this secondary key is required, not optional, to satisfy the AC's determinism
+requirement), and empty-data degrades to zero counts/empty arrays for both remaining read models
+(§5.1's 200-with-empty-shape contract). RETIRED by §0a, no longer applicable: "no-click-target for
+planned Departments" and "no-route-for-other-Departments" — both were properties of the removed
+Departments-directory screen; `01-REQUIREMENTS.md`'s Edge Cases table is revised to drop them.
 
 ---
 
@@ -955,3 +1090,9 @@ the no-route-for-other-Departments case (§6, no route table entry exists).
 1. No pagination/page-size limit exists anywhere in this design (§3's PROVISIONAL note) — flagged
    in case Danny wants one for a larger dataset than local dev currently has; not added without a
    named owner and citation.
+2. `departmentRegistry`/`DEPARTMENTS` (§5.3) still lists Signal Foundry, Prototype Department, and
+   Creative Practice Engine as `planned` literals, even though nothing this checkpoint reads them
+   (§0a). They are left in place as the natural seed for the deferred "future Departments view" and
+   "Settings / Add Department" surfaces Danny's ruling named, rather than deleted and re-authored
+   later — flagged in case Danny would rather this file only contain Problem Department until a
+   Departments/Settings checkpoint is actually scoped.
