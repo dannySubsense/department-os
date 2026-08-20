@@ -14,11 +14,13 @@ import {
   type SubmissionFormRow,
   type InvestigationSourceForDisplay,
 } from './views.js';
+import { apiRoutes } from './apiRoutes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export const app = express();
 app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Submission Screen (03-UI-SPEC.md "Screen: Submission Screen")
@@ -155,6 +157,28 @@ app.get('/investigations/:id', async (req, res) => {
     }
     res.status(500).send('Internal server error.');
   }
+});
+
+// New JSON API routes (§5.1) — mounted after the existing `/investigations/*` HTML routes.
+app.use(apiRoutes);
+
+// Production-only static catch-all: serves the built SPA's index.html for any client-side route
+// (§7, §10). Registered LAST, strictly after the existing `/investigations/*` routes,
+// `express.static`, and `/api/*` — Express matches in registration order, so any earlier match
+// (including every real `/api/*` path) is handled there and never reaches this handler. An
+// unmatched `/api/*` path (typo'd/removed route) must 404 as JSON, not silently serve HTML.
+app.get('*', (req, res) => {
+  if (req.path.startsWith('/api/')) {
+    res.status(404).json({ error: 'not-found' });
+    return;
+  }
+  res.sendFile(path.join(__dirname, 'public', 'index.html'), (err) => {
+    if (err) {
+      res
+        .status(404)
+        .send('Built client bundle not found — run `npm run build` (or `npm run dev:client`).');
+    }
+  });
 });
 
 function normalizeToArray(value: unknown): string[] {

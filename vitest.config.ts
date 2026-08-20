@@ -3,7 +3,12 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['src/**/*.test.ts'],
+    // Slice 1 (Mission Control Shell) introduces React component tests under src/client/ — those
+    // need a DOM (jsdom), while every other test in the repo is a real-Postgres integration test
+    // that must stay on the 'node' environment. environmentMatchGlobs scopes jsdom to src/client/
+    // only, matching Vitest's documented per-file-pattern environment override.
+    environmentMatchGlobs: [['src/client/**', 'jsdom']],
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
     testTimeout: 15000,
     // Test files share one real Postgres instance (DDR-0001) and each test's `beforeEach`
     // does `TRUNCATE ... CASCADE` against tables another file's in-flight transaction may
