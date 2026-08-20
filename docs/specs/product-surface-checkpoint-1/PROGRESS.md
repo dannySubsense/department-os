@@ -18,9 +18,21 @@ Per Danny's explicit instruction (2026-08-20): stop after Slice 1's Forge checks
 demonstration for his product review. Do not proceed to Slice 2 without his go-ahead.
 
 ## Current
-Slice: 2 QC PASS (9/9 axes), proceeding to commit + browser demonstration
-Step: @github-ops → browser demo
+Slice: 2 committed (b98a664). Browser demonstration surfaced one more real defect (missing CSS)
+not caught by code-level QC — fixed, rebuilt, re-verified live. Awaiting Danny's re-review.
+Step: none — stopped for Danny's product review per his instruction
 Last updated: 2026-08-20
+
+## Browser demonstration found a real defect QC's code review missed
+ProblemDepartmentCard.tsx (Slice 1's original implementation) used classNames
+(problem-department-card*) that had ZERO matching rules in styles.css — the whole card rendered
+as unstyled default-blue underlined link text in the actual browser, even though QC's code-level
+review (checking CSS token reuse claims) passed it. Only caught because the browser demonstration
+requirement forces an actual rendered screenshot, not code inspection. Fixed with a scoped CSS-only
+addition reusing existing tokens/patterns (`.work-group` card treatment, `.screen__title` heading
+weight, `.active-work-groups` grid layout, `--color-active` for the affordance). Rebuilt, restarted,
+re-screenshotted — genuinely styled now. This fix is UNCOMMITTED as of this note — needs its own
+commit before session close.
 
 ## Slices
 - [x] Slice 1: Mission Control Shell — COMPLETE (corrected, human product-gate PASS pending re-demo)
