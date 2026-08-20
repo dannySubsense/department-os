@@ -382,7 +382,21 @@ SELECT i.id, i.status, i.status_reason, i.created_at, la.last_activity_at
  ORDER BY la.last_activity_at DESC, i.id ASC;
 
 -- 5. activeWork.recentCompleted — InvestigationSummary[], deduplicated to one row per investigation.
--- Unchanged by this correction (query logic identical to the prior round's query 4).
+-- CORRECTED (Frank narrow re-gate, correction 1): the prior "unchanged by this correction" version
+-- of this query overlapped with query 4 (Needs Attention) for every 'generation-failed'
+-- Investigation whose failed pipeline run left a `generation_run` row with `outcome = 'failed'` —
+-- which is not a hypothetical edge case but the NORMAL state of every real failed investigation in
+-- this system. `src/types/domain.ts:370` defines
+-- `GenerationRun.outcome: 'in-progress' | 'succeeded' | 'failed'`, and
+-- `src/services/generateBriefVersion.test.ts`'s failure-path tests (e.g. the "given no valid
+-- ProblemStatement can be established" case, and the "falsification test H: retry from
+-- generation-failed" case) show the standard path is: a `generation_run` row is created with
+-- `outcome: 'in-progress'`, then updated to `outcome: 'failed'` on failure, with
+-- `Investigation.status` set to `'generation-failed'` in the same transaction. So a
+-- `generation-failed` Investigation with a `failed` (non-in-progress) `generation_run` row is the
+-- ordinary case, not an inherited unresolved edge case — this query now excludes it explicitly so
+-- Needs Attention (query 4) has undisputed precedence for `blocked`/`generation-failed` statuses,
+-- and Recent/Completed only claims investigations query 4 does not already claim.
 --
 -- DECLARED DEVIATION from DESIGN-PROPOSAL.md §2a: §2a's Recent/Completed row specifies ordering
 -- by `GREATEST(generation_run.completed_at, investigation.created_at)` computed inline for this
@@ -399,7 +413,8 @@ SELECT i.id, i.status, i.status_reason, i.created_at, la.last_activity_at
 SELECT i.id, i.status, i.status_reason, i.created_at, la.last_activity_at
   FROM investigation i
   JOIN (${LAST_ACTIVITY_SUBQUERY}) la ON la.investigation_id = i.id
- WHERE NOT EXISTS (
+ WHERE i.status NOT IN ('blocked', 'generation-failed')
+   AND NOT EXISTS (
      SELECT 1 FROM generation_run gr
       WHERE gr.investigation_id = i.id AND gr.outcome = 'in-progress'
    )
@@ -448,9 +463,32 @@ exactly one of the four `InvestigationStatus` values: `open`, `blocked`, `genera
 - **Active (query 2)** := `P`.
 - **Ready/Not Started (query 3)** := `status = 'open' AND NOT R`.
 - **Needs Attention (query 4)** := `status IN ('blocked', 'generation-failed') AND NOT P`.
-- **Recent/Completed (query 5)** := `NOT P AND (status = 'brief-generated' OR (R AND NOT P))` —
-  i.e. `NOT P AND (status = 'brief-generated' OR R)`, since the inner clause's `NOT P` is already
-  implied by the outer `NOT P`.
+- **Recent/Completed (query 5, CORRECTED)** := `status NOT IN ('blocked', 'generation-failed') AND
+  NOT P AND (status = 'brief-generated' OR R)`. The added `status NOT IN ('blocked',
+  'generation-failed')` term is the fix for the overlap identified below; it gives Needs Attention
+  undisputed precedence over Recent/Completed for those two statuses regardless of what
+  `generation_run` rows exist.
+
+**Why the added exclusion is necessary, not defensive-only** (this replaces the prior version's
+deferred "a future correction should confirm..." hand-wave with direct evidence from this repo):
+`src/types/domain.ts:370` defines `GenerationRun.outcome: 'in-progress' | 'succeeded' | 'failed'`.
+`src/services/generateBriefVersion.test.ts`'s failure-path tests — e.g. "given no valid
+ProblemStatement can be established, the run fails explicitly... Investigation.status becomes
+generation-failed" (asserting `investigation.rows[0].status === 'generation-failed'`), and
+"falsification test H: an Investigation in generation-failed that succeeds on retry" (asserting
+`runs.rows[0].outcome === 'failed'` after a failed run, at the point the Investigation sits in
+`generation-failed`) — show that the standard, non-exceptional failure path is: a `generation_run`
+row is created with `outcome: 'in-progress'`, then updated to `outcome: 'failed'` in the same
+transaction that sets `Investigation.status = 'generation-failed'`. So `generation-failed AND R`
+(in fact `generation-failed AND EXISTS run WHERE outcome = 'failed'`, a strictly stronger condition
+than `R`) is not an edge case to "confirm in practice" — it is the state of every real failed
+investigation in this system, by construction of `generateBriefVersion.ts`'s failure path. Without
+the added exclusion, every `generation-failed` Investigation would appear in BOTH Needs Attention
+(query 4, `status IN (...) AND NOT P` — true, since a `failed` run means `P` is false) and
+Recent/Completed (query 5 unmodified, `NOT P AND (... OR R)` — true, since `R` is true). The added
+`status NOT IN ('blocked', 'generation-failed')` term on query 5 closes this by construction: no
+`generation-failed` or `blocked` Investigation can ever satisfy query 5's predicate, full stop,
+independent of what `generation_run` rows it has.
 
 Case split on `P`:
 - **`P` = true**: matches Active only. It cannot match Ready/Not Started (`R` is implied true by
@@ -460,30 +498,67 @@ Case split on `P`:
   `status` and `R`:
   - Ready/Not Started requires `status = 'open' AND NOT R`.
   - Needs Attention requires `status IN ('blocked', 'generation-failed')`.
-  - Recent/Completed requires `status = 'brief-generated' OR R`.
-  - `status = 'open'` is disjoint from `status IN ('blocked', 'generation-failed')` and from
-    `status = 'brief-generated'` (the four enum values are mutually exclusive) — so an `open`,
-    `P`-false Investigation can only match Ready/Not Started (if `NOT R`) or Recent/Completed
-    (if `R`, since `R` alone satisfies Recent/Completed's `OR` when `status ≠ 'brief-generated'`),
-    and `NOT R`/`R` are themselves mutually exclusive, so never both.
-  - A `blocked`/`generation-failed` Investigation can only match Needs Attention among the
-    status-gated groups above; it also satisfies Recent/Completed's clause whenever `R` is true
-    (i.e. a `generation-failed` Investigation with a completed/failed run row already exists — a
-    `blocked` Investigation, by definition "zero reachable sources — no Brief can be generated",
-    never reaches a state where a `generation_run` row could exist, so `R` is false for every
-    `blocked` row and no overlap arises there). **`generation-failed AND R` overlapping Needs
-    Attention and Recent/Completed is a pre-existing condition of the unmodified query 4/5 pair,
-    not introduced or resolved by this correction** — flagged here as an inherited open item
-    (Needs Attention and Recent/Completed were explicitly out of scope for this correction, per
-    Danny's ruling) rather than silently asserted as proven; a future correction should confirm
-    whether `generation-failed` investigations can, in practice, ever have a non-in-progress
-    `generation_run` row, and resolve the overlap if so.
-  - A `brief-generated` Investigation can only match Recent/Completed among the status-gated
-    groups (its status excludes Ready/Not Started and Needs Attention outright).
+  - Recent/Completed (corrected) requires `status NOT IN ('blocked', 'generation-failed') AND
+    (status = 'brief-generated' OR R)`.
+  - The four `InvestigationStatus` enum values are mutually exclusive, so every Investigation's
+    `status` falls into exactly one of three disjoint buckets: `{open}`, `{blocked,
+    generation-failed}`, `{brief-generated}`.
+    - `status = 'open'`: fails Needs Attention's `status IN (...)` test and fails Recent/Completed's
+      `status NOT IN (...) AND (status = 'brief-generated' OR R)` unless `R` is true (since
+      `status NOT IN ('blocked', 'generation-failed')` is true for `open`, and `status =
+      'brief-generated'` is false, so Recent/Completed reduces to `R` for this bucket). So an
+      `open`, `P`-false Investigation matches Ready/Not Started iff `NOT R`, and Recent/Completed
+      iff `R` — and `NOT R`/`R` are mutually exclusive, so never both, and always exactly one
+      (`R` is a two-valued boolean with no third state).
+    - `status IN ('blocked', 'generation-failed')`: matches Needs Attention's status test
+      unconditionally (combined with `NOT P`, which holds in this branch). It CANNOT match
+      Recent/Completed, by construction: Recent/Completed's `status NOT IN ('blocked',
+      'generation-failed')` term is false for every member of this bucket, regardless of `R` or any
+      other `generation_run` state. It cannot match Ready/Not Started either (`status ≠ 'open'`).
+      So every `blocked`/`generation-failed`, `P`-false Investigation matches Needs Attention only —
+      no overlap, and no case where it matches zero groups (Needs Attention's only remaining
+      requirement, `NOT P`, is guaranteed by this branch's case split).
+    - `status = 'brief-generated'`: fails Ready/Not Started (`status ≠ 'open'`) and fails Needs
+      Attention (`status` not in `('blocked', 'generation-failed')`). Recent/Completed's
+      `status NOT IN ('blocked', 'generation-failed')` term is true, and its `status =
+      'brief-generated'` disjunct is true, so it matches Recent/Completed unconditionally
+      (independent of `R`). Matches Recent/Completed only.
 
-Every Investigation therefore falls into exactly one of the four groups, with the single named
-exception above (inherited from the unmodified Needs-Attention/Recent-Completed pair, not created
-by this correction) flagged for separate follow-up rather than silently claimed as resolved.
+Every Investigation therefore falls into exactly one of the four groups in every case, with no
+inherited or deferred exception: the `generation-failed`/Recent-Completed overlap previously
+flagged as an open item is closed by the added `status NOT IN ('blocked', 'generation-failed')`
+term on query 5, justified above directly from `src/types/domain.ts:370` and
+`src/services/generateBriefVersion.test.ts`'s failure-path tests rather than deferred to a future
+correction.
+
+**Second boundary checked — does the same precedence issue affect Active vs. Needs Attention, or
+Ready/Not-Started vs. any other boundary?** No; both are already closed by construction, for a
+different reason than query 5's fix:
+- **Active vs. Needs Attention**: could a `blocked` Investigation ever have an in-progress
+  `generation_run` row (making it match both Active's `P` and Needs Attention's `status IN (...)`)?
+  No. Per `src/services/transitionInvestigationStatus.ts`, `ALLOWED_PRIOR_STATUSES` only permits
+  `open -> blocked` (line 28: `open: ['blocked']`) — there is no `generation-failed -> blocked` or
+  any other path into `blocked` once a `generation_run` row could exist, and
+  `src/services/generateBriefVersion.ts` (lines 34-35, 205, 242-243) explicitly documents that a
+  concurrently-observed `blocked` row is excluded from `ALLOWED_PRIOR_STATUSES['generation-failed']`
+  precisely because `'blocked' must never be silently overwritten` — i.e. `blocked` is set by
+  `resolveInvestigationSources`'s zero-reachable-sources check (`src/web/server.ts`), a path that
+  runs before `generateBriefVersion` and never creates a `generation_run` row at all (matching this
+  document's own `domain.ts` comment: `'blocked' // zero reachable sources — no Brief can be
+  generated`). So `R` is false for every `blocked` Investigation, `P` (which implies `R`) is
+  therefore also always false, and `blocked` can never appear in Active. No fix needed here — this
+  is the same fact the original proof already used to rule out `blocked AND R`, independently
+  re-verified here against `transitionInvestigationStatus.ts` and `generateBriefVersion.ts`, not
+  merely re-asserted.
+- **Ready/Not-Started vs. any other boundary**: Ready/Not Started requires `status = 'open' AND NOT
+  R`; every other group either requires `status ≠ 'open'` (Needs Attention, and Recent/Completed's
+  `brief-generated` disjunct) or requires `R`/`P` (Active, and Recent/Completed's `R` disjunct for
+  the `open` bucket) — so by the case analysis above, `open AND NOT R` cannot satisfy any other
+  group's predicate. No fix needed here either.
+
+The single defect requiring a fix was the query 4/5 (Needs Attention/Recent-Completed) overlap;
+Active/Needs-Attention and Ready-Not-Started's boundaries were already sound and did not need
+correction.
 
 
 Queries 2/3/4/5 are run independently against the database (four separate round trips or four CTEs

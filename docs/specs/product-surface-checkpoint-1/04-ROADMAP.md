@@ -77,7 +77,7 @@ screen needs).
 
 ### Slice 1: Mission Control Shell (Full Data)
 
-**Goal:** PRODUCT CHANGE — Danny runs the dev server, loads `/` in a browser, and sees a real
+**Goal:** PRODUCT CHANGE: Danny runs the dev server, loads `/` in a browser, and sees a real
 Mission Control screen carrying Department OS's actual visual identity (per `03-UI-SPEC.md`'s
 binding Visual Direction section: two-family typography, the restrained neutral-plus-semantic-
 accent palette, hairline section delineation, the persistent left-nav shell) — not a bare unstyled
@@ -109,7 +109,7 @@ local dev database has no matching rows, never fabricated.
   sketch (explicit `root` via `path.dirname(fileURLToPath(import.meta.url))`, matching the existing
   `src/db/migrate.ts` pattern; `outDir` resolves to `../web/public`)
 - `src/client/components/PersistentNav.tsx` — create (two `NavLink`s — "Mission Control" → `/`,
-  "Departments" → `/departments" — per `02-ARCHITECTURE.md` §2, US-7; styled per `03-UI-SPEC.md`
+  "Departments" → `/departments` — per `02-ARCHITECTURE.md` §2, US-7; styled per `03-UI-SPEC.md`
   Visual Direction as a fixed-width left column sharing the shell's typography/spacing/palette)
 - `src/client/screens/MissionControlScreen.tsx` — create (Installed Departments strip, four
   Active-work group sections, activity panel, three recent lists, planned-Departments note, per
@@ -149,6 +149,11 @@ local dev database has no matching rows, never fabricated.
       `active`).
 - [ ] `getMissionControlView`: integration test — given a real, persisted Investigation row with an
       in-progress `GenerationRun`, then it appears in `activeWork.active` only (US-6 AC1).
+- [ ] `getMissionControlView`: integration test — given a real, persisted Investigation row with
+      `status = 'generation-failed'` and a `GenerationRun` row with `outcome = 'failed'`, then it
+      appears in `activeWork.needsAttention` only and is absent from `active`, `readyNotStarted`,
+      and `recentCompleted` (§5.3 query 5 correction, mutual-exclusivity proof's `generation-failed`
+      bucket).
 - [ ] `LAST_ACTIVITY_SUBQUERY`: test that an Investigation with no `GenerationRun`/`GenerationStep`/
       `BriefVersion` rows resolves `last_activity_at` to `investigation.created_at` (Edge Cases
       table row 3).
@@ -196,7 +201,7 @@ local dev database has no matching rows, never fabricated.
 
 ### Slice 2: Departments Directory Screen
 
-**Goal:** PRODUCT CHANGE — Danny clicks "Departments" in the persistent nav (or loads
+**Goal:** PRODUCT CHANGE: Danny clicks "Departments" in the persistent nav (or loads
 `/departments` directly) and sees all four Departments listed with name, thesis, and an honest
 installed/planned status, with only Problem Department's row clickable, taking him into
 `/departments/problem-department` (US-2 — see `01-REQUIREMENTS.md`'s US-2 Acceptance Criteria).
@@ -247,7 +252,7 @@ installed/planned status, with only Problem Department's row clickable, taking h
 
 ### Slice 3: Problem Department Overview Screen
 
-**Goal:** PRODUCT CHANGE — Danny clicks into Problem Department from the Departments directory and
+**Goal:** PRODUCT CHANGE: Danny clicks into Problem Department from the Departments directory and
 sees the Department header, the full Investigation portfolio (row-for-row matching
 `investigation`), Sources/Evidence counts, recent Runs/Activity, and a working "Start Investigation"
 form that creates a real Investigation and refreshes the portfolio in the browser — plus a working

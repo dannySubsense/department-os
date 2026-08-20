@@ -162,6 +162,17 @@ work yet.
   of the four `activeWork` groups (Active, Ready/Not Started, Needs Attention, Recent/Completed) —
   the four groups are mutually exclusive and, together, exhaustive over every `InvestigationStatus`
   value and every `GenerationRun` state.
+- [ ] Given a `generation-failed` Investigation whose `generation_run` row has `outcome = 'failed'`
+  (the normal, non-exceptional state of every real failed investigation, per
+  `src/types/domain.ts:370`'s `GenerationRun.outcome` enum and
+  `src/services/generateBriefVersion.test.ts`'s failure-path tests, which show a `generation_run`
+  row is created with `outcome: 'in-progress'` then updated to `outcome: 'failed'` in the same
+  transaction that sets `Investigation.status = 'generation-failed'`), then it appears in "Needs
+  Attention" ONLY, never in "Recent/Completed" — the presence of a non-in-progress (i.e. `failed`)
+  `GenerationRun` row does not pull it into "Recent/Completed," even though "Recent/Completed"
+  would otherwise match on "has a `GenerationRun` whose `outcome` is not `in-progress`." "Needs
+  Attention" has undisputed precedence for both `blocked` and `generation-failed` statuses,
+  independent of what `GenerationRun` rows exist for that Investigation.
 
 **US-7 (Persistent cross-screen navigation)**
 - [ ] Given any of the three Checkpoint-1 screens (`/`, `/departments`,
@@ -184,6 +195,7 @@ work yet.
 | Investigation has no `GenerationRun`, `GenerationStep`, or `BriefVersion` rows at all | `last_activity_at` equals `investigation.created_at` (every `COALESCE` falls back to it). |
 | Investigation has `statusReason` unset | Portfolio row renders without a `statusReason` field/value — never a placeholder string. |
 | Investigation has `status = 'open'` and zero `GenerationRun` rows at all | Appears in the "Ready/Not Started" group, never "Active" — "Active" requires a real in-progress `GenerationRun` (Danny's correction, US-6). |
+| Investigation has `status = 'generation-failed'` and a `GenerationRun` row with `outcome = 'failed'` (the normal state of every real failed investigation, not a hypothetical) | Appears in "Needs Attention" ONLY, never "Recent/Completed" — "Needs Attention" takes precedence over "Recent/Completed" for `blocked`/`generation-failed` statuses regardless of `GenerationRun` state (US-6, mutual-exclusivity AC). |
 | Two Investigations tie exactly on `last_activity_at` | Any stable, deterministic ordering between them is acceptable — no requirement on tie-break order beyond determinism (not specified further upstream; not a scope gap, since no tie-break rule is specified anywhere in this checkpoint’s design). |
 | `GET /api/mission-control`, `/api/departments`, or `/api/problem-department` is called when the dev database has no `investigation` rows anywhere | Each read model still returns its full documented shape with empty arrays/zero counts — never a 500 or omitted field. |
 | A Department other than Problem Department is requested directly via its (nonexistent) overview route | Out of scope this checkpoint — no Screen C exists for planned Departments; no route is defined for one (per Screen B behavior, no entry link is ever offered). |
