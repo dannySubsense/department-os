@@ -4,10 +4,9 @@
 
 ## Declared Intent
 
-Make Department OS's existing Problem Department MVP backend visible and navigable for the first
-time, through a real Mission Control home screen, an honest Department directory, and a live
-Problem Department investigation portfolio — replacing the current situation where the only way to
-see any of it is one Investigation at a time, with no directory or Department framing at all.
+Make Department OS's Problem Department backend visible and navigable in the browser, through a
+real Mission Control home screen, an honest Department directory, and a live Problem Department
+investigation portfolio.
 
 ## In Scope / Out of Scope
 
