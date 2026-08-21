@@ -1,12 +1,13 @@
 # Sprint North Star: product-surface-checkpoint-1
-**Status**: Locked
-**Date**: 2026-08-19
+**Status**: Revised — pending Danny's personal sign-off before re-lock (identity-tier document,
+never self-approved by the agent)
+**Date**: 2026-08-21 (revised; originally authored 2026-08-19)
 
 ## Declared Intent
 
 Make Department OS's Problem Department backend visible and navigable in the browser, through a
-real Mission Control home screen, an honest Department directory, and a live Problem Department
-investigation portfolio.
+real Mission Control home screen showing Problem Department as the one currently available
+Department, and a live Problem Department investigation portfolio.
 
 ## In Scope / Out of Scope
 
@@ -14,8 +15,10 @@ See `01-REQUIREMENTS.md` Out of Scope for the enumerated boundary; this sprint d
 
 ## Success Criteria (Layer 1 — fidelity)
 
-- Loading `/` in a browser shows a real Mission Control screen: Problem Department marked
-  `installed`, the other three Departments marked `planned` with no fabricated activity or counts.
+- Loading `/` in a browser shows a real Mission Control screen: a single Problem Department card
+  with real live counts (investigation/active/needs-attention/recent-completed), unmistakably
+  actionable (whole card clickable, plus an explicit affordance) — no installed/planned label
+  anywhere, no catalog of other Departments.
 - Clicking into Problem Department shows the real Investigation portfolio, row-for-row matching the
   live local database — no extra rows, no missing rows, no invented fields.
 - No generation-trigger endpoint, no live per-component activity, no Investigation Workspace

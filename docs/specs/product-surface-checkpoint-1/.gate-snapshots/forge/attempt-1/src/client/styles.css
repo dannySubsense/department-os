@@ -1,0 +1,573 @@
+/* Department OS — shared visual language (03-UI-SPEC.md Visual Direction).
+   Established here (Slice 1); Slices 2/3 reuse these tokens rather than inventing new ones. */
+
+:root {
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 16px;
+  --space-4: 24px;
+  --space-5: 32px;
+
+  --color-bg: #0b0d10;
+  --color-surface: #14171b;
+  --color-border: #2a2e34;
+  --color-text: #e6e8eb;
+  --color-text-muted: #8a919c;
+  --color-text-dim: #5b6270;
+
+  --color-installed: #e6e8eb;
+  --color-planned: #5b6270;
+
+  --color-active: #4fa8e8;
+  --color-ready: #8a919c;
+  --color-attention: #e0873c;
+  --color-completed: #4caf82;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'Roboto Mono', monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  min-width: 1280px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.data-value {
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.persistent-nav {
+  flex: 0 0 220px;
+  border-right: 1px solid var(--color-border);
+  padding: var(--space-4) var(--space-3);
+  background: var(--color-surface);
+}
+
+.persistent-nav__brand {
+  font-weight: 600;
+  font-size: 15px;
+  margin-bottom: var(--space-4);
+  letter-spacing: 0.02em;
+}
+
+.persistent-nav__links {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.persistent-nav__link {
+  display: block;
+  padding: var(--space-2) var(--space-2);
+  border-radius: 4px;
+  color: var(--color-text-muted);
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.persistent-nav__link:hover {
+  color: var(--color-text);
+}
+
+.persistent-nav__link--active {
+  color: var(--color-text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-5);
+}
+
+.screen {
+  max-width: 1400px;
+}
+
+.screen__title {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0 0 var(--space-4);
+}
+
+.section {
+  border-top: 1px solid var(--color-border);
+  padding: var(--space-4) 0;
+}
+
+.section:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+
+.section__header {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
+  margin: 0 0 var(--space-3);
+}
+
+.stub-screen {
+  color: var(--color-text-muted);
+  padding: var(--space-4) 0;
+}
+
+.page-loading,
+.page-error {
+  padding: var(--space-4) 0;
+  color: var(--color-text-muted);
+}
+
+.page-error {
+  color: var(--color-attention);
+}
+
+/* Installed Departments strip */
+
+.department-strip {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.department-tile {
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: var(--space-3);
+  min-width: 180px;
+}
+
+.department-tile__name {
+  font-size: 14px;
+  margin-bottom: var(--space-1);
+}
+
+.department-tile--installed .department-tile__name {
+  color: var(--color-text);
+}
+
+.department-tile--planned .department-tile__name {
+  color: var(--color-planned);
+}
+
+.department-tile__status {
+  color: var(--color-text-dim);
+}
+
+.department-tile--installed .department-tile__status {
+  color: var(--color-text-muted);
+}
+
+/* Active work groups */
+
+.active-work-groups {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-3);
+}
+
+.work-group {
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: var(--space-3);
+  background: var(--color-surface);
+}
+
+.work-group__label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 var(--space-2);
+}
+
+.work-group--active .work-group__label {
+  color: var(--color-active);
+}
+
+.work-group--ready .work-group__label {
+  color: var(--color-ready);
+}
+
+.work-group--attention .work-group__label {
+  color: var(--color-attention);
+}
+
+.work-group--completed .work-group__label {
+  color: var(--color-completed);
+}
+
+.work-group__empty {
+  color: var(--color-text-dim);
+  font-size: 13px;
+  margin: 0;
+}
+
+.work-group__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.work-group__row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-1) var(--space-2);
+  border-left: 2px solid transparent;
+}
+
+.work-group__row--active {
+  border-left-color: var(--color-active);
+}
+
+.work-group__row--ready {
+  border-left-color: var(--color-ready);
+}
+
+.work-group__row--attention {
+  border-left-color: var(--color-attention);
+}
+
+.work-group__row--completed {
+  border-left-color: var(--color-completed);
+}
+
+.work-group__row-reason {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.work-group__row-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.work-group__row-label-primary {
+  font-size: 13px;
+}
+
+.work-group__row-label-secondary {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+/* Activity panel */
+
+.activity-panel {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.activity-panel__row {
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.activity-panel__investigation-link {
+  color: var(--color-active);
+  text-decoration: none;
+}
+
+.activity-panel__investigation-id {
+  color: var(--color-text-muted);
+}
+
+/* Legacy-view transitional affordance — deliberately button-styled, not link-styled, to signal
+   a transitional escape hatch to the legacy per-Investigation route rather than an ordinary
+   in-app hyperlink. */
+
+.legacy-view-button {
+  display: inline-block;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: var(--space-1) var(--space-2);
+  background: var(--color-surface);
+  color: var(--color-text);
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.legacy-view-button:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.investigation-portfolio-table__label {
+  font-size: 13px;
+}
+
+.investigation-portfolio-table__id {
+  color: var(--color-text-muted);
+  margin-top: 2px;
+}
+
+.investigation-portfolio-table__legacy-note {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  margin: var(--space-1) 0 0;
+}
+
+.recent-list__label-primary {
+  font-size: 13px;
+}
+
+.recent-list__label-secondary {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.empty-text {
+  color: var(--color-text-dim);
+  font-size: 13px;
+}
+
+/* Recent lists */
+
+.recent-lists {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-3);
+}
+
+.recent-list__label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+  margin: 0 0 var(--space-2);
+}
+
+.recent-list ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.recent-list li {
+  padding: var(--space-1) 0;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 13px;
+}
+
+.recent-list a {
+  color: var(--color-active);
+  text-decoration: none;
+}
+
+.planned-note {
+  color: var(--color-text-muted);
+  font-size: 13px;
+  margin: 0;
+}
+
+/* Problem Department overview screen */
+
+.problem-department-screen__thesis {
+  color: var(--color-text-muted);
+  margin: 0 0 var(--space-2);
+}
+
+.department-status-badge {
+  display: inline-block;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px var(--space-2);
+  border-radius: 4px;
+  border: 1px solid var(--color-border);
+}
+
+.department-status-badge--installed {
+  color: var(--color-installed);
+}
+
+.department-status-badge--planned {
+  color: var(--color-planned);
+}
+
+.investigation-portfolio-table__filter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+.investigation-portfolio-table__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.investigation-portfolio-table__table th {
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.investigation-portfolio-table__table td {
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  font-size: 13px;
+}
+
+.investigation-portfolio-empty-state {
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: var(--space-4);
+  background: var(--color-surface);
+}
+
+.investigation-portfolio-empty-state__copy {
+  color: var(--color-text-muted);
+  margin: 0 0 var(--space-3);
+}
+
+.sources-evidence-counts {
+  display: flex;
+  gap: var(--space-5);
+  margin: 0;
+}
+
+.sources-evidence-counts__item dt {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-1);
+}
+
+.start-investigation-form {
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: var(--space-3);
+  background: var(--color-surface);
+  max-width: 480px;
+}
+
+.start-investigation-form__label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+  margin: 0 0 var(--space-3);
+}
+
+.start-investigation-form__row {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.start-investigation-form__row input {
+  flex: 1;
+}
+
+.start-investigation-form__actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+/* Problem Department card (Mission Control) */
+
+.problem-department-card {
+  display: block;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: var(--space-3);
+  background: var(--color-surface);
+  color: inherit;
+  text-decoration: none;
+}
+
+.problem-department-card__name {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0 0 var(--space-2);
+  color: var(--color-text);
+}
+
+.problem-department-card__thesis {
+  color: var(--color-text-muted);
+  margin: 0 0 var(--space-3);
+}
+
+.problem-department-card__counts {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-3);
+  margin: 0 0 var(--space-3);
+}
+
+.problem-department-card__count dt {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+  margin: 0 0 var(--space-1);
+}
+
+.problem-department-card__count dd {
+  margin: 0;
+}
+
+.problem-department-card__affordance {
+  color: var(--color-active);
+  font-weight: 600;
+}
+
+.start-investigation-form__error {
+  color: var(--color-attention);
+  font-size: 13px;
+  margin-top: var(--space-2);
+}
