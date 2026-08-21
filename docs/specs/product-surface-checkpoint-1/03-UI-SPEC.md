@@ -1,9 +1,11 @@
 # UI Spec: Product Surface — Checkpoint 1
 
 **Status**: REVISED — correcting the human product-gate FAIL on Slice 1's browser demonstration
-(Danny, 2026-08-20). See `02-ARCHITECTURE.md` §0a for the verbatim ruling this revision implements.
-The prior version of this document (approved at `4757c37`) is superseded by this revision, not
-retroactively valid.
+(Danny, 2026-08-20), AND reconciled against the final, already-approved and implemented behavior
+(closeout sweep, 2026-08-21) — including the later removal of the Problem Department header's
+`installed` badge and the per-row, status-driven "Open current view" / "Brief ready" affordance.
+See `02-ARCHITECTURE.md` §0a for the verbatim ruling this revision implements. The prior version of
+this document (approved at `4757c37`) is superseded by this revision, not retroactively valid.
 **Traces to**: `01-REQUIREMENTS.md` (see its User Stories section for the full list, and its
 Acceptance Criteria section for the AC count), `02-ARCHITECTURE.md` (see §0a for the binding
 correction this document implements),
@@ -91,7 +93,8 @@ Two-family split, chosen to fit "evidence-rich, operational":
   alignment. **`ProblemDepartmentCard`'s four live counts** (`investigationCount`, `activeCount`,
   `needsAttentionCount`, `recentCompletedCount`) are data values under this rule — they render in
   the same monospace/semi-monospace register as every other count in this document, not as prose
-  numerals.
+  numerals. Shortened Investigation ids and run ids (see State Visibility / Component sections
+  below) are also data values under this rule.
 - **Prose, labels, and navigation** (section headers, field labels, form copy, `PersistentNav`
   link text) render in a clean, plain sans-serif — legible at small sizes, no display/decorative
   typeface.
@@ -113,20 +116,14 @@ alarming treatment — the rest read as informational, not urgent:
   semantic status. Direction: a restrained near-black-on-near-white (or the inverse, dark mode —
   implementer's call, either fits "command center," but pick one and apply it consistently; do
   not mix). Exact values PROVISIONAL.
-- **`installed` vs `planned` Department status** — POST-CORRECTION (`02-ARCHITECTURE.md` §0a):
-  Mission Control's `ProblemDepartmentCard` renders NO `installed`/`planned` label or badge at
-  all (Danny's ruling item 1 — "do not expose installed/planned labels here") and this palette
-  rule does not apply there. It remains scoped to exactly one place this checkpoint: the Problem
-  Department overview screen's header badge (§ Screen: Problem Department Overview, Department
-  header), which still renders `ProblemDepartmentOverview.department.status` per
-  `02-ARCHITECTURE.md` §3 (that type is unchanged by §0a — only its removed use inside
-  `MissionControlView` was eliminated). Within that one remaining use: `installed` reads as the
-  neutral/normal "operational" treatment (the expected, healthy state for Problem Department);
-  `planned` reads as visually muted/deprioritized (e.g. lower-contrast text, no accent color at
-  all) — it is not an error or a warning, just "not yet built," so it must not share any hue with
-  the Needs-Attention treatment below. In practice this checkpoint always renders `installed` here
-  (Problem Department is the only Department with a working overview), but the muted `planned`
-  treatment stays specified for type completeness against `DepartmentSummary`'s full union.
+- **Installed/planned Department status — not rendered anywhere this checkpoint.**
+  POST-CORRECTION (`02-ARCHITECTURE.md` §0a), and per Danny's final round-4 correction: neither
+  Mission Control's `ProblemDepartmentCard` nor the Problem Department overview's header renders
+  any `installed`/`planned` label or badge. Installation state is settings/catalog data and was
+  ruled out of the operating interface entirely — there is no remaining place this checkpoint
+  where such a label is shown, and this palette section defines no semantic treatment for it.
+  `departmentRegistry`'s `installed` flag (`02-ARCHITECTURE.md` §2) continues to exist as backend
+  config data; it is simply never surfaced as visible UI this checkpoint.
 - **Active-work groups (4)**, each its own distinguishable-but-non-alarming treatment:
   - **Active** (a `GenerationRun` is actually in progress right now) — the one group that may
     carry a "live/running" visual cue (e.g. a small accent dot or label in an "in-progress" hue,
@@ -144,10 +141,13 @@ alarming treatment — the rest read as informational, not urgent:
   - **Recent / Completed** — a calm "done" treatment (e.g. a muted green or simply the neutral
     base with a checkmark/label), read as healthy/normal, not urgent.
 - **`InvestigationStatus` values** (`open`, `blocked`, `generation-failed`, `brief-generated`,
-  used in the portfolio table and status filter) reuse the SAME semantic hues as the Active-work
-  groups above wherever the two overlap conceptually, so a user does not have to learn two color
-  systems: `open` reads as neutral/standby, `blocked`/`generation-failed` read in the
-  attention/alarm hue, `brief-generated` reads in the "done" hue.
+  used in the portfolio table, Mission Control's recent/active-work rows, and the status filter)
+  reuse the SAME semantic hues as the Active-work groups above wherever the two overlap
+  conceptually, so a user does not have to learn two color systems: `open` reads as
+  neutral/standby, `blocked`/`generation-failed` read in the attention/alarm hue,
+  `brief-generated` reads in the "done" hue. Visible status text is humanized ("Open", "Blocked",
+  "Generation failed", "Brief generated" — see § Interactions / Sections below); the underlying
+  domain value is unchanged and is what drives this color mapping, not the humanized string.
 - **Blocked-while-Active row (race-window case)** — per Danny's ruling (2026-08-20): an
   Active-group row whose real `status` is `'blocked'` (the race-window case documented in
   `02-ARCHITECTURE.md`, where a `GenerationRun` is genuinely in progress for an Investigation that
@@ -235,8 +235,9 @@ Quoting Danny's ruling directly — these are binding, not stylistic suggestions
    Active-work groups, Active orchestrations panel (GenerationRun-level only), Recent lists.
 4. User action: none required — this is a read-only orientation screen.
 5. End state: user either stays on Mission Control or navigates onward — directly to the Problem
-   Department overview via `ProblemDepartmentCard` (see Flow US-3), or to a linked
-   Investigation-in-portfolio target (see Flow US-4).
+   Department overview via `ProblemDepartmentCard` (see Flow US-3), or to an Investigation via one
+   of the per-row "Open current view" affordances surfaced in the Active-work groups or Recent
+   Investigations list (see Flow US-4).
 
 **Success path:** every `MissionControlView` section renders with real data or an honest empty
 array — the `problemDepartment` card, each of the four active-work groups (active,
@@ -250,9 +251,9 @@ panel, and each of the recent lists (investigations, briefs, evidence) independe
 1. User starts at: `/departments/problem-department` (via Flow US-1's `ProblemDepartmentCard` —
    the whole card or its explicit "Open Problem Department →" affordance, either click target
    leads here directly — or direct URL / refresh).
-2. User sees: loading state, then Department header (name, thesis, `installed` badge),
-   Investigation portfolio table (every row, all statuses), Sources/Evidence counts, Runs/Activity
-   list, Start Investigation entry point.
+2. User sees: loading state, then Department header (name and thesis only — no installed/planned
+   badge), Investigation portfolio table (every row, all statuses), Sources/Evidence counts,
+   Runs/Activity list, Start Investigation entry point.
 3. User action (optional): selects a status filter above the portfolio table.
 4. System response: table re-renders client-side to only the matching rows — no network request.
 5. End state: user reviews portfolio state, or proceeds to Flow US-5 (Start Investigation).
@@ -264,27 +265,31 @@ Empty State.
 **Error path:** fetch fails → single error message in place of the whole screen body below the
 header (see § Interactions).
 
-### Flow: US-4 — Follow last-active Investigation link (legacy destination)
+### Flow: US-4 — Open an Investigation's current status (per-row, status-driven; legacy destination)
 
-1. User starts at: Mission Control or Problem Department overview, either of which surfaces a
-   "last-active Investigation" as a link (Mission Control: within `recent.investigations`,
-   top-ordered; Problem Department overview: `lastActiveInvestigationId`-derived link).
-2. User sees: the link is rendered as a real, plain `<a href="/investigations/{id}">` — a full
-   HTML anchor, not a React Router `<Link>` — labeled honestly (e.g. "View current status" or
-   equivalent copy naming that this is the current, legacy view, not a new workspace) so the user
-   is not misled into expecting a client-side transition.
-3. User action: clicks the link.
+1. User starts at: Mission Control (an Active-work group row, or the Recent Investigations list)
+   or the Problem Department overview (a portfolio table row).
+2. User sees: EVERY such row branches on its own `status`, independently — there is no "top row"
+   or "last-active row only" gating; each row decides its own affordance from its own real data:
+   - `status === 'brief-generated'` → plain, non-interactive text, "Brief ready — review workspace
+     not yet available." — no anchor, no button, nothing clickable.
+   - `status` is `open`, `blocked`, or `generation-failed` → a real, clearly-styled "Open current
+     view" link, rendered as a plain `<a href="/investigations/{id}">` — a full HTML anchor, not a
+     React Router `<Link>` — so the user is not misled into expecting a client-side transition.
+3. User action: on a row with the link, clicks "Open current view".
 4. System response: this is a real, full-page navigation — the user LEAVES the SPA entirely (a
    genuine UX discontinuity, named here rather than hidden) and the browser performs a normal
    network request to the EXISTING legacy Express route `GET /investigations/:id`
    (`src/web/server.ts:115-158`, per `02-ARCHITECTURE.md` §2/§6). This is a genuinely working
    existing page (`src/web/views.ts`'s `renderInvestigationGeneratingScreen` /
-   `renderInvestigationBlockedScreen` / `renderInvestigationGenerationFailedScreen`, or the
-   `brief-generated` 501 stub), not a stub or placeholder.
+   `renderInvestigationBlockedScreen` / `renderInvestigationGenerationFailedScreen`), not a stub or
+   placeholder.
 5. End state: user is shown the legacy server-rendered Investigation screen at
    `/investigations/{id}` — outside the SPA, with no `PersistentNav` (the legacy screen predates
    and is unaffected by this checkpoint's shell). This is documented, intentional scope (Screen D
-   itself is not built this checkpoint, `02-ARCHITECTURE.md` §1/§6), not a defect to disguise.
+   itself is not built this checkpoint, `02-ARCHITECTURE.md` §1/§6), not a defect to disguise. A
+   `brief-generated` row never offers this navigation at all — it has no working legacy screen and
+   is truthfully rendered as plain text instead, per step 2 above.
 
 ### Flow: US-5 — Start Investigation from the Problem Department overview
 
@@ -310,8 +315,9 @@ optimistic row is added.
 2. User sees: four separately labeled, separately rendered lists — "Active", "Ready / Not
    Started", "Needs Attention", "Recent / Completed" — each backed by its own independent query
    result (`activeWork.active` / `.readyNotStarted` / `.needsAttention` / `.recentCompleted`).
-3. User action: none required (read-only); user may follow an Investigation link within any group
-   (see Flow US-4's legacy-destination behavior for where the link goes).
+3. User action: none required (read-only); user may follow the per-row "Open current view"
+   affordance within any group, when that row's status makes one available (see Flow US-4's
+   per-row, status-driven behavior for where the link goes and when it is plain text instead).
 4. End state: user has correctly distinguished "a real run is running right now" (Active: an
    Investigation with an in-progress `GenerationRun`) from "ready to run, nothing started yet"
    (Ready/Not Started: a brand-new `status='open'` Investigation with zero `GenerationRun` rows at
@@ -367,6 +373,12 @@ route changes.
 │              │ 2. Active work — four sibling sections,       │
 │              │    always all four, each independently        │
 │              │    labeled and independently empty-able:       │
+│              │    each row shows a human-readable label        │
+│              │    ("Investigation — YYYY-MM-DD HH:mm"),        │
+│              │    a shortened id as secondary text, humanized  │
+│              │    status, and (per-row) either an "Open        │
+│              │    current view" link or a "Brief ready —       │
+│              │    review workspace not yet available" note:    │
 │              │  ┌────────┐┌──────────────┐┌───────────┐┌────┐ │
 │              │  │ Active  ││ Ready / Not  ││Needs      ││Rec-│ │
 │              │  │         ││  Started     ││Attention  ││ent/│ │
@@ -375,13 +387,17 @@ route changes.
 │              ├────────────────────────────────────────────┤
 │              │ 3. Active orchestrations / agent activity      │
 │              │    panel (GenerationRun-level rows only, no    │
-│              │    per-component detail)                        │
+│              │    per-component detail); each row shows a      │
+│              │    shortened, non-interactive investigation id  │
 │              ├────────────────────────────────────────────┤
 │              │ 4. Recent Investigations / Briefs / Evidence    │
 │              │    (three sub-lists, ordered by lastActivityAt  │
 │              │     where applicable — Investigations only;     │
 │              │     Briefs/Evidence by their own createdAt      │
-│              │     per §5.3 SQL)                                │
+│              │     per §5.3 SQL); each Investigations row       │
+│              │     shows the same human-readable label +       │
+│              │     shortened id + per-row status-driven         │
+│              │     affordance as the Active-work groups above   │
 └──────────────┴────────────────────────────────────────────┘
 ```
 
@@ -390,12 +406,12 @@ route changes.
 | Section | Content | Data Source |
 |---|---|---|
 | `ProblemDepartmentCard` | name, thesis, four live counts (investigation/active/needs-attention/recent-completed, rendered in the monospace data register per § Visual Direction), and an explicit "Open Problem Department →" affordance. The entire card is ALSO a click target to `/departments/problem-department` — both the whole-card click target and the explicit affordance are present simultaneously (Danny's ruling item 2: "the entire Department card may be clickable. Include an explicit ... affordance" — both required, not either/or). Renders no `installed`/`planned` label or badge anywhere on the card (Danny's ruling item 1). | `MissionControlView.problemDepartment` (`MissionControlProblemDepartmentSummary`, `02-ARCHITECTURE.md` §3) |
-| Active | `InvestigationSummary[]` — an Investigation with an in-progress `GenerationRun`: a real run IS running right now. Per Danny's correction (`02-ARCHITECTURE.md` §3/§5.3), this group no longer also includes brand-new `status='open'` Investigations with zero `GenerationRun` rows — that case is its own group, Ready/Not Started, below. **Row-level rendering rule (Danny's ruling, 2026-08-20 — the blocked+in-progress race window):** a row in this group whose real `status` is `'blocked'` (the race-window case: the Investigation is blocked, but a `GenerationRun` is genuinely in progress for it right now, per `02-ARCHITECTURE.md`'s binding data contract that Active-group rows always carry their real `status`/`statusReason` unconditionally) renders with the SAME alarm/attention-level visual treatment as a Needs Attention row (§ Visual Direction, Palette), NOT the calmer Active live/running cue a normal `open ∧` in-progress-run row gets — even though it is positioned within the Active group/section. The row's real `statusReason` (when present) renders alongside it exactly as it would in Needs Attention — never hidden or omitted because the row happens to be grouped under Active. Once the race-window run finalizes, the row moves to Needs Attention on the next page load/refetch (this checkpoint has no live-update mechanism, per `02-ARCHITECTURE.md`) and receives that group's normal treatment there — no special transition animation or live-update is implied or required this checkpoint. A row is never rendered with both treatments simultaneously and never appears in both groups' lists at once — this is a rendering-level restatement of `02-ARCHITECTURE.md`'s data-level exclusivity guarantee, not a new behavior. | `MissionControlView.activeWork.active` |
-| Ready / Not Started | `InvestigationSummary[]` — `status='open'`, zero `GenerationRun` rows at all: genuinely never started, not stalled/blocked, not currently running. Reads visually as "waiting/ready," not alarming and not identical to Active (§ Visual Direction, Palette) | `MissionControlView.activeWork.readyNotStarted` |
-| Needs Attention | `InvestigationSummary[]` — `status` in (`blocked`, `generation-failed`), no in-progress run | `MissionControlView.activeWork.needsAttention` |
-| Recent / Completed | `InvestigationSummary[]` — `brief-generated` or most-recent non-in-progress run, deduped, recency-ordered | `MissionControlView.activeWork.recentCompleted` |
-| Active orchestrations panel | `GenerationRunSummary[]` rows: run id, investigation id (linked), runtime identifier, outcome, started/completed timestamps — no `currentComponent` field, ever | `MissionControlView.activeActivity` |
-| Recent Investigations | `InvestigationSummary[]`, ordered by `lastActivityAt` desc; top row is the "last-active Investigation" link target (Flow US-4) | `MissionControlView.recent.investigations` |
+| Active | `InvestigationSummary[]` — an Investigation with an in-progress `GenerationRun`: a real run IS running right now. Per Danny's correction (`02-ARCHITECTURE.md` §3/§5.3), this group no longer also includes brand-new `status='open'` Investigations with zero `GenerationRun` rows — that case is its own group, Ready/Not Started, below. Each row shows the human-readable label ("Investigation — YYYY-MM-DD HH:mm", derived from `createdAt`) as primary content, a shortened id (first 8 characters + ellipsis) as secondary/muted text, humanized status, and its `statusReason` when present. **Row-level rendering rule (Danny's ruling, 2026-08-20 — the blocked+in-progress race window):** a row in this group whose real `status` is `'blocked'` (the race-window case: the Investigation is blocked, but a `GenerationRun` is genuinely in progress for it right now, per `02-ARCHITECTURE.md`'s binding data contract that Active-group rows always carry their real `status`/`statusReason` unconditionally) renders with the SAME alarm/attention-level visual treatment as a Needs Attention row (§ Visual Direction, Palette), NOT the calmer Active live/running cue a normal `open ∧` in-progress-run row gets — even though it is positioned within the Active group/section. The row's real `statusReason` (when present) renders alongside it exactly as it would in Needs Attention — never hidden or omitted because the row happens to be grouped under Active. Once the race-window run finalizes, the row moves to Needs Attention on the next page load/refetch (this checkpoint has no live-update mechanism, per `02-ARCHITECTURE.md`) and receives that group's normal treatment there — no special transition animation or live-update is implied or required this checkpoint. A row is never rendered with both treatments simultaneously and never appears in both groups' lists at once — this is a rendering-level restatement of `02-ARCHITECTURE.md`'s data-level exclusivity guarantee, not a new behavior. | `MissionControlView.activeWork.active` |
+| Ready / Not Started | `InvestigationSummary[]` — `status='open'`, zero `GenerationRun` rows at all: genuinely never started, not stalled/blocked, not currently running. Reads visually as "waiting/ready," not alarming and not identical to Active (§ Visual Direction, Palette). Rows use the same human-readable-label-primary / shortened-id-secondary rendering as Active. | `MissionControlView.activeWork.readyNotStarted` |
+| Needs Attention | `InvestigationSummary[]` — `status` in (`blocked`, `generation-failed`), no in-progress run. Rows use the same human-readable-label-primary / shortened-id-secondary rendering as Active. | `MissionControlView.activeWork.needsAttention` |
+| Recent / Completed | `InvestigationSummary[]` — `brief-generated` or most-recent non-in-progress run, deduped, recency-ordered. Rows use the same human-readable-label-primary / shortened-id-secondary rendering as Active. | `MissionControlView.activeWork.recentCompleted` |
+| Active orchestrations panel | `GenerationRunSummary[]` rows: shortened investigation id (plain, non-interactive muted text — not a link, not the full UUID), runtime identifier, outcome, started/completed timestamps — no `currentComponent` field, ever | `MissionControlView.activeActivity` |
+| Recent Investigations | `InvestigationSummary[]`, ordered by `lastActivityAt` desc. EVERY row independently branches on its own `status` (Flow US-4): `status === 'brief-generated'` renders plain non-interactive text ("Brief ready — review workspace not yet available."); `open`/`blocked`/`generation-failed` renders a real "Open current view" link to the legacy route. This is per-row, not limited to the top/last-active row. Each row shows the human-readable label as primary content and a shortened id as secondary text. | `MissionControlView.recent.investigations` |
 | Recent Briefs | `BriefSummary[]`, ordered by `createdAt` desc | `MissionControlView.recent.briefs` |
 | Recent Evidence | `EvidenceSummary[]`, ordered by `createdAt` desc | `MissionControlView.recent.evidence` |
 
@@ -417,18 +433,25 @@ when empty" contract (`02-ARCHITECTURE.md` §5.1), never omitted or replaced by 
 
 ```
 ┌──────────────┬────────────────────────────────────────────┐
-│ PersistentNav │ 1. Department header: name · thesis ·         │
-│              │    [installed] badge                           │
+│ PersistentNav │ 1. Department header: name · thesis           │
+│              │    (no installed/planned badge — installation │
+│              │     state is settings/catalog data and is not  │
+│              │     rendered on this operating screen)          │
 │  Mission     ├────────────────────────────────────────────┤
 │  Control     │ 2. Investigation portfolio                      │
-│              │    [status filter: all | open | blocked |      │
-│  Problem     │                     generation-failed |         │
-│  Department  │                     brief-generated]             │
-│              │    ┌────────────────────────────────────┐     │
-│              │    │ id | status | createdAt | statusReason│    │
-│              │    │      (if present)                     │    │
-│              │    │ ... one row per Investigation ...     │    │
-│              │    └────────────────────────────────────┘     │
+│              │    [status filter: all | Open | Blocked |       │
+│  Problem     │                     Generation failed |          │
+│  Department  │                     Brief generated]              │
+│              │    ┌────────────────────────────────────────┐ │
+│              │    │ Investigation | status | Created | reason│ │
+│              │    │ (label = "Investigation — YYYY-MM-DD      │ │
+│              │    │  HH:mm" + shortened id as secondary text; │ │
+│              │    │  per row: "Open current view" link, or,   │ │
+│              │    │  if brief-generated, plain text "Brief    │ │
+│              │    │  ready — review workspace not yet         │ │
+│              │    │  available.")                              │ │
+│              │    │ ... one row per Investigation ...          │ │
+│              │    └────────────────────────────────────────┘ │
 │              │    (zero rows -> InvestigationPortfolioEmpty-  │
 │              │     State, see below)                           │
 │              ├────────────────────────────────────────────┤
@@ -459,10 +482,9 @@ body, not the whole screen.
 
 | Section | Content | Data Source |
 |---|---|---|
-| Department header | name, thesis, `installed` badge — the ONE place this checkpoint still renders an installed/planned label (§ Visual Direction, Palette); Mission Control's `ProblemDepartmentCard` deliberately does not | `ProblemDepartmentOverview.department` |
-| Investigation portfolio table | every `InvestigationSummary` row: `id`, `status`, `createdAt`, `statusReason` (rendered only when present — no placeholder), `lastActivityAt` (used for the last-active link, not necessarily displayed as its own column) | `ProblemDepartmentOverview.investigations` |
-| Status filter control | client-side filter over the already-fetched list; options = `all` + every `InvestigationStatus` value present in the AC's enum (`open`, `blocked`, `generation-failed`, `brief-generated`) | `InvestigationPortfolioTableProps.statusFilter` (client state only, no refetch) |
-| Last-active Investigation link | the row (or explicit indicator) matching `lastActiveInvestigationId`, linking via full-page navigation to the legacy `GET /investigations/:id` route (Flow US-4) | `ProblemDepartmentOverview.lastActiveInvestigationId` |
+| Department header | name and thesis only — no installed/planned badge or label of any kind. Installation state is settings/catalog data and was ruled out of the operating interface (Danny's final round-4 correction); Mission Control's `ProblemDepartmentCard` likewise renders none. | `ProblemDepartmentOverview.department` |
+| Investigation portfolio table | every `InvestigationSummary` row: human-readable label ("Investigation — YYYY-MM-DD HH:mm", derived from `createdAt`) as primary content, shortened id (first 8 characters + ellipsis) as secondary/muted text, humanized `status`, `createdAt` (also shown as its own formatted column), `statusReason` (rendered only when present — no placeholder), and a per-row status-driven affordance: `status === 'brief-generated'` → plain non-interactive text "Brief ready — review workspace not yet available."; `open`/`blocked`/`generation-failed` → a real "Open current view" link to the legacy route (Flow US-4). `lastActiveInvestigationId` is passed to the table but no longer singles out a "last-active" row visually — every row's affordance is driven purely by its own `status`. | `ProblemDepartmentOverview.investigations` |
+| Status filter control | client-side filter over the already-fetched list; options = `all` + every `InvestigationStatus` value present in the AC's enum (`open`, `blocked`, `generation-failed`, `brief-generated`); visible option text is humanized ("Open", "Blocked", "Generation failed", "Brief generated") while the underlying `value` attribute stays the raw domain string | `InvestigationPortfolioTableProps.statusFilter` (client state only, no refetch) |
 | Sources / Evidence counts | two integers | `ProblemDepartmentOverview.sourceCount`, `.evidenceCount` |
 | Runs / Activity | `GenerationRunSummary[]` rows, same shape/columns as Mission Control's activity panel | `ProblemDepartmentOverview.recentRuns` |
 | Start Investigation | form: one or more source-artifact inputs (type + raw), submit | `StartInvestigationForm`, posts to `POST /api/investigations` |
@@ -549,27 +571,35 @@ of `InvestigationPortfolioTable`.
 empty array — it is never rendered during loading or on error (those have their own distinct
 treatments per § Page-Load Fetch), satisfying "never a blank or loading-styled screen".
 
-### Last-Active Investigation Link (legacy destination)
+### Open Current View / Brief Ready (per-row, status-driven; legacy destination)
 
-**Trigger:** clicking (or hard-loading the URL of) the "last-active Investigation" link rendered
-on Mission Control (`recent.investigations`, top-ordered) or the Problem Department overview
-(`lastActiveInvestigationId`-derived).
-**Component:** a plain `<a href="/investigations/{id}">` element — NOT a React Router `<Link>`,
-and not part of the client-side route table at all (`02-ARCHITECTURE.md` §6: no client-side route
-exists for `/departments/problem-department/investigations/*`, and there is no third SPA screen).
-**Behavior:** the link's `href` points directly at the EXISTING legacy Express route,
-`GET /investigations/:id` (`src/web/server.ts:115-158`). Clicking it performs an ordinary browser
-navigation — the user leaves the SPA entirely, the router is torn down, and the browser loads the
-legacy server-rendered page fresh. This is a genuine UX discontinuity and is named honestly here
-rather than hidden: the link's visible label makes clear it goes to the current, legacy view (not
-a new workspace and not a stub), per `02-ARCHITECTURE.md` §2/§6's "labeled as the current view."
-The destination is a genuinely working existing page (`src/web/views.ts`'s
-`renderInvestigationGeneratingScreen` / `renderInvestigationBlockedScreen` /
-`renderInvestigationGenerationFailedScreen`, or the `brief-generated` 501 stub) — never a stub or
-placeholder built for this checkpoint. This satisfies the same honesty discipline the rest of this
-document applies elsewhere: never a blank page, never a silent no-op — but here the honest
-resolution is a real full-page link to a real existing screen, not a client-side placeholder
-component.
+**Trigger:** on any Investigation row (Mission Control's Active-work groups and Recent
+Investigations list; the Problem Department overview's portfolio table), the row's own `status`
+determines what renders — no click is required to see the difference, since the two states are
+visually distinct (button vs. plain text) as soon as the row renders.
+**Component:** `InvestigationPortfolioTable` (Problem Department overview) and
+`RecentInvestigationsList` / `ActiveWorkGroup` (Mission Control) — each independently applies the
+same per-row branch: a plain `<a href="/investigations/{id}">` element — NOT a React Router
+`<Link>`, and not part of the client-side route table at all (`02-ARCHITECTURE.md` §6: no
+client-side route exists for `/departments/problem-department/investigations/*`, and there is no
+third SPA screen) — when `status` is `open`, `blocked`, or `generation-failed`; plain,
+non-interactive text ("Brief ready — review workspace not yet available.") when `status` is
+`brief-generated`.
+**Behavior:** for a row with the link: clicking it performs an ordinary browser navigation — the
+user leaves the SPA entirely, the router is torn down, and the browser loads the legacy
+server-rendered page fresh. The link's `href` points directly at the EXISTING legacy Express
+route, `GET /investigations/:id` (`src/web/server.ts:115-158`). This is a genuine UX discontinuity
+and is named honestly here rather than hidden: the link's visible label, "Open current view,"
+makes clear it goes to the current, legacy view (not a new workspace and not a stub), per
+`02-ARCHITECTURE.md` §2/§6's "labeled as the current view." The destination is a genuinely working
+existing page (`src/web/views.ts`'s `renderInvestigationGeneratingScreen` /
+`renderInvestigationBlockedScreen` / `renderInvestigationGenerationFailedScreen`) — never a stub or
+placeholder built for this checkpoint. For a `brief-generated` row: no link is rendered at all —
+there is no working legacy screen for that status (it would 501 at the legacy route), so the
+honest treatment is plain text stating the brief is ready and the review workspace does not exist
+yet, rather than a dead or misleading link. This satisfies the same honesty discipline the rest of
+this document applies elsewhere: never a blank page, never a silent no-op, and never a link to a
+destination that does not actually work.
 
 **Loading state:** none owned by the SPA — this is a normal browser navigation; the legacy page's
 own loading behavior (if any) is unchanged and out of this document's scope.
@@ -596,19 +626,26 @@ App (client-side router: /, /departments/problem-department — exactly two rout
 │   │                                            renders MissionControlView.problemDepartment,
 │   │                                            no installed/planned label)
 │   ├── ActiveWorkSection
-│   │   ├── ActiveGroupList             (InvestigationSummary[])
-│   │   ├── ReadyNotStartedGroupList    (InvestigationSummary[])
-│   │   ├── NeedsAttentionGroupList     (InvestigationSummary[])
-│   │   └── RecentCompletedGroupList    (InvestigationSummary[])
-│   ├── ActiveActivityPanel                    (GenerationRunSummary[])
+│   │   ├── ActiveGroupList             (InvestigationSummary[]; per-row human-readable label +
+│   │   │                                shortened id + status-driven "Open current view" / "Brief
+│   │   │                                ready" affordance)
+│   │   ├── ReadyNotStartedGroupList    (InvestigationSummary[]; same per-row rendering)
+│   │   ├── NeedsAttentionGroupList     (InvestigationSummary[]; same per-row rendering)
+│   │   └── RecentCompletedGroupList    (InvestigationSummary[]; same per-row rendering)
+│   ├── ActiveActivityPanel                    (GenerationRunSummary[]; shortened, non-interactive
+│   │                                            investigation id per row)
 │   └── RecentSection
-│       ├── RecentInvestigationsList
+│       ├── RecentInvestigationsList           (per-row human-readable label + shortened id +
+│       │                                        status-driven "Open current view" / "Brief ready"
+│       │                                        affordance — every row, not just the top row)
 │       ├── RecentBriefsList
 │       └── RecentEvidenceList
 └── ProblemDepartmentScreen                    (route: /departments/problem-department)
-    ├── DepartmentHeader
-    ├── InvestigationPortfolioTable            (non-empty case)
-    │   └── StatusFilterControl
+    ├── DepartmentHeader                        (name and thesis only — no installed/planned badge)
+    ├── InvestigationPortfolioTable            (non-empty case; per-row human-readable label +
+    │   │                                        shortened id + status-driven "Open current view" /
+    │   │                                        "Brief ready" affordance, every row)
+    │   └── StatusFilterControl                 (humanized option labels)
     ├── InvestigationPortfolioEmptyState        (zero-investigation case)
     │   └── StartInvestigationForm (inline)
     ├── SourcesEvidenceCounts
@@ -622,11 +659,13 @@ App (client-side router: /, /departments/problem-department — exactly two rout
 this checkpoint; the capability they represented moves to a future Departments/Settings surface,
 per Danny's ruling item 4, not designed here.
 
-The last-active-Investigation link (Mission Control's `RecentInvestigationsList` and
-`ProblemDepartmentScreen`'s portfolio) is a plain `<a>` element pointing at the legacy
-`GET /investigations/:id` route (§ Interactions, Last-Active Investigation Link) — it is not a
-component in the router's route table and has no corresponding node in this hierarchy, since a
-plain anchor tag is markup, not a component `02-ARCHITECTURE.md` §6 defines.
+The per-row "Open current view" / "Brief ready" affordance (Mission Control's `ActiveWorkGroup`
+lists and `RecentInvestigationsList`, and `ProblemDepartmentScreen`'s `InvestigationPortfolioTable`
+— § Interactions, Open Current View / Brief Ready) is, for its link case, a plain `<a>` element
+pointing at the legacy `GET /investigations/:id` route — it is not a component in the router's
+route table and has no corresponding node in this hierarchy, since a plain anchor tag is markup,
+not a component `02-ARCHITECTURE.md` §6 defines. Its text case ("Brief ready…") is likewise plain
+markup, not a component.
 
 `PersistentNav` is a top-level sibling of the two route destinations (`MissionControlScreen`,
 `ProblemDepartmentScreen`), not nested inside either of them, matching `02-ARCHITECTURE.md` §2's
@@ -637,6 +676,11 @@ rendering as a left-side navigation panel (matching
 `InvestigationPortfolioTable` and `InvestigationPortfolioEmptyState` are mutually exclusive
 renders within `ProblemDepartmentScreen` (never both mounted at once), matching
 `02-ARCHITECTURE.md` §6's component boundary.
+
+Shared display formatting (human-readable Investigation label, shortened id, humanized status)
+lives in a single shared helper module (`investigationDisplay`), consumed by
+`InvestigationPortfolioTable` and Mission Control's `ActiveWorkGroup` / `RecentInvestigationsList`
+/ `ActiveActivityPanel` — one source of formatting logic, not divergent copies per component.
 
 ---
 
@@ -652,9 +696,10 @@ renders within `ProblemDepartmentScreen` (never both mounted at once), matching
 
 No state is shared across screens or persisted client-side between navigations — every screen
 refetches its full data set on every mount, consistent with `02-ARCHITECTURE.md` §6/§8's
-no-state-management-library, no-polling design. The last-active-Investigation link carries no
-client-side state at all — it is a plain anchor whose `href` is derived directly from fetched data
-on each render.
+no-state-management-library, no-polling design. The per-row "Open current view" / "Brief ready"
+affordance carries no client-side state at all — for its link case it is a plain anchor whose
+`href` is derived directly from fetched data on each render; for its text case it is static text
+derived from the same per-row `status`.
 
 ---
 
@@ -667,11 +712,11 @@ on each render.
 - Every flow has a screen: yes.
 - Every screen has a layout: yes — the two in-scope screens (Mission Control, Problem Department
   overview) each have a layout diagram; there is no third screen and no placeholder screen this
-  checkpoint (`02-ARCHITECTURE.md` §0a/§1/§2/§6 — the last-active-Investigation link is a
+  checkpoint (`02-ARCHITECTURE.md` §0a/§1/§2/§6 — the per-row "Open current view" affordance is a
   full-page navigation to an existing legacy route, not a built screen; the Departments-directory
   screen previously specified here is removed, not stubbed).
 - Interactions cover success, loading, and error states: yes (Page-Load Fetch, Start Investigation
-  Submission, Empty State, Last-Active Investigation Link, Client-Side Route Navigation).
+  Submission, Empty State, Open Current View / Brief Ready, Client-Side Route Navigation).
 - Component hierarchy matches architecture components: yes — every component named in
   `02-ARCHITECTURE.md` §2's table appears in the hierarchy above (including `PersistentNav` and
   `ProblemDepartmentCard`), plus purely presentational sub-elements (group-list/panel components)
@@ -681,5 +726,8 @@ on each render.
   §2/§6's removal of `InvestigationWorkspacePlaceholder` and the third client-side route. No
   component is defined for the removed Departments-directory screen — `02-ARCHITECTURE.md` §0a/§2
   removes `getDepartmentsView`/`DepartmentsScreen`/`DepartmentsView`/`fetchDepartments` entirely,
-  and this document's Component Hierarchy reflects that removal, not a stale reference to it.
+  and this document's Component Hierarchy reflects that removal, not a stale reference to it. No
+  `installed`/`planned` badge or label appears anywhere in this document's screens, sections, or
+  layouts — the Problem Department overview header renders name and thesis only, matching the
+  final, implemented `ProblemDepartmentScreen.tsx`.
 </content>

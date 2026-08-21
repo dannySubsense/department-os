@@ -117,8 +117,11 @@ This story and every acceptance criterion it previously carried are retired per
 this checkpoint to test against.
 
 **US-3 (Problem Department overview)**
-- [ ] Given `/departments/problem-department` is loaded, then the Department header shows name,
-  one-line thesis, and `installed` badge.
+- [ ] Given `/departments/problem-department` is loaded, then the Department header shows name and
+  one-line thesis only — no `installed`/`planned` badge or status label of any kind (Danny's final
+  round-4 correction: installation state is settings/catalog data, ruled out of the operating
+  interface; the `department-status-badge` element was removed from `ProblemDepartmentScreen`
+  entirely).
 - [ ] Given the Investigation portfolio is rendered, then it contains every `Investigation` row for
   the Department, each showing `status`, `createdAt`, and `statusReason` when present — row-for-row
   matching `SELECT id, status, created_at FROM investigation` for the live local dev database
@@ -147,13 +150,16 @@ this checkpoint to test against.
   `MAX(generation_step.completed_at)`, and `MAX(brief_version.created_at)` per `DESIGN-PROPOSAL.md`
   §4a — excluding `generation_component_event.occurred_at`, which is Checkpoint 3 scope and does
   not exist as a table this checkpoint.
-- [ ] Given multiple Investigations, when the portfolio's "last-active Investigation" is computed,
-  then it is the single row with the maximum `last_activity_at` from the above computation, and the
-  UI links it via a real, full-page navigation to the EXISTING legacy Express route
-  `GET /investigations/:id`, labeled explicitly as "the current view" (or equivalent honest
-  wording) — not a purpose-built placeholder screen. The real Investigation Workspace (Screen D) is
-  still not built this checkpoint; this link reuses already-working, already-shipped legacy product
-  behavior in the interim, per Danny's correction.
+- [ ] Given the Investigation portfolio table (and, separately, Mission Control's recent-
+  Investigations list), when each row's own `status` is evaluated, then: rows with
+  `status === 'brief-generated'` render plain, non-interactive text reading "Brief ready — review
+  workspace not yet available." (no anchor, no button); rows with `status` in (`open`, `blocked`,
+  `generation-failed`) render a real, clearly-styled "Open current view" button that is a full-page
+  navigation to the EXISTING legacy Express route `GET /investigations/:id` for that row's
+  Investigation. This affordance is per-row and status-driven — every qualifying row gets it, not
+  only the single row with the highest `last_activity_at`. The real Investigation Workspace
+  (Screen D) is still not built this checkpoint; this affordance reuses already-working,
+  already-shipped legacy product behavior in the interim, per Danny's correction.
 - [ ] Given Mission Control's "recent Investigations" list, then it is ordered by the same
   `last_activity_at` computation, not a separate/divergent recency definition.
 
@@ -226,7 +232,8 @@ this checkpoint to test against.
 | Two Investigations tie exactly on `last_activity_at` | Any stable, deterministic ordering between them is acceptable — no requirement on tie-break order beyond determinism (not specified further upstream; not a scope gap, since no tie-break rule is specified anywhere in this checkpoint's design). |
 | `GET /api/mission-control` or `GET /api/problem-department` is called when the dev database has no `investigation` rows anywhere | Each read model still returns its full documented shape with empty arrays/zero counts (`ProblemDepartmentCard`'s four counts all render `0`) — never a 500 or omitted field. |
 | A URL for a Department other than Problem Department, or for `/departments`, is requested directly | Out of scope this checkpoint — no route is defined for either; `/departments` is retired (US-2) and no other Department has any overview route this checkpoint (`02-ARCHITECTURE.md` §0a/§1). |
-| The "last-active Investigation" link on the Problem Department overview is clicked | Full-page navigation to the existing, already-implemented legacy Express route `GET /investigations/:id`, labeled as "the current view" — not a client-side route, not a placeholder screen (Danny's correction, US-4). |
+| An "Open current view" button (rendered on any qualifying row — `status` in `open`, `blocked`, `generation-failed` — in the Investigation portfolio table or Mission Control's recent-Investigations list) is clicked | Full-page navigation to the existing, already-implemented legacy Express route `GET /investigations/:id` for that row's Investigation — not a client-side route, not a placeholder screen; every qualifying row has its own such button, not only a single last-active row (Danny's correction, US-4). |
+| An Investigation row has `status === 'brief-generated'` | Renders as plain, non-interactive text ("Brief ready — review workspace not yet available.") — no anchor, no button, no navigation (Danny's correction, US-4). |
 | The `ProblemDepartmentCard`'s whole-card click target and its "Open Problem Department →" affordance overlap in the DOM (e.g. the affordance sits inside the card's link wrapper) | Both must independently satisfy "navigates to `/departments/problem-department`" — nested/overlapping interactive elements are an implementation detail for `03-UI-SPEC.md`, not a reason to drop the explicit affordance (Danny's ruling item 2, US-1). |
 
 ## Out of Scope
@@ -239,7 +246,8 @@ this checkpoint to test against.
 - NOT: the real Investigation Workspace (Screen D), a client-side placeholder component for it, any
   `/departments/problem-department/investigations/*` client-side route, `BriefForReview` read model,
   or workflow-stage derivation (§5a) — Checkpoint 1 stops at the Department overview / portfolio
-  list. In the interim, the "last-active Investigation" link goes to the real, already-shipped
+  list. In the interim, each qualifying Investigation row (`status` in `open`, `blocked`,
+  `generation-failed`) carries an "Open current view" affordance to the real, already-shipped
   legacy `GET /investigations/:id` Express route (US-4) — that is reused existing product behavior,
   not new scope, and is explicitly IN scope as a link target even though the Workspace itself is
   not built.
@@ -255,7 +263,7 @@ this checkpoint to test against.
 - NOT: any change to Slices 1-9 backend services, schema, or business logic — this checkpoint is
   additive read models and a new UI shell only.
 - NOT: retirement of `src/web/views.ts`'s server-rendered screens — they remain running, untouched,
-  and are the same routes the "last-active Investigation" link now targets (US-4).
+  and are the same routes the per-row "Open current view" affordance now targets (US-4).
 - NOT: any new auth, CORS, or error-handling posture change to the existing Express app — the new
   routes inherit the existing no-auth, same-origin posture.
 - NOT: an e2e test framework — React components get render/basic-interaction tests only this
@@ -293,7 +301,8 @@ this checkpoint to test against.
   be a real `COUNT(*)` or the `.length` of an array already assembled for `activeWork`, never a
   hardcoded or placeholder number (Danny's ruling item 3, US-1).
 - Must not: expose an `installed`/`planned` label, badge, or equivalent status field anywhere on
-  Mission Control (Danny's ruling item 1, US-1).
+  Mission Control (Danny's ruling item 1, US-1) or on the Problem Department overview header
+  (Danny's final round-4 correction, US-3) — no screen this checkpoint exposes installation state.
 - Must: "Active" membership in `activeWork` requires a real, currently in-progress `GenerationRun`
   row — a `status='open'` Investigation with zero `GenerationRun` rows belongs in the separate
   "Ready/Not Started" group, never in "Active" (Danny's correction, US-6).
@@ -310,14 +319,16 @@ this checkpoint to test against.
   defined by US-7's ACs — mounted once so it persists across route changes; this does not preclude
   other in-content navigation paths defined elsewhere in this document (e.g. the
   `ProblemDepartmentCard`'s whole-card click target and explicit "Open Problem Department →"
-  affordance on Mission Control per US-1, or the last-active-Investigation link to the existing
-  legacy `/investigations/:id` route per US-4).
+  affordance on Mission Control per US-1, or the per-row "Open current view" affordance (on
+  qualifying Investigation rows) to the existing legacy `/investigations/:id` route per US-4).
 - Must: the `ProblemDepartmentCard` on Mission Control is both a whole-card clickable navigation
   target AND contains a separately visible, explicit "Open Problem Department →" affordance — both
   required, neither substitutes for the other (Danny's ruling item 2, US-1).
-- Must: the "last-active Investigation" link is a real, full-page navigation to the existing legacy
-  `GET /investigations/:id` Express route, labeled as the current view — not a client-side route,
-  and not a placeholder component (Danny's correction, US-4).
+- Must: every Investigation portfolio/recent-list row whose `status` is `open`, `blocked`, or
+  `generation-failed` renders a real "Open current view" button — a full-page navigation to the
+  existing legacy `GET /investigations/:id` Express route for that row's Investigation — while rows
+  with `status = 'brief-generated'` render plain, non-interactive text instead; this is per-row and
+  status-driven, not gated to a single last-active row (Danny's correction, US-4).
 - Must not: introduce `POST /api/investigations/:id/generation-runs`, the
   `generation_component_event` table, `recordComponentEvent`, the real Investigation Workspace
   (Screen D) or a client-side placeholder for it, `BriefForReview`, or any Checkpoint 2/3 scope item

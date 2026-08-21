@@ -1,7 +1,7 @@
 # Product Surface — Checkpoint 1
 
-Canonical implementation sources for this checkpoint (Mission Control, Departments directory,
-Problem Department investigation portfolio). Locked, Frank spec-gate PASSED.
+Canonical implementation sources for this checkpoint (Mission Control, Problem Department
+investigation portfolio). Locked, Frank spec-gate PASSED.
 
 ## Reading order
 

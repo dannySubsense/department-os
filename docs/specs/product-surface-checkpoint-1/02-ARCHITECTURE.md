@@ -77,8 +77,11 @@ In scope, POST-CORRECTION (§0a): three new Express JSON routes (two GET, one PO
 `getProblemDepartmentOverview`; `getDepartmentsView` is removed, §0a), a React SPA with two screens
 (Mission Control, Problem Department overview — no "Departments directory" screen, §0a) — no third
 SPA route beyond `/` and `/departments/problem-department`, and no client-side placeholder for
-Screen D (§2/§6: the last-active-Investigation link instead does a full-page navigation to the
-existing legacy Express route, `GET /investigations/:id`, per Danny's correction below) — Vite
+Screen D (§2/§6: per-row, status-driven affordances instead do a full-page navigation to the
+existing legacy Express route, `GET /investigations/:id`, per Danny's correction below — every row
+whose `status` is `open`, `blocked`, or `generation-failed` gets a real "Open current view" link;
+rows with `status === 'brief-generated'` render plain non-interactive text instead, since no
+Screen-D workspace exists yet to open) — Vite
 build tooling, and the static-serving / dev-proxy integration boundary with the existing Express
 app.
 
@@ -153,11 +156,16 @@ explicit narrowings/departures, both binding on `01-REQUIREMENTS.md`/`03-UI-SPEC
    `activeCount`, `needsAttentionCount`, `recentCompletedCount` — replacing the removed
    `installed`/`planned` status label per Danny's explicit "do not expose installed/planned labels
    here." This type deliberately does NOT reuse `DepartmentSummary` (which still carries a `status:
-   'installed' | 'planned'` field, needed by `ProblemDepartmentOverview.department` for the
-   Department-overview header's "installed" badge, US-3 AC) — extending `DepartmentSummary` for
-   Mission Control's card would silently smuggle the very label field Danny ruled out back into the
-   type. `DepartmentSummary` itself is unchanged and still exists (§0a does not touch
-   `ProblemDepartmentOverview`); only its use inside `MissionControlView` is removed.
+   'installed' | 'planned'` field) — extending `DepartmentSummary` for Mission Control's card would
+   silently smuggle the very label field Danny ruled out back into the type. `DepartmentSummary`
+   itself is unchanged and still exists as a type (§0a does not remove the type or
+   `ProblemDepartmentOverview.department`'s use of it as an identity source); however, its `status`
+   field is NOT rendered anywhere in the UI — Danny's final round-4 correction removed the
+   "installed" badge from the Problem Department overview screen's header as well
+   (`ProblemDepartmentScreen.tsx`'s `department-status-badge` span was deleted entirely):
+   installation state is settings/catalog data, ruled out of the operating interface on both screens,
+   not just Mission Control. `ProblemDepartmentOverview.department.status` is retained in the type
+   only because `DepartmentSummary` is shared with the registry; no component reads or displays it.
 
 Every other field matches §8 exactly, structural narrowing only, not scope creep.
 
@@ -810,14 +818,26 @@ directly satisfied by that destination not existing at all this checkpoint, rath
 as a redirect stub that itself needs a description and a "why does this still exist" answer later.
 
 Per Danny's separate correction (US-4), any link that would previously have pointed at a Screen-D
-placeholder (e.g. the "last-active Investigation" link on `ProblemDepartmentScreen`, §UI Spec
-Screen C) instead does a real, full-page navigation — a plain `<a href="/investigations/{id}">`,
+placeholder instead does a real, full-page navigation — a plain `<a href="/investigations/{id}">`,
 not a React Router `<Link>` — to the EXISTING legacy Express route `GET /investigations/:id`
-(`src/web/server.ts:115-158`), labeled as the current view. That leaves the SPA entirely and hits
+(`src/web/server.ts:115-158`), labeled "Open current view." That leaves the SPA entirely and hits
 the already-working server-rendered screen (`src/web/views.ts`'s
 `renderInvestigationGeneratingScreen`/`renderInvestigationBlockedScreen`/
-`renderInvestigationGenerationFailedScreen`, or the `brief-generated` 501 stub) rather than a
-purpose-built placeholder announcing its own future replacement:
+`renderInvestigationGenerationFailedScreen`) rather than a purpose-built placeholder announcing its
+own future replacement.
+
+This affordance is **per-row and status-driven, not tied to a single "last-active" Investigation.**
+Every row in both `InvestigationPortfolioTable` (`ProblemDepartmentScreen`) and Mission Control's
+`RecentInvestigationsList` branches independently on that row's own `status`:
+
+- `status` is `'open'`, `'blocked'`, or `'generation-failed'` → a real "Open current view" button/
+  link, the full-page `<a>` described above, to `/investigations/:id`.
+- `status === 'brief-generated'` → plain, non-interactive text — "Brief ready — review workspace not
+  yet available." — no anchor, no button, since no Screen-D workspace exists yet to open.
+
+Any qualifying row gets this affordance, independent of whether it is the single most-recently-active
+Investigation; the earlier design gated this by "is this the last-active Investigation," and that
+gating was explicitly removed from both components:
 
 | Route | Component | Data source |
 |---|---|---|
@@ -833,9 +853,9 @@ defined for one" resolution, now with no intermediate catalog screen to have omi
 from in the first place.
 
 No client-side route exists for `/departments/problem-department/investigations/*` either — there
-is no React-side destination for that URL shape. The "last-active Investigation" link is a plain
-anchor tag, not a `Route`/`Link`, so it is not part of the router's route table at all (§App's
-router description above lists exactly two `<Route>` elements, no catch-all).
+is no React-side destination for that URL shape. Each per-row "Open current view" affordance is a
+plain anchor tag, not a `Route`/`Link`, so none of them are part of the router's route table at all
+(§App's router description above lists exactly two `<Route>` elements, no catch-all).
 
 Client-side data fetching uses plain `fetch` via `apiClient` (`src/client/api.ts`) and React's
 built-in `useEffect`/`useState` — no state-management library is added (none exists in the repo
