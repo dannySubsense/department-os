@@ -38,7 +38,7 @@ All of this runs on **Department OS Core** — the shared operating environment 
 
 ## Status
 
-Pre-implementation. This repository currently contains project documentation and structure only. No application code, agent runtime, or infrastructure has been chosen or scaffolded yet. See [docs/roadmap.md](docs/roadmap.md) for what's next.
+In progress. Application code for the Problem Department MVP is underway (Slices 1-4 of 12) on the `feature/problem-department-mvp` branch ([PR #6](https://github.com/dannySubsense/department-os/pull/6)). See [docs/roadmap.md](docs/roadmap.md) for what's next.
 
 ## Contributing
 
