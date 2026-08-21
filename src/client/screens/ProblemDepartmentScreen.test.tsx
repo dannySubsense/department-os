@@ -1,8 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { ProblemDepartmentScreen } from './ProblemDepartmentScreen.js';
 import * as api from '../api.js';
+import {
+  formatDateTime,
+  formatInvestigationLabel,
+  humanizeStatus,
+  shortenId,
+} from '../lib/investigationDisplay.js';
 import type {
   ProblemDepartmentOverview,
   InvestigationSummary,
@@ -68,32 +74,36 @@ async function renderWithView(view: ProblemDepartmentOverview) {
 }
 
 describe('ProblemDepartmentScreen — Investigation portfolio table', () => {
-  it('renders every row from a mocked overview, matching id/status/createdAt/statusReason', async () => {
+  it('renders every row from a mocked overview, matching label/id/status/createdAt/statusReason', async () => {
+    const createdAt1 = '2026-01-01T00:00:00.000Z';
+    const createdAt2 = '2026-01-02T00:00:00.000Z';
     await renderWithView(
       buildView({
         investigations: [
           investigation({
             id: 'inv-1',
             status: 'open',
-            createdAt: '2026-01-01T00:00:00.000Z',
+            createdAt: createdAt1,
           }),
           investigation({
             id: 'inv-2',
             status: 'blocked',
             statusReason: 'No source reachable.',
-            createdAt: '2026-01-02T00:00:00.000Z',
+            createdAt: createdAt2,
           }),
         ],
       }),
     );
 
-    expect(screen.getByText('inv-1')).toBeInTheDocument();
-    expect(screen.getAllByText('open').length).toBeGreaterThan(0);
-    expect(screen.getByText('2026-01-01T00:00:00.000Z')).toBeInTheDocument();
+    expect(screen.getByText(formatInvestigationLabel(createdAt1))).toBeInTheDocument();
+    expect(screen.getByText(shortenId('inv-1'))).toBeInTheDocument();
+    expect(screen.getAllByText(humanizeStatus('open')).length).toBeGreaterThan(0);
+    expect(screen.getByText(formatDateTime(createdAt1))).toBeInTheDocument();
 
-    expect(screen.getByText('inv-2')).toBeInTheDocument();
-    expect(screen.getAllByText('blocked').length).toBeGreaterThan(0);
-    expect(screen.getByText('2026-01-02T00:00:00.000Z')).toBeInTheDocument();
+    expect(screen.getByText(formatInvestigationLabel(createdAt2))).toBeInTheDocument();
+    expect(screen.getByText(shortenId('inv-2'))).toBeInTheDocument();
+    expect(screen.getAllByText(humanizeStatus('blocked')).length).toBeGreaterThan(0);
+    expect(screen.getByText(formatDateTime(createdAt2))).toBeInTheDocument();
     expect(screen.getByText('No source reachable.')).toBeInTheDocument();
   });
 });
@@ -126,15 +136,15 @@ describe('ProblemDepartmentScreen — status filter', () => {
       }),
     );
 
-    expect(screen.getByText('inv-open')).toBeInTheDocument();
-    expect(screen.getByText('inv-blocked')).toBeInTheDocument();
+    expect(screen.getByText(shortenId('inv-open'))).toBeInTheDocument();
+    expect(screen.getByText(shortenId('inv-blocked'))).toBeInTheDocument();
 
     const callsBeforeFilter = vi.mocked(api.fetchProblemDepartmentOverview).mock.calls.length;
 
     fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'blocked' } });
 
-    expect(screen.queryByText('inv-open')).not.toBeInTheDocument();
-    expect(screen.getByText('inv-blocked')).toBeInTheDocument();
+    expect(screen.queryByText(shortenId('inv-open'))).not.toBeInTheDocument();
+    expect(screen.getByText(shortenId('inv-blocked'))).toBeInTheDocument();
     expect(vi.mocked(api.fetchProblemDepartmentOverview).mock.calls.length).toBe(
       callsBeforeFilter,
     );
@@ -159,7 +169,7 @@ describe('ProblemDepartmentScreen — StartInvestigationForm submission', () => 
     });
     fireEvent.click(screen.getByRole('button', { name: 'Start Investigation' }));
 
-    await waitFor(() => expect(screen.getByText('new-inv')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(shortenId('new-inv'))).toBeInTheDocument());
     expect(vi.mocked(api.fetchProblemDepartmentOverview).mock.calls.length).toBeGreaterThan(1);
   });
 
@@ -181,8 +191,8 @@ describe('ProblemDepartmentScreen — StartInvestigationForm submission', () => 
   });
 });
 
-describe('ProblemDepartmentScreen — last-active-Investigation link', () => {
-  it("renders the id as plain text plus a separate honestly-labeled <a href=\"/investigations/{id}\"> anchor (not a router Link)", async () => {
+describe('ProblemDepartmentScreen — per-row Open-current-view affordance', () => {
+  it("renders the shortened id as plain text plus a separate honestly-labeled <a href=\"/investigations/{id}\"> anchor labeled \"Open current view\" (not a router Link)", async () => {
     await renderWithView(
       buildView({
         investigations: [investigation({ id: 'inv-last-active', status: 'open' })],
@@ -190,12 +200,84 @@ describe('ProblemDepartmentScreen — last-active-Investigation link', () => {
       }),
     );
 
-    // id renders as plain text
-    expect(screen.getByText('inv-last-active')).toBeInTheDocument();
+    // shortened id renders as plain text
+    expect(screen.getByText(shortenId('inv-last-active'))).toBeInTheDocument();
 
     // a separate, honestly-labeled anchor exists alongside it
-    const link = screen.getByRole('link', { name: 'View current status' });
+    const link = screen.getByRole('link', { name: 'Open current view' });
     expect(link.tagName).toBe('A');
+    expect(link).toHaveClass('legacy-view-button');
     expect(link).toHaveAttribute('href', '/investigations/inv-last-active');
+  });
+
+  it('renders plain text, not a link, when the investigation status is brief-generated', async () => {
+    await renderWithView(
+      buildView({
+        investigations: [investigation({ id: 'inv-last-active', status: 'brief-generated' })],
+        lastActiveInvestigationId: 'inv-last-active',
+      }),
+    );
+
+    expect(
+      screen.getByText('Brief ready — review workspace not yet available.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Open current view' })).not.toBeInTheDocument();
+  });
+
+  it('renders no interactive control at all (no link, no button) for a brief-generated row', async () => {
+    await renderWithView(
+      buildView({
+        investigations: [investigation({ id: 'inv-brief', status: 'brief-generated' })],
+      }),
+    );
+
+    const row = screen
+      .getByText('Brief ready — review workspace not yet available.')
+      .closest('tr');
+    expect(row).not.toBeNull();
+    expect(within(row!).queryByRole('link')).not.toBeInTheDocument();
+    expect(within(row!).queryByRole('button')).not.toBeInTheDocument();
+  });
+
+  it('the affordance is no longer gated to only the last-active row — a non-last-active row with an actionable status also renders the "Open current view" button', async () => {
+    await renderWithView(
+      buildView({
+        investigations: [
+          investigation({ id: 'inv-last-active', status: 'open' }),
+          investigation({ id: 'inv-other', status: 'blocked' }),
+        ],
+        lastActiveInvestigationId: 'inv-last-active',
+      }),
+    );
+
+    const links = screen.getAllByRole('link', { name: 'Open current view' });
+    expect(links.length).toBe(2);
+    expect(links[1]).toHaveAttribute('href', '/investigations/inv-other');
+  });
+});
+
+describe('ProblemDepartmentScreen — Runs/Activity panel row rendering', () => {
+  it('renders each run row investigation id as plain shortened text, not inside a link', async () => {
+    await renderWithView(
+      buildView({
+        recentRuns: [run({ generationRunId: 'run-1', investigationId: 'inv-run-1' })],
+      }),
+    );
+
+    const idEl = screen.getByText(shortenId('inv-run-1'));
+    expect(idEl.closest('a')).toBeNull();
+    expect(
+      screen.queryByRole('link', { name: shortenId('inv-run-1') }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe('ProblemDepartmentScreen — department status badge removal', () => {
+  it('renders no department-status-badge element and no "installed"/"planned" text', async () => {
+    await renderWithView(buildView());
+
+    expect(document.querySelector('.department-status-badge')).toBeNull();
+    expect(screen.queryByText(/installed/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/planned/i)).not.toBeInTheDocument();
   });
 });

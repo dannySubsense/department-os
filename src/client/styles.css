@@ -267,6 +267,21 @@ body {
   color: var(--color-text-muted);
 }
 
+.work-group__row-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.work-group__row-label-primary {
+  font-size: 13px;
+}
+
+.work-group__row-label-secondary {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
 /* Activity panel */
 
 .activity-panel {
@@ -288,6 +303,54 @@ body {
 .activity-panel__investigation-link {
   color: var(--color-active);
   text-decoration: none;
+}
+
+.activity-panel__investigation-id {
+  color: var(--color-text-muted);
+}
+
+/* Legacy-view transitional affordance — deliberately button-styled, not link-styled, to signal
+   a transitional escape hatch to the legacy per-Investigation route rather than an ordinary
+   in-app hyperlink. */
+
+.legacy-view-button {
+  display: inline-block;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: var(--space-1) var(--space-2);
+  background: var(--color-surface);
+  color: var(--color-text);
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.legacy-view-button:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.investigation-portfolio-table__label {
+  font-size: 13px;
+}
+
+.investigation-portfolio-table__id {
+  color: var(--color-text-muted);
+  margin-top: 2px;
+}
+
+.investigation-portfolio-table__legacy-note {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  margin: var(--space-1) 0 0;
+}
+
+.recent-list__label-primary {
+  font-size: 13px;
+}
+
+.recent-list__label-secondary {
+  color: var(--color-text-muted);
+  font-size: 12px;
 }
 
 .empty-text {

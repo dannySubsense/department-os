@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react';
 import { fetchMissionControl } from '../api.js';
 import { ProblemDepartmentCard } from '../components/ProblemDepartmentCard.js';
+import {
+  formatInvestigationLabel,
+  humanizeStatus,
+  shortenId,
+} from '../lib/investigationDisplay.js';
 import type {
   MissionControlView,
   InvestigationSummary,
@@ -138,8 +143,17 @@ function ActiveWorkGroup({
             const rowVariant = isBlockedWhileActive ? 'attention' : variant;
             return (
               <li key={inv.id} className={`work-group__row work-group__row--${rowVariant}`}>
-                <span className="data-value work-group__row-id">{inv.id}</span>
-                <span className="data-value work-group__row-status">{inv.status}</span>
+                <span className="work-group__row-label">
+                  <span className="work-group__row-label-primary">
+                    {formatInvestigationLabel(inv.createdAt)}
+                  </span>
+                  <span className="data-value work-group__row-label-secondary">
+                    {shortenId(inv.id)}
+                  </span>
+                </span>
+                <span className="data-value work-group__row-status">
+                  {humanizeStatus(inv.status)}
+                </span>
                 {inv.statusReason ? (
                   <span className="work-group__row-reason">{inv.statusReason}</span>
                 ) : null}
@@ -160,12 +174,9 @@ function ActiveActivityPanel({ runs }: { runs: GenerationRunSummary[] }) {
     <ul className="activity-panel">
       {runs.map((run) => (
         <li key={run.generationRunId} className="activity-panel__row">
-          <a
-            href={`/investigations/${run.investigationId}`}
-            className="data-value activity-panel__investigation-link"
-          >
-            {run.investigationId}
-          </a>
+          <span className="data-value activity-panel__investigation-id">
+            {shortenId(run.investigationId)}
+          </span>
           <span className="data-value">{run.runtimeIdentifier}</span>
           <span className="data-value">{run.outcome}</span>
           <span className="data-value">{run.startedAt}</span>
@@ -184,23 +195,24 @@ function RecentInvestigationsList({ investigations }: { investigations: Investig
         <p className="empty-text">No investigations yet.</p>
       ) : (
         <ul>
-          {investigations.map((inv, index) =>
-            index === 0 ? (
-              <li key={inv.id}>
-                {/* Last-active Investigation link — plain <a>, not a router <Link> (US-4 AC2). */}
-                <span className="data-value">{inv.id}</span>{' '}
-                <a href={`/investigations/${inv.id}`} className="data-value">
-                  View current status
-                </a>{' '}
-                <span className="data-value">{inv.status}</span>
-              </li>
-            ) : (
-              <li key={inv.id}>
-                <span className="data-value">{inv.id}</span>{' '}
-                <span className="data-value">{inv.status}</span>
-              </li>
-            ),
-          )}
+          {investigations.map((inv) => (
+            <li key={inv.id}>
+              <div className="recent-list__label-primary">
+                {formatInvestigationLabel(inv.createdAt)}
+              </div>
+              <div className="data-value recent-list__label-secondary">{shortenId(inv.id)}</div>
+              {inv.status === 'brief-generated' ? (
+                <p className="investigation-portfolio-table__legacy-note">
+                  Brief ready — review workspace not yet available.
+                </p>
+              ) : (
+                <a href={`/investigations/${inv.id}`} className="legacy-view-button">
+                  Open current view
+                </a>
+              )}{' '}
+              <span className="data-value">{humanizeStatus(inv.status)}</span>
+            </li>
+          ))}
         </ul>
       )}
     </div>

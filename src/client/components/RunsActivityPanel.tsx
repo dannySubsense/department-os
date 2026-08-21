@@ -1,4 +1,5 @@
 import type { GenerationRunSummary } from '../../types/readModels.js';
+import { shortenId } from '../lib/investigationDisplay.js';
 
 interface RunsActivityPanelProps {
   runs: GenerationRunSummary[];
@@ -15,12 +16,9 @@ export function RunsActivityPanel({ runs }: RunsActivityPanelProps) {
     <ul className="activity-panel">
       {runs.map((run) => (
         <li key={run.generationRunId} className="activity-panel__row">
-          <a
-            href={`/investigations/${run.investigationId}`}
-            className="data-value activity-panel__investigation-link"
-          >
-            {run.investigationId}
-          </a>
+          <span className="data-value activity-panel__investigation-id">
+            {shortenId(run.investigationId)}
+          </span>
           <span className="data-value">{run.runtimeIdentifier}</span>
           <span className="data-value">{run.outcome}</span>
           <span className="data-value">{run.startedAt}</span>

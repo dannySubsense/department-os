@@ -1,5 +1,11 @@
 import type { InvestigationSummary } from '../../types/readModels.js';
 import type { InvestigationStatus } from '../../types/domain.js';
+import {
+  formatDateTime,
+  formatInvestigationLabel,
+  humanizeStatus,
+  shortenId,
+} from '../lib/investigationDisplay.js';
 
 const STATUS_OPTIONS: Array<InvestigationStatus> = [
   'open',
@@ -43,7 +49,7 @@ export function InvestigationPortfolioTable({
           <option value="all">all</option>
           {STATUS_OPTIONS.map((status) => (
             <option key={status} value={status}>
-              {status}
+              {humanizeStatus(status)}
             </option>
           ))}
         </select>
@@ -51,7 +57,7 @@ export function InvestigationPortfolioTable({
       <table className="investigation-portfolio-table__table">
         <thead>
           <tr>
-            <th>id</th>
+            <th>Investigation</th>
             <th>status</th>
             <th>Created</th>
             <th>Status reason</th>
@@ -59,23 +65,27 @@ export function InvestigationPortfolioTable({
         </thead>
         <tbody>
           {filtered.map((inv) => {
-            const isLastActive = inv.id === lastActiveInvestigationId;
             return (
               <tr key={inv.id} className="investigation-portfolio-table__row">
-                <td className="data-value">
-                  {isLastActive ? (
-                    <>
-                      <span className="data-value">{inv.id}</span>{' '}
-                      <a href={`/investigations/${inv.id}`} className="data-value">
-                        View current status
-                      </a>
-                    </>
+                <td>
+                  <div className="investigation-portfolio-table__label">
+                    {formatInvestigationLabel(inv.createdAt)}
+                  </div>
+                  <div className="data-value investigation-portfolio-table__id">
+                    {shortenId(inv.id)}
+                  </div>
+                  {inv.status === 'brief-generated' ? (
+                    <p className="investigation-portfolio-table__legacy-note">
+                      Brief ready — review workspace not yet available.
+                    </p>
                   ) : (
-                    inv.id
+                    <a href={`/investigations/${inv.id}`} className="legacy-view-button">
+                      Open current view
+                    </a>
                   )}
                 </td>
-                <td className="data-value">{inv.status}</td>
-                <td className="data-value">{inv.createdAt}</td>
+                <td className="data-value">{humanizeStatus(inv.status)}</td>
+                <td className="data-value">{formatDateTime(inv.createdAt)}</td>
                 <td>{inv.statusReason ? inv.statusReason : null}</td>
               </tr>
             );

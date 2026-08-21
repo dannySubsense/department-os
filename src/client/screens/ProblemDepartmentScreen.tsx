@@ -78,11 +78,6 @@ export function ProblemDepartmentScreen() {
       <section className="section" aria-label="Department header">
         <h1 className="screen__title">{overview.department.name}</h1>
         <p className="problem-department-screen__thesis">{overview.department.thesis}</p>
-        <span
-          className={`department-status-badge department-status-badge--${overview.department.status}`}
-        >
-          {overview.department.status}
-        </span>
       </section>
 
       <section className="section" aria-label="Investigation portfolio">
