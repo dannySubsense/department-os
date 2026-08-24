@@ -13,9 +13,13 @@
 - [x] Slice 8: Provenance Recorder — COMPLETE (2026-08-14), then **RETROACTIVELY CORRECTED (2026-08-14)** — see below. Per Danny's binding directive: instrumented callForcedTool/searchWeb rather than adding a second validation/repair layer. 2 QC rounds at original close (pass 1: 2 blocking bugs — a migration that would fail against real pre-existing data, and a validation-record grouping bug that would fabricate repair histories once a step calls the same tool twice; pass 2: PASS, independently re-probed).
 - [x] Slice 8 RETROACTIVE CORRECTION (2026-08-14) — defect discovered during Slice 9 design, not by Slice 8's own gate. `runStepWithProvenance` recorded a normally-returned `{ generationFailed: true }` as a SUCCEEDED step (all seven components catch internally and return rather than throw, so the throw branch Slice 8's tests exercised is effectively unreachable — the tested path could not occur while the real path went untested). `outputRefs` was separately hardcoded `[]` on both branches. Blast radius MEASURED, not assumed: zero production call sites at `64fff5e` (the intended caller `generateBriefVersion.ts` is Slice 9 work and did not exist), so LATENT/pre-integration — no mis-recorded rows provable from product code; a read-only DB census found 1 run / 1 step total. Fixes: result-aware outcome classification; `error` populated from `generationFailureReason`; `getOutputRefs: (result: T) => string[]` added as a **required** input field (Composer ruling — each caller maps its own result shape, `() => []` makes emptiness deliberate; the initially-implemented internal whitelist was removed entirely as it returned `[]` silently for unrecognised shapes). Binding contract corrected in `02-ARCHITECTURE.md` §1.9 pt 3 (the `error` text encoded the false assumption that failures reach the recorder only by throwing) and §1.9 pt 4 (stale four-field signature). **3 independent QC rounds** (pass 1 FAIL: architecture/code contradiction, `domain.ts` "iff" overclaim, and a vacuous `expect(true).toBe(true)` placeholder test that passed while asserting nothing; pass 2 FAIL: the remediation left §1.9 pt 4's signature stale — same defect class as pass 1; pass 3 PASS, with type checking restored and compiler-probed). Bounded-repair reachability audited: the `failed`-step-with-`error: undefined` branch is unreachable for all seven components.
 - [x] Slice 9: Brief Assembler — **COMPLETE (2026-08-16). Frank forge-gate PASS, attempt 1/3.** Design took FOUR Composer design gates (revisions 4→8) before implementation was authorised: rev 4 failed with 7 blocking + 4 significant; rev 5 added the G-1 precedence ruling (a component failure means "unknown because generation failed", not "searched and found nothing", so it may never produce a NegativeFinding) then failed with 5 more; rev 6 failed on a stale same-Brief supersede target passing preflight and an evidence-universe rule that made ordinary runs impossible; rev 7 failed on one omission (`startSnapshot` is captured before Extraction, so the union had to include `ExtractionResult.evidenceItems`); rev 8 PASSED. A first implementation attempt against the pre-rev-4 design is QUARANTINED at `quarantine/slice-9-attempt-1` (`86f7b8b`) and is explicitly not evidence. **2 QC rounds.** Round 1 FAIL, 5 defects, the critical one being a SHARED WELL: the dev database was carrying the QUARANTINED attempt's schema (migration runner tracks filenames only, so the rewritten 007 was never reapplied) — every green result before the rebuild, including a reported 266/266, was measured against a schema that did not match its own migrations and has been WITHDRAWN as evidence. Also found: a merged Slice 8 test broken by Slice 9's new FK on any fresh DB, a vacuous test asserting its own fixture, an uncovered roadmap checkbox, and no migration test for 007. Remediation: migration `008_reconcile_brief_versioning_constraints.sql` reconciles constraint DEFINITIONS (not names) — 10 `TEXT[]`→`UUID[]` conversions, 6 wrongly-`DEFERRABLE` FKs made plain, 13 constraints added — failing loudly on violating data with no `NOT VALID` and no row deletion; `deptos_core` dropped and replayed 001→008. Replacing the vacuous test immediately exposed a real defect: `BriefGenerationFailedError.investigationStatus` was assumed rather than observed, reporting `'generation-failed'` for a `'blocked'` Investigation — the same ignored-return-value class the Composer caught at the design gate, recurring on the failure paths. Fixed at 4 sites via read-back. Round 2 PASS, mutation-verified. 270 passed / 1 skipped, `tsc` clean, on a database rebuilt from the migrations as written.
-- [ ] Slice 10: Investigation Screen — Completed State — PENDING
-- [ ] Slice 11: Decision Recorder + Decision Form + Decision Confirmation Panel — PENDING
-- [ ] Slice 12: Validity/Invalidation Service + Decision-History Banner — PENDING
+- [~] Slice 10: Investigation Screen — Completed State — **SUPERSEDED (2026-08-22), never built.**
+  Requirements traced into `docs/specs/product-surface-checkpoint-2/` (see that sprint's
+  `01-REQUIREMENTS.md` for the retained/revised/moved/removed disposition of each item).
+- [~] Slice 11: Decision Recorder + Decision Form + Decision Confirmation Panel — **SUPERSEDED
+  (2026-08-22), never built.** Requirements traced into `docs/specs/product-surface-checkpoint-2/`.
+- [~] Slice 12: Validity/Invalidation Service + Decision-History Banner — **SUPERSEDED (2026-08-22),
+  never built.** Requirements traced into `docs/specs/product-surface-checkpoint-2/`.
 
 ## Current
 
@@ -25,17 +29,23 @@
 > did that until 2026-08-14 and drifted out of sync with this file; it was removed rather than
 > resynced. Detailed slice history is below, not here.
 
-Build target: Problem Department MVP · Phase: Forge
-Product code exists: Slices 1-9. Slice 9 (Brief Assembler) closed 2026-08-16.
-Last completed product gate: **Slice 9 Frank forge-gate PASS (2026-08-16), attempt 1/3.**
+Build target: Problem Department MVP · Phase: Spec (re-planning remaining browser-to-decision path)
+Product code exists: Slices 1-9 (this file) + Product Surface Checkpoint 1 Slices 1-2
+(`docs/specs/product-surface-checkpoint-1/PROGRESS`-equivalent — see that sprint's own roadmap;
+its own Slice numbers are local to that roadmap, not a continuation of this file's counter).
+Last completed product gate: **Slice 9 Frank forge-gate PASS (2026-08-16), attempt 1/3**, and
+separately, Product Surface Checkpoint 1's own Frank forge-gate PASS (SHA `152a124`, 2026-08-21).
 Last merged side tool: spec-doc-checker (PR #5, 2026-08-10) — tooling, not product progress.
-Next product capability (not yet built): Slice 10 — the Investigation Screen's Completed State,
-the read-only surface where a generated Brief can actually be reviewed. Slice 9 made the Brief
-exist; Slice 10 makes it visible.
 
-Slice: 10 — Investigation Screen, Completed State. NOT STARTED.
-Step: Slice 9 CLOSED. Frank forge-gate PASS, Composer final human gate PASS at review commit
-83948e2, committed as 6c54fde and PUSHED to PR #6. Nothing is dispatched for Slice 10.
+**This stream's single active implementation plan is now `docs/specs/product-surface-checkpoint-2/`**
+(spec in progress as of 2026-08-22). Old Slices 10-12 below are SUPERSEDED, not completed — their
+requirements were traced into Checkpoint 2 rather than built as originally specced. Checkpoint 2's
+own roadmap uses qualified task identifiers (`C2-S1`, `C2-S2`, ...) local to that document, so
+"Slice 1" is never ambiguous across the two roadmaps that now make up this one unfinished stream.
+Do not dispatch Forge against Slice 10/11/12 as written below — they are historical record only.
+
+Next product capability (not yet built): whatever Checkpoint 2's roadmap specifies as `C2-S1` once
+that spec is Frank-gated and Danny-approved.
 
 **Product Reality Demonstration run 2026-08-17 against 6c54fde** (isolated worktree, fresh
 database `deptos_slice9_demo_20260817` with 001-008 replayed, real LLM, no mocks). Two Briefs were
