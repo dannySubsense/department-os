@@ -530,16 +530,14 @@ export async function beginFencedWrite(input: {
   `ALLOWED_PRIOR_STATUSES['generation-failed']`, deliberately excluding e.g. `'blocked'`) that runs
   outside any transaction, outside Phase 4, and outside `beginFencedWrite`. A fenced-out run reaching
   this path can still transition the Investigation to `'generation-failed'` if the row's prior status
-  still allows it. This remains acceptable, unlike the writes above, because it is genuinely
-  idempotent in EFFECT and carries no Investigation-visible content a later run could wrongly
-  consume: it is a status enum write, not a row a read helper joins into evidence/claims/eligibility,
-  and §4.2's eligibility rule and §4.8's ledger evaluate `ProblemBrief`/evidence-consumption state,
-  never `status` alone — a stray `'generation-failed'` write from a fenced-out run does not unlock or
-  block anything the fencing mechanism exists to protect. This is a narrower, still-valid instance of
-  the "accretive, harmless" reasoning the prior draft wrongly applied to the evidence/claim/ledger
-  writes above — it holds here specifically because this write has no downstream reader that treats
-  it as consumable evidence. **Corrected 2026-09-05, Frank spec-gate finding F4: this is NOT because
-  the Investigation "was already failing" — a genuinely reachable case exists where it is not.** An
+  still allows it. This remains acceptable, unlike the writes above, because it carries no
+  Investigation-visible content a later run could wrongly consume: it is a status enum write, not a
+  row a read helper joins into evidence/claims/eligibility, and §4.2's eligibility rule and §4.8's
+  ledger evaluate `ProblemBrief`/evidence-consumption state, never `status` alone — a stray
+  `'generation-failed'` write from a fenced-out run does not unlock or block anything the fencing
+  mechanism exists to protect. **Corrected 2026-09-05, Frank spec-gate finding F4: this is NOT
+  because the Investigation "was already failing," and NOT because the write is idempotent — a
+  genuinely reachable case exists where it is neither.** An
   abandoned INITIAL run's own process can still reach this path later and write
   `investigation.status = 'generation-failed'` while a healthy REPLACEMENT run (the operator's
   retry) is actively in progress on an `'open'`/eligible Investigation — a real status regression,
