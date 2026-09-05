@@ -230,7 +230,10 @@ structural checks could never catch, one with false-positive-PASS potential on a
 - Delegate every design, code, or content-authoring step to the framework's named sub-agent —
   even under time pressure, even when authoring it directly would be faster.
 - A completion claim about a gated artifact is an assertion, not evidence. Back it with the
-  framework's own gate record (its `PROGRESS.md`'s `Spec Gate`/`Forge Gate` section) before
-  reporting done — otherwise it is unverified, not a lower-confidence pass.
+  framework's own gate record — for bounded tool-level/lite-mode work, that's the tool's own
+  `{tool-name}-PROGRESS.md`'s `## Spec Gate`/`## Forge Gate` section; for full sprint-level work,
+  gate history lives only in the gating commit's message and/or the PR description, per
+  `docs/development-workflow.md` — before reporting done, otherwise it is unverified, not a
+  lower-confidence pass.
 - If no sub-agent exists for an artifact a framework didn't anticipate, say so explicitly and seek
   independent review before reporting it complete — never a silent exception.
