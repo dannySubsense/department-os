@@ -82,3 +82,20 @@ recorded. They exist for the separate reconciliation session only:
 
 Registered in the platform Agent Registry as **Sol** (`author: sol`, relay handle `sol`) —
 first multi-project entry in that registry, spanning `department-os` and `signal-current`.
+
+---
+
+## Switchboard relay
+
+`switchboard` is also registered as a global Codex MCP server (`~/.codex/config.toml`,
+`[mcp_servers.switchboard]`), the same relay Claude Code agents use
+(`~/.claude/switchboard/relay-mcp.js`, no Claude-specific dependency — a generic Node MCP server
+reading/writing a shared JSON file). Verified live 2026-09-05 (`codex exec` calling
+`read_messages` with `agent_id: "sol"`, real response returned).
+
+- `read_messages({ agent_id: "sol" })` — check your inbox. Coordination messages have no
+  live-push delivery; this is a manual poll.
+- `send_message({ from: "sol", to: "<recipient>", message: "..." })` — reply or initiate contact.
+- This is a coordination channel, not a LORE substitute — the cold-review rule above still governs
+  when you read/write LORE. Relay messages are fine to read at any time; they are not "prior
+  session memory" in the sense that rule restricts.
