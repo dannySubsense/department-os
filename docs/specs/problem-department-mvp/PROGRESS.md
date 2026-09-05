@@ -80,6 +80,24 @@ fixed and neither of which any test caught:
    `generateBriefVersion`, so nothing regenerates. Verified by resubmitting real material to
    `f0c5bd3e-01c0-4d89-bebc-56bea3f7229f`: 3 sources persisted, status unchanged.
 
+3. **TRACKED, NOT OWNED — three constants remain unsourced after a benchmark-agent audit and two
+   Cold Frank FAILs (2026-09-05).** `MIN_CONTENT_LENGTH` (`resolveSourceArtifact.ts`, gates
+   `content-retrieved` vs. `reachable-no-content` for `type: 'url'` sources), `MAX_REPAIR_ATTEMPTS`
+   (`llmClient.ts`, caps schema-repair attempts at 1), and `MAX_OUTPUT_TOKENS` (`llmClient.ts`,
+   8192-token generation cap) each have no mathematical, scientific, or programmatic precedent —
+   per Danny's explicit ruling, none may carry a named owner until real precedent exists; an
+   `owner: unassigned` label is also not acceptable (Frank: "a fourth option the rule doesn't
+   allow"). This is a tracked task, not a label on the constant: next real step is dispatching
+   `benchmark` to (a) produce a persisted, reproducible measurement artifact for
+   `MIN_CONTENT_LENGTH` (URL list, fetch script, raw byte length vs. extracted-text length, saved
+   under `docs/specs/`, not asserted in a comment), and (b) check whether this pipeline's own
+   `SchemaValidationAttempt` history already has real data on repair-attempt success rates that
+   could ground `MAX_REPAIR_ATTEMPTS` instead of leaving it a bare assumption. Until either lands,
+   these three constants stay exactly as documented in their own source comments: real, in
+   production, unsourced, undeleted (deleting/redesigning around them was assessed and deferred —
+   `MIN_CONTENT_LENGTH` still functions correctly as a literal near-empty-response guard even
+   without a defensible specific value) — not quietly built on further.
+
 Product boundary at Slice 9, stated exactly: **a human can start an investigation and see it fail;
 a human cannot see one succeed.** Three routes exist (`GET /investigations/new`,
 `POST /investigations`, `GET /investigations/:id`); `/` is 404; the durable URL returns
