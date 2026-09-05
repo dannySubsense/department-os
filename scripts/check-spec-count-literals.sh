@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Mechanical check for the count-drift defect class that failed this sprint's spec-gate 4 times
-# (B-2/B-6, C-1/C-2/C-3, C-4, C-5 — see docs/specs/product-surface-checkpoint-1/GATE-LOG.md).
+# (B-2/B-6, C-1/C-2/C-3, C-4, C-5 — see git history at 152a124^:docs/specs/product-surface-checkpoint-1/GATE-LOG.md).
 # A prose review sweep is capped by whatever the reviewer's eye happens to cover; this script
 # enumerates every digit-adjacent-to-an-enumerable-noun occurrence across a spec doc set so a
 # human/agent classifies each hit once, instead of re-deriving the search from scratch each pass.
