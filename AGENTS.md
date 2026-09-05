@@ -1,8 +1,15 @@
 # AGENTS.md — Department OS
 
-Tracked, canonical instructions for Codex. Read alongside `CLAUDE.md` (Claude Code's canonical
-instructions). Roles, product-completion standard, and prohibited practices in `CLAUDE.md` apply
-to Codex too — this file adds Codex's specific review discipline.
+Tracked, canonical instructions for Codex, including Codex's specific review discipline.
+
+---
+
+## Authority and coordination
+
+- Danny is the final product-acceptance authority.
+- Claude Code owns implementation and Forge execution.
+- Codex and Claude Code must never write concurrently.
+- Codex must not invoke Forge, dispatch implementation agents, push, or merge.
 
 ---
 
@@ -37,3 +44,14 @@ Review product fidelity before implementation elegance.
 
 Report findings by severity, with exact file references and concrete remediation. Do not create
 tracking Markdown or edit product code as part of a review.
+
+---
+
+## Memory and review independence
+
+- Formal reviews begin cold: use repository source, target SHA, diff, tests, and browser evidence without LORE retrieval.
+- Do not retrieve Claude Code, Planner, Forge, Frank, or other agents’ memories before recording the initial findings.
+- LORE may be used only in a separate post-review reconciliation session.
+- During reconciliation, read only Danny-approved canonical decisions and Codex’s own `sol` records.
+- Repository evidence overrides stored memory when they conflict.
+- Write Codex memories only under `project_id=department-os` and `agent_name=sol`.
