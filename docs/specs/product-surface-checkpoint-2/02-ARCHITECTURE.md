@@ -344,7 +344,9 @@ independent review — see the guard SQL below).
 Live `resolveSourceArtifact.ts:55-57` resolves every `type === 'text'` `source_artifact` to
 `'content-retrieved'` with `resolvedContent = artifact.raw` unconditionally — there is no emptiness
 check on this branch (unlike the `type === 'url'` branch, which already applies
-`MIN_CONTENT_LENGTH` via `reachable-no-content`, `resolveSourceArtifact.ts:117-128`). The only
+`MIN_CONTENT_LENGTH` via `reachable-no-content` — cite by symbol (`MIN_CONTENT_LENGTH`,
+`resolveSourceArtifact.ts`), not a line range, since line numbers here have already gone stale
+once (corrected 2026-09-05, Frank spec-gate FAIL)). The only
 existing server-side validation of submitted text is `src/web/apiRoutes.ts:55` (`raw: a.raw.trim()`,
 a normalization, not a rejection) and `src/web/apiRoutes.ts:45` (rejects only a wholly EMPTY
 `artifacts` array, not a whitespace-only individual `raw` string) — so a source submitted with
