@@ -11,32 +11,32 @@ import https from 'node:https';
 
 /** Fetch timeout — bounds how long a single unreachable/hanging source can block resolution.
  *  Unsourced — no mathematical, scientific, or programmatic precedent has been shown for 10
- *  seconds specifically. This value must not be treated as accepted: it has no named owner
- *  because nobody has reviewed real evidence for it, and "PROVISIONAL, owner: [name]" is not a
- *  substitute for that evidence — a label is not a citation (DDR-0002,
- *  `docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`). Tracked in
- *  `docs/specs/problem-department-mvp/PROGRESS.md` pending real grounding before it can be either
- *  cited or replaced. */
+ *  seconds specifically. Classified Category B (infrastructure/operational safety limit) under
+ *  DDR-0002 (`docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`, B3): a connection
+ *  timeout, not a correctness or evidence-quality gate, so it does not require branch (a)/(b)
+ *  sourcing or ownership. No grounding is pending. Revisit only on an observed operational
+ *  incident (e.g. timeouts firing on legitimate slow sources), not on a scheduled measurement. */
 export const FETCH_TIMEOUT_MS = 10_000;
 
 /** Response body size cap (Sol review item 2 — SSRF hardening): a malicious or misbehaving source
  *  could otherwise stream an unbounded response into memory. Unsourced — no mathematical,
- *  scientific, or programmatic precedent has been shown for 5 MiB specifically. This value must
- *  not be treated as accepted: it has no named owner because nobody has reviewed real evidence
- *  for it, and "PROVISIONAL, owner: [name]" is not a substitute for that evidence — a label is
- *  not a citation (DDR-0002, `docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`).
- *  Tracked in `docs/specs/problem-department-mvp/PROGRESS.md` pending real grounding. Revisit if
- *  legitimate long-form sources are seen truncating. */
+ *  scientific, or programmatic precedent has been shown for 5 MiB specifically. Classified
+ *  Category B (infrastructure/operational safety limit) under DDR-0002
+ *  (`docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`, B4): a memory/SSRF guard,
+ *  not a correctness or evidence-quality gate, so it does not require branch (a)/(b) sourcing or
+ *  ownership. No grounding is pending. Revisit only on an observed operational incident —
+ *  specifically legitimate long-form sources seen truncating. Scope limit: this reclassification
+ *  holds only while the cap rejects oversize responses outright; if it is ever changed to
+ *  truncate instead, it moves back to Category A the same day. */
 export const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 
 /** Redirect hop cap — bounds how long a redirect chain can be followed before giving up.
  *  Unsourced — no mathematical, scientific, or programmatic precedent has been shown for 5 hops
- *  specifically. This value must not be treated as accepted: it has no named owner because
- *  nobody has reviewed real evidence for it, and "PROVISIONAL, owner: [name]" is not a
- *  substitute for that evidence — a label is not a citation (DDR-0002,
- *  `docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`). Tracked in
- *  `docs/specs/problem-department-mvp/PROGRESS.md` pending real grounding before it can be either
- *  cited or replaced. */
+ *  specifically. Classified Category B (infrastructure/operational safety limit) under DDR-0002
+ *  (`docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`, B5): a hop-count guard, not
+ *  a correctness or evidence-quality gate, so it does not require branch (a)/(b) sourcing or
+ *  ownership. No grounding is pending. Revisit only on an observed operational incident (e.g. a
+ *  legitimate redirect chain breaking), not on a scheduled measurement. */
 export const MAX_REDIRECTS = 5;
 
 /** Test-only escape hatch (Sol review item 2 fix). Private/loopback-network blocking is applied

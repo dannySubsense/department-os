@@ -100,8 +100,10 @@ async function resolveUrl(
       };
     }
 
-    // No numeric threshold here, deliberately. This replaced `MIN_CONTENT_LENGTH = 200`, which was
-    // MEASURED on 2026-09-05 and found unable to do its job at ANY value — artifact:
+    // No numeric threshold here, deliberately. This replaced `MIN_CONTENT_LENGTH = 200`. On the 11
+    // measured 2xx responses, every threshold in [1, 558] classified them identically — the
+    // deletion itself rests on the strict-emptiness definition needing no threshold at all; the
+    // measurement is consistent with that, not the sole justification for it. Artifact:
     // `docs/specs/problem-department-mvp/min-content-length-measurement.md` (18 real URLs, re-run
     // with `npx tsx scripts/measure-min-content-length.ts`; run twice, same conclusions). Two
     // results from that run bound what this check may claim: (1) across the 11 sampled 2xx

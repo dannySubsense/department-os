@@ -18,7 +18,7 @@ beforeAll(async () => {
   fixtureServer = createServer((req, res) => {
     if (req.url === '/large-content') {
       res.writeHead(200, { 'Content-Type': 'text/plain' });
-      res.end('lorem ipsum '.repeat(50)); // well over 200 chars
+      res.end('lorem ipsum '.repeat(50)); // non-empty
       return;
     }
     if (req.url === '/empty') {

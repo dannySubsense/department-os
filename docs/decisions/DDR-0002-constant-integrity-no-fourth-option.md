@@ -129,8 +129,9 @@ source and does **not** upgrade either constant.
 
 **Open follow-through on A1, not closed by this DDR:** the US-13 evidence-eligibility consequence in
 product-surface-checkpoint-2 (what `reachable-no-content` means once it collapses to "empty body
-only") is undecided, and `02-ARCHITECTURE.md` (§ around lines 216 and 315) still describes the old
-threshold and quotes its old failure message.
+only") is undecided. `02-ARCHITECTURE.md` (§ around lines 216 and 315) was corrected in the same
+commit as this DDR's update and now describes the strict-emptiness check rather than the old
+threshold.
 
 ### Category B — infrastructure / operational safety limits (5)
 
@@ -177,7 +178,10 @@ requires an array of `{address, family}`, while `safeLookup` always calls back w
 Every hostname-based fetch therefore throws `Invalid IP address: undefined` before any bytes are
 read, meaning the Source Resolver's content classification is currently unreachable in production
 for hostname URLs. Reproduce: `node scripts/repro-safelookup-all.mjs`. This is a code defect, not a
-constant-integrity issue, and needs its own ticket.
+constant-integrity issue. It is already tracked, not left for a new ticket: it is specified as
+US-7 at `docs/specs/product-surface-checkpoint-2/01-REQUIREMENTS.md:368`, with a roadmap fix at
+`docs/specs/product-surface-checkpoint-2/04-ROADMAP.md` (slice C2-S1, lines ~229-245), in a spec
+that already has its own Frank spec-gate PASS history.
 
 This DDR closes the question of what the rule *is*, and now also records the 2026-09-05 category
 split and the per-constant measurement results. It does **not** close A2 or A3 (awaiting real

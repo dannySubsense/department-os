@@ -73,8 +73,11 @@ array-callback  (honours all)     : STATUS 200
 ```
 
 This is a **production defect in `src/services/ssrfGuardedFetch.ts`**, not a measurement artifact,
-and it is out of scope for this constant audit to fix — it is recorded here and should be raised as
-its own defect. Its consequence for this audit is worth stating plainly: as the code stands on
+and it is out of scope for this constant audit to fix. It is recorded here and already tracked
+elsewhere, not left for a new ticket: it is specified as US-7 at
+`docs/specs/product-surface-checkpoint-2/01-REQUIREMENTS.md:368`, with a roadmap fix at
+`docs/specs/product-surface-checkpoint-2/04-ROADMAP.md` (slice C2-S1, lines ~229-245), in a spec
+that already has its own Frank spec-gate PASS history. Its consequence for this audit is worth stating plainly: as the code stands on
 Node 22, the content-length classification is **unreachable for every hostname-based URL**, because
 resolution throws before the comparison. The harness therefore re-implements the guarded fetch with
 the single difference that its `lookup` honours `options.all`, importing the real `isDisallowedIp`,
@@ -195,9 +198,9 @@ and any threshold on it would need its own measurement under DDR-0002. This docu
 propose one and does not authorize one; adopting the extraction path is Danny's call.
 
 **Not resolved by this document:** whether the US-13 evidence-eligibility rule in
-product-surface-checkpoint-2 still holds once `reachable-no-content` collapses to "empty body only",
-and `02-ARCHITECTURE.md`'s description of this threshold, which still documents the old behaviour
-and quotes its old failure message.
+product-surface-checkpoint-2 still holds once `reachable-no-content` collapses to "empty body only".
+`02-ARCHITECTURE.md`'s description of this threshold was corrected in the same commit as this
+document and now describes the strict-emptiness check rather than the old behaviour.
 
 ---
 

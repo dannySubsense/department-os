@@ -9,20 +9,19 @@ import type { SearchWebAdapterResult } from '../types/domain.js';
  *  tool (row 9) as the search provider for this milestone's runtime; this adapter wraps that
  *  specific call, so a future provider swap touches only this file. */
 /** Unsourced — no mathematical, scientific, or programmatic precedent has been shown for 1024
- *  specifically. This value must not be treated as accepted: it has no named owner because
- *  nobody has reviewed real evidence for it, and "PROVISIONAL, owner: [name]" is not a
- *  substitute for that evidence — a label is not a citation. Per DDR-0002
- *  (`docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`) this constant is tracked
- *  in `PROGRESS.md` pending real grounding (e.g. a `benchmark`-dispatched measurement of actual
- *  `web_search` response sizes against this cap) before it can be either cited or replaced. */
+ *  specifically. Classified Category B (infrastructure/operational safety limit) under DDR-0002
+ *  (`docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`, B1): a search-output token
+ *  budget, not a correctness or evidence-quality gate, so it does not require branch (a)/(b)
+ *  sourcing or ownership. No grounding is pending. Revisit only on an observed operational
+ *  incident, not on a scheduled measurement. */
 const MAX_SEARCH_OUTPUT_TOKENS = 1024;
 
 /** Unsourced — no mathematical, scientific, or programmatic precedent has been shown for 5
- *  specifically. This value must not be treated as accepted: it has no named owner because
- *  nobody has reviewed real evidence for it, and "PROVISIONAL, owner: [name]" is not a
- *  substitute for that evidence — a label is not a citation. Per DDR-0002
- *  (`docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`) this constant is tracked
- *  in `PROGRESS.md` pending real grounding before it can be either cited or replaced. */
+ *  specifically. Classified Category B (infrastructure/operational safety limit) under DDR-0002
+ *  (`docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`, B2): a per-turn search
+ *  budget, not a correctness or evidence-quality gate, so it does not require branch (a)/(b)
+ *  sourcing or ownership. No grounding is pending. Revisit only on an observed operational
+ *  incident (e.g. search budget exhausted mid-investigation), not on a scheduled measurement. */
 const MAX_SEARCHES_PER_TURN = 5;
 
 export async function searchWebAdapter(query: string): Promise<SearchWebAdapterResult> {
