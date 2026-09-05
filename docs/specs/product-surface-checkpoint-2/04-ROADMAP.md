@@ -20,13 +20,21 @@ This roadmap states the following binding design decisions directly, as the curr
  `generationRun` is assigned. It writes a terminal outcome only when its own read of the run's real
  persisted state shows the run still `'in-progress'`. `isUniqueViolation` is the new helper this
  design introduces.
-- `POLL_INTERVAL_MS` and `STALE_THRESHOLD_MS` are engineering-owned constants derived at Forge time
- from real measurement — never PROVISIONAL values with a named human owner, and never specific
- numbers asserted anywhere in this document (`02-ARCHITECTURE.md` §4.9/§5.2, `01-REQUIREMENTS.md`'s
- Non-Functional Requirement). C2-S3, the slice that implements the polling/liveness logic, executes
- the real-run measurement-and-report step and records the derived values, their measured evidence,
- and the safety-margin arithmetic as code comments next to the constants, as part of its own
- Implementation Notes and Tests — not a separate tracking artifact.
+- `POLL_INTERVAL_MS` and `STALE_THRESHOLD_MS` are engineering-owned constants, primarily derived at
+ Forge time from real measurement, and never asserted as specific numbers anywhere in this document
+ (`02-ARCHITECTURE.md` §4.9/§5.2, `01-REQUIREMENTS.md`'s Non-Functional Requirement). C2-S3, the
+ slice that implements the polling/liveness logic, executes the real-run measurement-and-report
+ step and records the derived values, their measured evidence, and the safety-margin arithmetic as
+ code comments next to the constants, as part of its own Implementation Notes and Tests — not a
+ separate tracking artifact. **Corrected 2026-09-05 (Frank spec-gate finding F1):** this document
+ previously stated a value derived from thin measurement (e.g. too few real runs to support a real
+ percentile) could never be shipped as PROVISIONAL-tagged-with-owner instead — that directly
+ contradicted `01-REQUIREMENTS.md`'s general "No fabricated numbers" rule, which allows exactly
+ that fallback for every other constant in this doc set. The actual rule, matching `01`: measurement
+ is the primary source; if C2-S3's measured run count is too thin to support `02-ARCHITECTURE.md`
+ §4.9's derivation with confidence, the value must instead be recorded as
+ `PROVISIONAL — unvalidated`, owner named, per `01-REQUIREMENTS.md`'s rule — never an untagged
+ "derived" value asserted on thin evidence.
 
 **Feeds from**: `01-REQUIREMENTS.md` (13 user stories — tightened US-1 AC5, US-4/US-6 stale-run
 ACs, US-13 AC2, and the Non-Functional Requirement that Forge measure real runs and report observed
@@ -1157,7 +1165,12 @@ C2-S4/C2-S5's scope).
  error class, and the workspace read model surfaces distinct text for it same as the other two
  error classes.
 - [ ] `hasEligibleNewEvidenceSinceCurrentBriefVersion`: `false` when no `ProblemBrief`
- exists yet; `false` for a source whose `resolution_status` is `unreachable` or not yet
+ exists yet; **`false` when the current `BriefVersion`'s producing `GenerationRun` has ZERO
+ `generation_run_consumed_source` rows (Frank spec-gate finding F3, `02-ARCHITECTURE.md` §4.8) —
+ a real seeded `BriefVersion` whose producing run's ledger was never written (or is otherwise
+ empty) must return `false` immediately, never fall through to the anti-join query, which would
+ vacuously pass every real `'content-retrieved'` submitted source as "new" against an empty
+ ledger;** `false` for a source whose `resolution_status` is `unreachable` or not yet
  resolved; `false` for a `reachable-no-content` (empty) source; `false` for a source whose
  `canonical_identity` OR `resolved_content_fingerprint` (migration `014`, §4.8, corrected
  2026-09-05 per independent review — replaces trimmed-`raw` string equality, which misses
@@ -1942,13 +1955,18 @@ scopes).
  `02-ARCHITECTURE.md` §4.9/§5.2, `01-REQUIREMENTS.md` Non-Functional Requirements)**: both
  constants are engineering-owned and derived by Forge, at C2-S3's own implementation time, from
  real measurement of the implemented system — never asserted as specific numbers anywhere in
- this roadmap, never a PROVISIONAL value pending confirmation. C2-S3's own Implementation Notes
- and Tests require the measurement-and-report step and the derivation methodology in full; the
- derived values and their measured evidence are recorded as code comments next to the constants
- in their implementation file, not in a separate tracking artifact. Any Forge implementation that
- hardcodes either constant without a recorded derivation, or that asserts a specific value at spec
- time rather than deriving one from real measurement, is out of conformance with this roadmap and
- must be corrected, not accepted as an equivalent alternative.
+ this roadmap. **Corrected 2026-09-05 (Frank spec-gate finding F1):** a PROVISIONAL-tagged,
+ named-owner value IS the correct fallback when C2-S3's measured run count is too thin to support
+ `02-ARCHITECTURE.md` §4.9's derivation with confidence — matching `01-REQUIREMENTS.md`'s general
+ "No fabricated numbers" rule; this line previously forbade that fallback outright, contradicting
+ `01`. What remains forbidden: an untagged value asserted as "derived" on thin or absent
+ measurement evidence. C2-S3's own Implementation Notes and Tests require the measurement-and-
+ report step and the derivation methodology in full; the derived values (or their PROVISIONAL tag
+ and owner, if measurement was too thin) and their measured evidence are recorded as code comments
+ next to the constants in their implementation file, not in a separate tracking artifact. Any Forge
+ implementation that hardcodes either constant without a recorded derivation or PROVISIONAL tag, or
+ that asserts a specific value at spec time rather than deriving one from real measurement, is out
+ of conformance with this roadmap and must be corrected, not accepted as an equivalent alternative.
 
 ## 4. Deferred (Not This Roadmap)
 

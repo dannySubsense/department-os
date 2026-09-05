@@ -538,7 +538,22 @@ export async function beginFencedWrite(input: {
   block anything the fencing mechanism exists to protect. This is a narrower, still-valid instance of
   the "accretive, harmless" reasoning the prior draft wrongly applied to the evidence/claim/ledger
   writes above — it holds here specifically because this write has no downstream reader that treats
-  it as consumable evidence.
+  it as consumable evidence. **Corrected 2026-09-05, Frank spec-gate finding F4: this is NOT because
+  the Investigation "was already failing" — a genuinely reachable case exists where it is not.** An
+  abandoned INITIAL run's own process can still reach this path later and write
+  `investigation.status = 'generation-failed'` while a healthy REPLACEMENT run (the operator's
+  retry) is actively in progress on an `'open'`/eligible Investigation — a real status regression,
+  not a no-op. What actually makes this acceptable is two other facts, not idempotence: (1) §5.4
+  rule 1 (Outcome/Status Panel precedence) renders `GenerationProgressPanel` for an in-progress run
+  on the current version REGARDLESS of `investigation.status`, so the stray `'generation-failed'`
+  status never surfaces to the operator while the replacement run is genuinely progressing; (2) once
+  the replacement run itself later reaches a terminal outcome, its own `finalizeGenerationRun`/
+  `attemptGenerationFailedTransition` call performs its own real transition from whatever
+  `investigation.status` actually is at that time — `'generation-failed'` is itself one of
+  `ALLOWED_PRIOR_STATUSES` for the replacement's own eventual transition, so the stray write does
+  not permanently strand the Investigation in a status its own real outcome can't recover from. The
+  status write is stray, not idempotent — it is masked by rule 1 while it matters, and correctable
+  by the next real transition once it stops being masked.
 - **Fenced directly, via `beginFencedWrite` — Landscape Research's four writes, via `searchWeb.ts`**
   (called from `generateBriefVersion.ts:393-399` via `landscapeResearcher.ts:260`) —
   `web_search_query` (`searchWeb.ts:160,217`), `query_limitation` (`searchWeb.ts:167,234`),
@@ -2693,7 +2708,15 @@ duplicate-detection purposes by this query anymore, only the two computed identi
 2. Read that `BriefVersion.generationRunId` — the producing run whose
  `generation_run_consumed_source` rows are the exact resolved-source snapshot (§4.8 above,
  `consideredSourceArtifactIds`, Extraction's own real `usableSourceIds` read set at write time) that
- run actually had the opportunity to use.
+ run actually had the opportunity to use. **Added 2026-09-05, Frank spec-gate finding F3: if this
+ producing run has ZERO `generation_run_consumed_source` rows, return `false` (not eligible)
+ immediately, without running the query below.** An empty ledger is not evidence the run consumed
+ no sources — every anti-join below vacuously passes against an empty ledger, which would make
+ every real `'content-retrieved'` submitted source look "new" and light "Regenerate with new
+ evidence" with zero actual new evidence, exactly the case AC2's disqualifiers exist to prevent. A
+ producing run reaches Extraction (`:333`) on every real path this checkpoint builds, so a
+ zero-row ledger for a real run signals a ledger-write gap or a run this mechanism should not treat
+ as a valid comparison baseline, not a legitimately empty universe.
 3. Run the query above. Eligible iff at least one `'submitted'`, resolved, non-consumed,
  non-duplicate-of-consumed source exists for this Investigation.
 
@@ -2702,7 +2725,23 @@ or unresolved** (`resolution_status = 'content-retrieved'` excludes both, along 
 non-terminal/failed state); **empty** (`resolution_status = 'content-retrieved'` excludes it PROVIDED
 `resolveSourceArtifact`/`computeSourceResolution` never classifies blank/whitespace-only text as
 `'content-retrieved'` — this is NOT true of today's live `type: 'text'` code path and is fixed by
-§1.4b, a required Forge-slice edit assigned to C2-S2, not an existing guarantee); **a duplicate of an
+§1.4b, a required Forge-slice edit assigned to C2-S2, not an existing guarantee). **Disclosed
+2026-09-05, Frank spec-gate finding F2 — for `type: 'url'` sources specifically, "empty" is decided
+by `resolveSourceArtifact.ts:20`'s `MIN_CONTENT_LENGTH = 200` (`body.trim().length >=
+MIN_CONTENT_LENGTH` gates `'content-retrieved'` vs. `'reachable-no-content'`, `resolveSourceArtifact.ts:115-120`).
+That constant is tagged `PROVISIONAL — unvalidated`, owner Ledger, in its own file — it was hired as
+a rough paywall/JS-shell-page heuristic for the pre-existing resolution pipeline, not validated
+against real paywall/short-article/JS-shell samples, and its own comment says "revisit if false
+positives/negatives are observed" (none have been). This checkpoint's US-13 correction mechanism
+inherits that same unvalidated threshold as a second, independent job: deciding whether a
+resubmitted URL counts as new evidence at all for the operator-visible "Regenerate with new
+evidence" affordance. Danny's ruling putting US-13 in scope for this checkpoint (see
+`01-REQUIREMENTS.md`'s "Resolved Scope Corrections") did not have this dependency in view when
+made. This is recorded here as an explicit, disclosed inheritance — not a new constant invented by
+this checkpoint — and Danny's acceptance of continuing to rely on the existing PROVISIONAL value
+for this checkpoint (rather than blocking on a `benchmark`-agent validation pass first) is required
+at human approval, alongside the Resolved Decisions confirmation `05-REVIEW.md` already requires.**;
+**a duplicate of an
 already-consumed source, even under a distinct row** (the `canonical_identity`/
 `resolved_content_fingerprint` anti-join above — corrected 2026-09-05 per independent review; `raw`
 itself is never compared for duplicate-detection by this query, per §4.8); and **already
@@ -2804,22 +2843,40 @@ for completeness, not reused as a source for this value.
 complete)**:
 1. Run real generation end-to-end and record actual elapsed time per `GenerationStep` and per full
  run — this is the same real-pipeline measurement `01-REQUIREMENTS.md`'s acceptance criteria now
- require Forge to report; do not estimate or guess at this figure.
-2. From that measured distribution, set `STALE_THRESHOLD_MS` to the measured legitimate-processing
- time (a conservative percentile of observed step/run latency, not the minimum or the average)
- plus an explicit safety margin stated as a ratio or fixed addition — sized so that normal
- latency variance never trips a false stale warning, and documented as such next to the constant.
+ require Forge to report; do not estimate or guess at this figure. **Minimum sample size:
+ `PROVISIONAL — unvalidated, owner Ledger` (added 2026-09-05, Frank spec-gate finding F1: this
+ methodology previously left "how many runs make a real distribution" unstated; no prior
+ measurement or precedent exists in this codebase to derive a specific count from, so it is tagged
+ rather than invented). Forge records the actual run count measured either way, so a future
+ session can judge whether the sample was thin.**
+2. From that measured distribution, set `STALE_THRESHOLD_MS` to a **named percentile of observed
+ step/run latency — `PROVISIONAL — unvalidated, owner Ledger`** for which specific percentile
+ (added 2026-09-05, Frank spec-gate finding F1: "a conservative percentile, not the minimum or
+ average" left the actual percentile unstated and unsourced; tagged rather than asserted) — never
+ the minimum or the average — plus an explicit safety margin, stated as a ratio or fixed addition
+ next to the constant and likewise citable or `PROVISIONAL — unvalidated, owner Ledger` if it has
+ no measured basis of its own — sized so that normal latency variance never trips a false stale
+ warning. Whichever percentile and margin are actually used at Forge time must be named explicitly
+ in the code comment next to the constant, not left as "a conservative percentile."
 3. Set `POLL_INTERVAL_MS` from the same measurement plus expected concurrency (how many simultaneous
  investigation workspaces/polls this single-process design realistically serves, §4.2/Out of
  Scope) and endpoint cost (poll frequency vs. the actual DB read load `getInvestigationWorkspace`
  performs per poll) — frequent enough that the UI feels active during a real generation run,
- infrequent enough not to impose meaningful load at expected concurrency.
-4. Record the derived values, the measured inputs they were computed from, and the safety-margin
- arithmetic as code comments directly next to `POLL_INTERVAL_MS` and `STALE_THRESHOLD_MS` in
- their implementation file — not in a separate tracking artifact — per Danny's explicit
- instruction on where derived-constant evidence belongs.
+ infrequent enough not to impose meaningful load at expected concurrency. Its relationship to
+ `STALE_THRESHOLD_MS` (e.g. some fraction of it) must likewise be named explicitly and be citable
+ or `PROVISIONAL — unvalidated, owner Ledger`, not left as an unstated ratio.
+4. Record the derived values (or their PROVISIONAL tags and owner, where step 1/2/3's parameters
+ were not sourced), the measured inputs they were computed from, and the safety-margin arithmetic
+ as code comments directly next to `POLL_INTERVAL_MS` and `STALE_THRESHOLD_MS` in their
+ implementation file — not in a separate tracking artifact — per Danny's explicit instruction on
+ where derived-constant evidence belongs.
 
-This document does not assert a specific numeric default for either constant. Nothing in §4.9
+This document does not assert a specific numeric default for either constant, and — corrected
+2026-09-05 per Frank spec-gate finding F1 — does not leave the methodology's own free parameters
+(minimum sample size, the percentile, the margin form, the poll-to-threshold relationship)
+unstated either: each must be named explicitly at Forge time and be either citable or tagged
+`PROVISIONAL — unvalidated, owner Ledger`, matching `01-REQUIREMENTS.md`'s general rule rather than
+inventing specific values here with no measurement or precedent behind them. Nothing in §4.9
 depends on `STALE_THRESHOLD_MS`'s specific magnitude — only on the behavioral contract that it is
 some measured-and-margined duration of no `GenerationStep` progress on a non-terminal run.
 

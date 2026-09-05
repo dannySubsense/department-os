@@ -25,7 +25,31 @@ the current specification, not a history of how it got here.
 - **Timing-constant ownership.** `POLL_INTERVAL_MS` and `STALE_THRESHOLD_MS` are engineering
   parameters, derived during Forge from real-run measurement (`02-ARCHITECTURE.md` §4.9's
   methodology) and recorded as code comments next to the constants. Neither is a product decision
-  for Danny to ratify, and no document asserts a specific numeric value for either.
+  for Danny to ratify, and no document asserts a specific numeric value for either. **Corrected
+  2026-09-05 (Frank spec-gate finding F1):** if C2-S3's measured run sample is too thin to support
+  a confident derivation, the value is recorded `PROVISIONAL — unvalidated`, owner Ledger, per
+  `01-REQUIREMENTS.md`'s general rule — this document and `04-ROADMAP.md` previously forbade that
+  fallback outright for these two constants specifically, contradicting `01`. The derivation
+  methodology's own free parameters (minimum sample size, the percentile, the margin form, the
+  poll-to-threshold relationship) must each be named explicitly at Forge time and be citable or
+  `PROVISIONAL — unvalidated, owner Ledger` — not left as an unstated judgment call.
+- **`MIN_CONTENT_LENGTH` is a disclosed, not newly-introduced, PROVISIONAL dependency of US-13.**
+  US-13's eligibility gate for `type: 'url'` sources inherits the existing `resolveSourceArtifact.ts`
+  constant `MIN_CONTENT_LENGTH = 200` (already `PROVISIONAL — unvalidated`, owner Ledger, hired as a
+  paywall/JS-shell heuristic, never validated against real samples) as the deciding factor for
+  whether a resubmitted URL counts as new evidence at all. Added 2026-09-05 (Frank spec-gate
+  finding F2). **Danny's acceptance of continuing to rely on this existing PROVISIONAL value for
+  this checkpoint (rather than blocking on a `benchmark`-agent validation pass first) is required
+  at human approval**, alongside confirmation of the rest of this Resolved Decisions list. Full
+  contract: `02-ARCHITECTURE.md` §4.8.
+- **A producing run with zero consumed-source-ledger rows is not eligible.** `generation_run_consumed_source`
+  (migration `012`) has no special-case rule for a `GenerationRun` whose ledger is empty at read
+  time — added 2026-09-05 (Frank spec-gate finding F3) to close the gap where an unknown/empty
+  ledger would otherwise make every `'content-retrieved'` submitted source look "new," incorrectly
+  unlocking correction with zero new evidence. An empty ledger for the current `BriefVersion`'s
+  producing run is treated as NOT eligible (the ledger's absence is not evidence of "no consumed
+  sources," it is evidence the run predates or otherwise lacks ledger data) — not a hypothetical
+  edge case skipped because the live count is 0 today. Full contract: `02-ARCHITECTURE.md` §3.5/§4.8.
 - **Non-blocking generation start.** `POST .../generation-runs` returns `202` the instant the
   `GenerationRun` row is durably created, never after pipeline completion. The browser observes
   progress and terminal outcomes exclusively through the persisted workspace read model.
