@@ -10,17 +10,27 @@ import https from 'node:https';
  *  the original module-private implementation. */
 
 /** Fetch timeout — bounds how long a single unreachable/hanging source can block resolution.
- *  PROVISIONAL — unvalidated; owner: Ledger. */
+ *  PROVISIONAL — unvalidated. Unsourced: no mathematical, scientific, or programmatic precedent
+ *  has been shown for 10 seconds specifically, and no named owner has genuinely reviewed this
+ *  specific value — an unreviewed name is not a substitute for that review (DDR-0002). Tracked in
+ *  `docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md` pending real grounding before
+ *  it can be either cited, given a genuinely-reviewed owner, or replaced. */
 export const FETCH_TIMEOUT_MS = 10_000;
 
 /** Response body size cap (Sol review item 2 — SSRF hardening): a malicious or misbehaving source
  *  could otherwise stream an unbounded response into memory. PROVISIONAL — unvalidated against
- *  real-world source sizes; owner: Ledger. Revisit if legitimate long-form sources are seen
- *  truncating. */
+ *  real-world source sizes. Unsourced: no mathematical, scientific, or programmatic precedent has
+ *  been shown for 5 MiB specifically, and no named owner has genuinely reviewed this specific
+ *  value (DDR-0002). Tracked in `docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`
+ *  pending real grounding. Revisit if legitimate long-form sources are seen truncating. */
 export const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 
 /** Redirect hop cap — bounds how long a redirect chain can be followed before giving up.
- *  PROVISIONAL — unvalidated; owner: Ledger. */
+ *  PROVISIONAL — unvalidated. Unsourced: no mathematical, scientific, or programmatic precedent
+ *  has been shown for 5 hops specifically, and no named owner has genuinely reviewed this specific
+ *  value (DDR-0002). Tracked in `docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`
+ *  pending real grounding before it can be either cited, given a genuinely-reviewed owner, or
+ *  replaced. */
 export const MAX_REDIRECTS = 5;
 
 /** Test-only escape hatch (Sol review item 2 fix). Private/loopback-network blocking is applied

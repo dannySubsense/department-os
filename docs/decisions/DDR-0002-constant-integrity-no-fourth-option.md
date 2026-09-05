@@ -103,9 +103,11 @@ This DDR governs the **rule**, not a case-by-case ruling on whether any individu
 should ultimately be sourced, provisionally owned, or deleted. That per-constant assessment has not
 yet been done and is tracked separately in `docs/specs/problem-department-mvp/PROGRESS.md`. What
 this DDR states plainly, so a gate can check the list against reality, is the following interim
-fact: as of this DDR, **none of the four constants below may currently carry a named owner**,
-because none currently has a real, reproduced precedent and none currently has a human who has
-genuinely reviewed that specific value. None is being deleted at this time — deletion or
+fact: as of this DDR (updated after a subsequent unbriefed Cold Frank FAIL at commit 7cfb1bc found
+four more constants in the same condition, plus a live violation of this DDR's own branch (b) —
+see findings F2 and F3 below), **none of the eight constants below may currently carry a named
+owner**, because none currently has a real, reproduced precedent and none currently has a human
+who has genuinely reviewed that specific value. None is being deleted at this time — deletion or
 redesign-around has not yet been assessed per-constant.
 
 | # | Constant | Location | Current state |
@@ -114,9 +116,13 @@ redesign-around has not yet been assessed per-constant.
 | 2 | `MAX_REPAIR_ATTEMPTS` | `src/services/llmClient.ts` | No real source, no genuinely-reviewed owner. Must not carry a named owner under this rule until one is obtained. |
 | 3 | `MAX_OUTPUT_TOKENS` | `src/services/llmClient.ts` | No real source, no genuinely-reviewed owner. Must not carry a named owner under this rule until one is obtained. |
 | 4 | `MAX_SEARCH_OUTPUT_TOKENS` (named and extracted from a bare `max_tokens: 1024` literal, 2026-09-05) | `src/services/searchWebAdapter.ts` | No real source, no genuinely-reviewed owner. Must not carry a named owner under this rule until one is obtained. |
+| 5 | `MAX_SEARCHES_PER_TURN` (named and extracted from a bare `max_uses: 5` literal, 2026-09-05, Cold Frank FAIL finding F2 at commit 7cfb1bc) | `src/services/searchWebAdapter.ts` | No real source, no genuinely-reviewed owner. Must not carry a named owner under this rule until one is obtained. |
+| 6 | `FETCH_TIMEOUT_MS` | `src/services/ssrfGuardedFetch.ts` | Carried `owner: Ledger` (an agent) — disqualified under branch (b), which never means an agent naming itself. Cold Frank FAIL finding F3 at commit 7cfb1bc; attribution stripped, no replacement owner named because nobody has genuinely reviewed this specific value. No real source. |
+| 7 | `MAX_RESPONSE_BYTES` | `src/services/ssrfGuardedFetch.ts` | Same F3 defect and correction as row 6 — `owner: Ledger` stripped, no real source, no genuinely-reviewed owner. |
+| 8 | `MAX_REDIRECTS` | `src/services/ssrfGuardedFetch.ts` | Same F3 defect and correction as row 6 — `owner: Ledger` stripped, no real source, no genuinely-reviewed owner. |
 
-None of the four is resolved by this DDR. This DDR closes the question of what the rule *is*; it
-does not close the question of what happens to each of these four constants — that work proceeds
+None of the eight is resolved by this DDR. This DDR closes the question of what the rule *is*; it
+does not close the question of what happens to each of these eight constants — that work proceeds
 separately and is tracked in `docs/specs/problem-department-mvp/PROGRESS.md`.
 
 ---
@@ -133,7 +139,7 @@ separately and is tracked in `docs/specs/problem-department-mvp/PROGRESS.md`.
 
 **This makes harder / open risk:**
 - Constants that previously could rest indefinitely at `owner: unassigned` or with a
-  never-actually-reviewed named owner can no longer do so. Each of the four constants listed above
+  never-actually-reviewed named owner can no longer do so. Each of the eight constants listed above
   now requires active resolution (real sourcing, genuine owner review, or deletion/redesign) rather
   than a passive marker.
 - Attaching a human owner to a PROVISIONAL constant now requires that human's actual review of
