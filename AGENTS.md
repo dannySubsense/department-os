@@ -55,3 +55,30 @@ tracking Markdown or edit product code as part of a review.
 - During reconciliation, read only Danny-approved canonical decisions and Codex’s own `sol` records.
 - Repository evidence overrides stored memory when they conflict.
 - Write Codex memories only under `project_id=department-os` and `agent_name=sol`.
+
+---
+
+## LORE Gateway connection
+
+`lore-gateway` is registered as a **global** MCP server in Codex CLI (`~/.codex/config.toml`,
+`[mcp_servers.lore-gateway]`) — the same server binary and personal Postgres+pgvector backend
+Claude Code uses on VM 101 (`~/runtime/agent-lore/src/mcp/index.ts`, run via `tsx`, no build step).
+No separate credential, no separate database — this is the one shared personal LORE instance,
+reachable from every Codex session on this host regardless of which repo it's running in.
+Registered and verified live 2026-09-05 (`codex exec` calling `search_knowledge` against
+`lore-personal`, real result returned).
+
+**This does not relax the cold-review rule above.** The tools (`mcp__lore-gateway__search_knowledge`,
+`capture_memory`, etc.) are available in every Codex session the moment it starts — availability is
+not permission. Do not call any of them during a formal review pass, before initial findings are
+recorded. They exist for the separate reconciliation session only:
+
+- `search_knowledge({ projectId: "department-os", query: ... })` — read Danny-approved canonical
+  decisions and Sol's own prior records (per the epistemic-scope rule above), not other agents'
+  memories.
+- `capture_memory({ projectId: "department-os", author: "sol", documentType: ..., epistemicType: ... })`
+  — record reconciliation findings, deviations, or HALTs. Never capture during the cold review
+  itself.
+
+Registered in the platform Agent Registry as **Sol** (`author: sol`, relay handle `sol`) —
+first multi-project entry in that registry, spanning `department-os` and `signal-current`.
