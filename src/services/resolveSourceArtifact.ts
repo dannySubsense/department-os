@@ -7,34 +7,6 @@ import {
   __resetPrivateNetworkTestAllowlist,
 } from './ssrfGuardedFetch.js';
 
-/** Below this many characters of raw HTTP response body (decoded UTF-8, HTML markup and all —
- *  NOT extracted text — verifiable directly from this file's own code below, not a measurement
- *  claim), a successfully-fetched (2xx) response is treated as `reachable-no-content` rather than
- *  `content-retrieved`. Corrected 2026-09-05 (Frank spec-gate FAIL, twice): this comment
- *  previously attributed the design to a quoted spec passage ("Architecture §4/Roadmap Slice 3 —
- *  'a reasonable heuristic ... is acceptable, document your heuristic explicitly'") that does not
- *  exist in any revision of this repo's spec docs, in any commit — fabricated at authoring time,
- *  retracted, not merely unsourced (this retraction itself independently re-verified by Frank
- *  against git history). It also previously asserted specific measurement numbers (a byte/
- *  character count for named real URLs) that were never persisted anywhere reproducible in this
- *  repo — an unpersisted number in a permanent comment is a hypothesis with a date on it, the
- *  same failure shape being corrected here, so those specific figures are removed pending a real,
- *  artifact-backed `benchmark` run (tracked file, not a comment, holding the URL list, script, and
- *  byte counts). What remains true and directly verifiable from the code alone, not from any
- *  claimed measurement: this comparison operates on raw `body` text (see below), before any HTML
- *  parsing or extraction — so it cannot distinguish "small amount of real content" from "large
- *  amount of markup wrapping almost no real content," which is exactly the JS-shell/paywall
- *  failure mode. Unsourced: no mathematical, scientific, or programmatic precedent has been shown
- *  for 200 specifically. No owner is named — a label is not a substitute for evidence nobody has
- *  reviewed. Reused (imported, not copied) by the Landscape Researcher's controlled retrieval path
- *  (Architecture §1.6). Full correction record for this constant: this file's own git history
- *  (2026-09-05) plus `docs/specs/problem-department-mvp/02-ARCHITECTURE.md`'s `MIN_CONTENT_LENGTH`
- *  entry and classification table, corrected the same day. A separate, not-yet-merged branch
- *  (Product Surface Checkpoint 2, PR #8) inherits this constant into a new US-13
- *  evidence-eligibility mechanism — do not assume that branch's disclosure of this limitation is
- *  current without checking it directly; branch state is not verifiable from this comment. */
-export const MIN_CONTENT_LENGTH = 200;
-
 interface SourceArtifactRow {
   id: string;
   type: string;
@@ -128,18 +100,30 @@ async function resolveUrl(
       };
     }
 
-    const contentLength = body.trim().length;
-
-    if (contentLength < MIN_CONTENT_LENGTH) {
+    // No numeric threshold here, deliberately. This replaced `MIN_CONTENT_LENGTH = 200`, which was
+    // MEASURED on 2026-09-05 and found unable to do its job at ANY value — artifact:
+    // `docs/specs/problem-department-mvp/min-content-length-measurement.md` (18 real URLs, re-run
+    // with `npx tsx scripts/measure-min-content-length.ts`; run twice, same conclusions). Two
+    // results from that run bound what this check may claim: (1) across the 11 sampled 2xx
+    // responses every threshold in [1, 558] classified all 11 identically, so 200 drew no
+    // distinction beyond "the body was empty"; (2) raw body length does not rank content —
+    // text/raw spanned 0.0070-0.9612, and vercel.com's 524,181 raw chars carried 3,673 chars of
+    // text against httpbin.org/html's 3,739 raw chars carrying 3,594. Emptiness is therefore the
+    // only property this fetch-layer check can honestly assert; the claim is deliberately reduced
+    // to match the evidence. Anything stronger (paywall, JS shell, thin content) requires
+    // extraction first, and any threshold on extracted text would need its own DDR-0002
+    // measurement before use — none is proposed or authorized here.
+    if (body.trim().length === 0) {
       return {
         resolution: {
           status: 'reachable-no-content',
           resolvedAt,
           noContentReason:
-            'Response returned successfully but the raw response body was very short ' +
-            `(under ${MIN_CONTENT_LENGTH} characters) — likely an empty or near-empty page. ` +
-            'This check does not detect paywalls, login walls, or JS-rendered pages, which ' +
-            'typically return substantial raw HTML regardless of visible content.',
+            'Response returned successfully but the raw response body was empty or ' +
+            'whitespace-only. This check does not detect paywalls, login walls, or ' +
+            'JS-rendered pages, which typically return substantial raw HTML regardless of ' +
+            'visible content — that judgment belongs to downstream content extraction, not ' +
+            'this fetch-layer check.',
         },
         resolvedContent: null,
       };

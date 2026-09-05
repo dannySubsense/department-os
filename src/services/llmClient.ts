@@ -12,31 +12,49 @@ import type { SchemaValidationAttempt } from '../types/domain.js';
 export const MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-5-20250929';
 
 /** At most one repair attempt, i.e. at most two total generation attempts per call (original +
- *  one repair). Configuration, not hardcoded per call site. Corrected 2026-09-05
- *  (Frank spec-gate FAIL, benchmark-agent audit): the value 1 is confirmed live in
- *  problem-department-mvp/02-ARCHITECTURE.md §3 (lines 1529-2076, not §4 as previously cited —
- *  §4 does not discuss repair). That section's own stated basis — a quotation of Danny's decision
- *  text naming "1-2 attempts" as reasonable — does not appear verbatim anywhere in this repo's
- *  doc history; the citation chain terminates in an unreproducible quote. Unsourced: no
- *  mathematical, scientific, or programmatic precedent has been shown for stopping at exactly
- *  one repair. A label naming an owner is not a substitute for that evidence, so none is written
- *  here. Candidate real precedent not yet checked: whether real schema-validation failures in
- *  this pipeline's own attempt history (`SchemaValidationAttempt` records) tend to repair-succeed
- *  on attempt 2 or need more — that data may already exist and would be a real, reproducible
- *  basis for this number instead of an assumption. */
+ *  one repair). Configuration, not hardcoded per call site.
+ *
+ *  STILL UNSOURCED. Measured for real on 2026-09-05 — insufficient real data exists yet to derive
+ *  a value. Artifact: `docs/specs/problem-department-mvp/llm-constants-measurement.md`; query
+ *  `scripts/query-llm-attempt-history.sql`, re-runnable against the live DB.
+ *
+ *  The candidate real precedent named in the previous version of this comment — this pipeline's
+ *  own schema-validation attempt history — was checked directly and IS EMPTY: 0 generation_run,
+ *  0 generation_step, 0 recorded attempts. `SchemaValidationAttempt` has no dedicated table; it is
+ *  persisted by provenanceRecorder.ts at `generation_step.step_data -> 'validationRecords' ->
+ *  'attempts'`, a shape that CAN answer this question but currently holds no rows. That is a
+ *  corpus never written to, not a search that failed.
+ *
+ *  The older citation chain remains broken independently of this: 02-ARCHITECTURE.md §3's stated
+ *  basis is a quotation of decision text naming "1-2 attempts" that appears verbatim nowhere in
+ *  this repo's doc history.
+ *
+ *  What would resolve it: real runs producing schema-validation failures, then Q1/Q2 of the query
+ *  script. The deciding quantity is P(valid | attemptNumber = 2, attempt 1 invalid). No owner is
+ *  named because there is no real evidence for anyone to have reviewed (DDR-0002 branch (b)). */
 const MAX_REPAIR_ATTEMPTS = 1;
 
-/** Unsourced — no mathematical, scientific, or programmatic precedent has been shown for 8192
- *  specifically. This value must not be treated as accepted: it has no named owner because
- *  nobody has reviewed real evidence for it, and "PROVISIONAL, owner: [name]" is not a
- *  substitute for that evidence — a label is not a citation. Requires a real measurement of
- *  extraction output size against source-set size (dispatch `benchmark`) before this constant
- *  can be either cited or replaced. The `response.stop_reason === 'max_tokens'` check in
- *  `callForcedTool` below reports this cap as truncation whenever it is hit, whether or not a
- *  (possibly incomplete) `tool_use` block happens to be present in the same response — a prior
- *  version of this comment claimed the no-tool_use-block branch alone covered this and that claim
- *  was false for the tool_use-block-present-but-truncated case; fixed 2026-09-05, Cold Frank
- *  spec-gate FAIL. */
+/** STILL UNSOURCED. Measured for real on 2026-09-05 — insufficient real data exists yet to derive
+ *  a value. Artifact: `docs/specs/problem-department-mvp/llm-constants-measurement.md`; query
+ *  `scripts/query-llm-attempt-history.sql`, re-runnable against the live DB.
+ *
+ *  No output-token measurement exists for any real extraction this pipeline has produced: 0
+ *  attempts carry `tokenUsage`, so there is no observed distribution to compare against 8192 and
+ *  no observed truncation event. The query script's Q4 returns 0 truncation failures — that zero
+ *  is drawn from an empty corpus and MUST NOT be read as evidence the cap is sufficient.
+ *
+ *  What would resolve it: real extraction runs across a realistic spread of source-set sizes, then
+ *  Q3/Q4 — specifically the upper tail (p95/max) of `outputTokens` as a function of input
+ *  source-set size, plus any real truncation events. Note this cap is also the practical ceiling
+ *  on how much can be extracted in one call, so "is 8192 enough" and "how large a source set is
+ *  supported" are the same question. No owner is named because there is no real evidence for
+ *  anyone to have reviewed (DDR-0002 branch (b)).
+ *
+ *  The `response.stop_reason === 'max_tokens'` check in `callForcedTool` below reports this cap as
+ *  truncation whenever it is hit, whether or not a (possibly incomplete) `tool_use` block is
+ *  present in the same response — a prior version of this comment claimed the no-tool_use-block
+ *  branch alone covered this, and that claim was false for the tool_use-block-present-but-truncated
+ *  case; fixed 2026-09-05, Cold Frank spec-gate FAIL. */
 const MAX_OUTPUT_TOKENS = 8192;
 
 let cachedClient: Anthropic | null = null;

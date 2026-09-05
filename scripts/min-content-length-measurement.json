@@ -1,0 +1,203 @@
+{
+  "measuredAt": "2026-09-05T21:00:25.317Z",
+  "rows": [
+    {
+      "url": "https://en.wikipedia.org/wiki/Market_research",
+      "expected": "content-bearing",
+      "note": "reference article, server-rendered",
+      "status": 403,
+      "error": null,
+      "rawTrimmedChars": 125,
+      "rawBytes": 126,
+      "extractedChars": 125,
+      "textRatio": 1
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/Product-market_fit",
+      "expected": "content-bearing",
+      "note": "reference article, server-rendered",
+      "status": 403,
+      "error": null,
+      "rawTrimmedChars": 125,
+      "rawBytes": 126,
+      "extractedChars": 125,
+      "textRatio": 1
+    },
+    {
+      "url": "https://www.bls.gov/news.release/empsit.nr0.htm",
+      "expected": "content-bearing",
+      "note": "government statistics release (labour market)",
+      "status": 403,
+      "error": null,
+      "rawTrimmedChars": 1325,
+      "rawBytes": 1325,
+      "extractedChars": 551,
+      "textRatio": 0.4158490566037736
+    },
+    {
+      "url": "https://www.federalreserve.gov/newsevents/pressreleases/monetary20240131a.htm",
+      "expected": "content-bearing",
+      "note": "government press release",
+      "status": 200,
+      "error": null,
+      "rawTrimmedChars": 82382,
+      "rawBytes": 82387,
+      "extractedChars": 10803,
+      "textRatio": 0.1311330144934573
+    },
+    {
+      "url": "https://arxiv.org/abs/1706.03762",
+      "expected": "content-bearing",
+      "note": "research paper abstract page",
+      "status": 200,
+      "error": null,
+      "rawTrimmedChars": 43644,
+      "rawBytes": 43644,
+      "extractedChars": 4875,
+      "textRatio": 0.11169920263953809
+    },
+    {
+      "url": "https://news.ycombinator.com/",
+      "expected": "content-bearing",
+      "note": "server-rendered news/discussion index",
+      "status": 200,
+      "error": null,
+      "rawTrimmedChars": 34965,
+      "rawBytes": 34971,
+      "extractedChars": 4003,
+      "textRatio": 0.11448591448591448
+    },
+    {
+      "url": "https://blog.pragmaticengineer.com/",
+      "expected": "content-bearing",
+      "note": "industry analysis blog index",
+      "status": 200,
+      "error": null,
+      "rawTrimmedChars": 54092,
+      "rawBytes": 54181,
+      "extractedChars": 14641,
+      "textRatio": 0.2706684907195149
+    },
+    {
+      "url": "https://www.gnu.org/philosophy/free-sw.html",
+      "expected": "content-bearing",
+      "note": "long-form essay, static HTML",
+      "status": null,
+      "error": "",
+      "rawTrimmedChars": null,
+      "rawBytes": null,
+      "extractedChars": null,
+      "textRatio": null
+    },
+    {
+      "url": "https://stripe.com/",
+      "expected": "content-bearing",
+      "note": "commercial landing page (marketing copy is real content)",
+      "status": 200,
+      "error": null,
+      "rawTrimmedChars": 651587,
+      "rawBytes": 652690,
+      "extractedChars": 12863,
+      "textRatio": 0.01974103227964953
+    },
+    {
+      "url": "https://linear.app/",
+      "expected": "content-bearing",
+      "note": "commercial landing page, JS-heavy framework",
+      "status": 200,
+      "error": null,
+      "rawTrimmedChars": 1267170,
+      "rawBytes": 1267263,
+      "extractedChars": 10124,
+      "textRatio": 0.007989456821105297
+    },
+    {
+      "url": "https://vercel.com/",
+      "expected": "content-bearing",
+      "note": "commercial landing page, JS-heavy framework",
+      "status": 200,
+      "error": null,
+      "rawTrimmedChars": 524181,
+      "rawBytes": 524267,
+      "extractedChars": 3673,
+      "textRatio": 0.0070071215858644245
+    },
+    {
+      "url": "https://www.crunchbase.com/organization/stripe",
+      "expected": "content-bearing",
+      "note": "market-research source behind a wall — a KEY adversarial case",
+      "status": 403,
+      "error": null,
+      "rawTrimmedChars": 5485,
+      "rawBytes": 5485,
+      "extractedChars": 749,
+      "textRatio": 0.1365542388331814
+    },
+    {
+      "url": "https://example.com/",
+      "expected": "near-empty-or-error",
+      "note": "IANA placeholder page — near-empty by design",
+      "status": 200,
+      "error": null,
+      "rawTrimmedChars": 558,
+      "rawBytes": 559,
+      "extractedChars": 142,
+      "textRatio": 0.25448028673835127
+    },
+    {
+      "url": "https://httpbin.org/status/200",
+      "expected": "near-empty-or-error",
+      "note": "2xx with a genuinely empty body",
+      "status": 200,
+      "error": null,
+      "rawTrimmedChars": 0,
+      "rawBytes": 0,
+      "extractedChars": 0,
+      "textRatio": null
+    },
+    {
+      "url": "https://httpbin.org/html",
+      "expected": "near-empty-or-error",
+      "note": "tiny fixture page, minimal real content",
+      "status": 200,
+      "error": null,
+      "rawTrimmedChars": 3739,
+      "rawBytes": 3741,
+      "extractedChars": 3594,
+      "textRatio": 0.9612195774271195
+    },
+    {
+      "url": "https://www.wikipedia.org/wiki/ThisPageDoesNotExist_ZZQQ",
+      "expected": "near-empty-or-error",
+      "note": "nonexistent path — error page",
+      "status": 403,
+      "error": null,
+      "rawTrimmedChars": 125,
+      "rawBytes": 126,
+      "extractedChars": 125,
+      "textRatio": 1
+    },
+    {
+      "url": "https://github.com/this-org-does-not-exist-zzqq/nope",
+      "expected": "near-empty-or-error",
+      "note": "404 from a large JS app",
+      "status": 404,
+      "error": null,
+      "rawTrimmedChars": 266800,
+      "rawBytes": 266833,
+      "extractedChars": 2904,
+      "textRatio": 0.01088455772113943
+    },
+    {
+      "url": "https://www.iana.org/domains/reserved",
+      "expected": "near-empty-or-error",
+      "note": "short administrative stub page",
+      "status": 200,
+      "error": null,
+      "rawTrimmedChars": 10495,
+      "rawBytes": 10499,
+      "extractedChars": 2685,
+      "textRatio": 0.2558361124344926
+    }
+  ]
+}

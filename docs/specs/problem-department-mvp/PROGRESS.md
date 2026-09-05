@@ -89,42 +89,48 @@ browser; nothing records a human decision.
 
 ## Open constant-integrity items (2026-09-05)
 
-**TRACKED, NOT OWNED — eight constants remain unsourced after a benchmark-agent audit, two Cold
+**TRACKED, NOT OWNED — seven constants remain unsourced after a benchmark-agent audit, two Cold
 Frank FAILs, a Cold Frank HALT resolved by DDR-0002, and a subsequent Cold Frank FAIL (unbriefed,
 commit 7cfb1bc) that added four more.** This is a separate audit finding from a different
 date/process than the Product Reality Demonstration defects above — not a third item in that list.
 
-1. `MIN_CONTENT_LENGTH` (`resolveSourceArtifact.ts`, gates `content-retrieved` vs.
-   `reachable-no-content` for `type: 'url'` sources)
-2. `MAX_REPAIR_ATTEMPTS` (`llmClient.ts`, caps schema-repair attempts at 1)
-3. `MAX_OUTPUT_TOKENS` (`llmClient.ts`, 8192-token generation cap)
-4. `MAX_SEARCH_OUTPUT_TOKENS` (`searchWebAdapter.ts`, 1024-token search-call cap, named and
+1. `MAX_REPAIR_ATTEMPTS` (`llmClient.ts`, caps schema-repair attempts at 1)
+2. `MAX_OUTPUT_TOKENS` (`llmClient.ts`, 8192-token generation cap)
+3. `MAX_SEARCH_OUTPUT_TOKENS` (`searchWebAdapter.ts`, 1024-token search-call cap, named and
    extracted from a bare literal 2026-09-05 per DDR-0002 item 4)
-5. `MAX_SEARCHES_PER_TURN` (`searchWebAdapter.ts`, 5-search-per-turn budget, named and extracted
+4. `MAX_SEARCHES_PER_TURN` (`searchWebAdapter.ts`, 5-search-per-turn budget, named and extracted
    from a bare `max_uses: 5` literal 2026-09-05, Cold Frank FAIL finding F2)
-6. `FETCH_TIMEOUT_MS` (`ssrfGuardedFetch.ts`, 10-second fetch timeout; carried a disqualified
+5. `FETCH_TIMEOUT_MS` (`ssrfGuardedFetch.ts`, 10-second fetch timeout; carried a disqualified
    `owner: Ledger` — an agent — until Cold Frank FAIL finding F3 stripped it)
-7. `MAX_RESPONSE_BYTES` (`ssrfGuardedFetch.ts`, 5 MiB response-body cap; same F3 correction)
-8. `MAX_REDIRECTS` (`ssrfGuardedFetch.ts`, 5-hop redirect cap; same F3 correction)
+6. `MAX_RESPONSE_BYTES` (`ssrfGuardedFetch.ts`, 5 MiB response-body cap; same F3 correction)
+7. `MAX_REDIRECTS` (`ssrfGuardedFetch.ts`, 5-hop redirect cap; same F3 correction)
 
 Each has no mathematical, scientific, or programmatic precedent — per Danny's explicit ruling,
 none may carry a named owner until real precedent exists; an `owner: unassigned` label is also not
 acceptable (Frank: "a fourth option the rule doesn't allow"), and neither is an agent's own name
 (DDR-0002 branch (b) explicitly disqualifies an agent naming itself — the defect found and
-corrected in constants 6-8 above). The rule itself is now tracked in
+corrected in constants 5-7 above). The rule itself is now tracked in
 `docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`, not left to conversation and
 commit-message history alone (a Cold Frank HALT on commit ac63adf found the rule invisible to an
 isolated-worktree gate before the DDR existed). This is a tracked task, not a label on the
-constant: next real step is dispatching `benchmark` to (a) produce a persisted, reproducible
-measurement artifact for `MIN_CONTENT_LENGTH` (URL list, fetch script, raw byte length vs.
-extracted-text length, saved under `docs/specs/`, not asserted in a comment), and (b) check
-whether this pipeline's own `SchemaValidationAttempt` history already has real data on
-repair-attempt success rates that could ground `MAX_REPAIR_ATTEMPTS` instead of leaving it a bare
-assumption. Until either lands, these eight constants stay exactly as documented in their own
-source comments: real, in production, unsourced, undeleted (deleting/redesigning around them was
-assessed and deferred for `MIN_CONTENT_LENGTH` — it still functions correctly as a literal
-near-empty-response guard even without a defensible specific value) — not quietly built on
-further.
+constant: next real step is dispatching `benchmark` to check whether this pipeline's own
+`SchemaValidationAttempt` history already has real data on repair-attempt success rates that could
+ground `MAX_REPAIR_ATTEMPTS` instead of leaving it a bare assumption. Until that lands, these seven
+constants stay exactly as documented in their own source comments: real, in production, unsourced,
+undeleted — not quietly built on further.
+
+**`MIN_CONTENT_LENGTH` resolved by deletion (2026-09-05, Danny's explicit ruling).** It was doing
+two jobs: (1) catching a literally-empty/whitespace-only response, and (2) distinguishing real
+content from a paywall/JS-shell page with substantial markup but no substance. Job 2 does not
+belong at the fetch layer — it is already handled correctly downstream, where content extraction
+either finds real claims/evidence in the content or produces a legitimate `NegativeFinding` if it
+doesn't. Job 1 needs no arbitrary number at all — it is a strict definition with no threshold to
+source: the response body, trimmed, has zero length. The constant is deleted entirely from
+`resolveSourceArtifact.ts` and `classifyRetrievalOutcome.ts`, both of which now apply this
+strict-emptiness check independently. This removes it from the eight-constant list above (now
+seven) — it is resolved, not tracked-open. An earlier measurement-based approach to this constant
+(a `benchmark`-style URL-fetch harness under `scripts/`) was abandoned in favor of this deletion
+and its untracked artifacts were removed.
 
 **Real-LLM test environment gap (as of this commit, branch `fix/llm-and-resolver-constant-integrity`).**
 The real-LLM-call test suite (`extractClaimsAndEvidence.test.ts`) cannot run in this environment:
