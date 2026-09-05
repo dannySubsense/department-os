@@ -80,30 +80,39 @@ fixed and neither of which any test caught:
    `generateBriefVersion`, so nothing regenerates. Verified by resubmitting real material to
    `f0c5bd3e-01c0-4d89-bebc-56bea3f7229f`: 3 sources persisted, status unchanged.
 
-3. **TRACKED, NOT OWNED — three constants remain unsourced after a benchmark-agent audit and two
-   Cold Frank FAILs (2026-09-05).** `MIN_CONTENT_LENGTH` (`resolveSourceArtifact.ts`, gates
-   `content-retrieved` vs. `reachable-no-content` for `type: 'url'` sources), `MAX_REPAIR_ATTEMPTS`
-   (`llmClient.ts`, caps schema-repair attempts at 1), and `MAX_OUTPUT_TOKENS` (`llmClient.ts`,
-   8192-token generation cap) each have no mathematical, scientific, or programmatic precedent —
-   per Danny's explicit ruling, none may carry a named owner until real precedent exists; an
-   `owner: unassigned` label is also not acceptable (Frank: "a fourth option the rule doesn't
-   allow"). This is a tracked task, not a label on the constant: next real step is dispatching
-   `benchmark` to (a) produce a persisted, reproducible measurement artifact for
-   `MIN_CONTENT_LENGTH` (URL list, fetch script, raw byte length vs. extracted-text length, saved
-   under `docs/specs/`, not asserted in a comment), and (b) check whether this pipeline's own
-   `SchemaValidationAttempt` history already has real data on repair-attempt success rates that
-   could ground `MAX_REPAIR_ATTEMPTS` instead of leaving it a bare assumption. Until either lands,
-   these three constants stay exactly as documented in their own source comments: real, in
-   production, unsourced, undeleted (deleting/redesigning around them was assessed and deferred —
-   `MIN_CONTENT_LENGTH` still functions correctly as a literal near-empty-response guard even
-   without a defensible specific value) — not quietly built on further.
-
 Product boundary at Slice 9, stated exactly: **a human can start an investigation and see it fail;
 a human cannot see one succeed.** Three routes exist (`GET /investigations/new`,
 `POST /investigations`, `GET /investigations/:id`); `/` is 404; the durable URL returns
 **HTTP 501 "Brief review surface is not implemented yet."** for `brief-generated`. Nothing renders
 a Brief, its provenance, or the failed-retrieval fact; nothing triggers generation from the
 browser; nothing records a human decision.
+
+## Open constant-integrity items (2026-09-05)
+
+**TRACKED, NOT OWNED — four constants remain unsourced after a benchmark-agent audit, two Cold
+Frank FAILs, and a Cold Frank HALT resolved by DDR-0002.** This is a separate audit finding from a
+different date/process than the Product Reality Demonstration defects above — not a third item in
+that list. `MIN_CONTENT_LENGTH` (`resolveSourceArtifact.ts`, gates `content-retrieved` vs.
+`reachable-no-content` for `type: 'url'` sources), `MAX_REPAIR_ATTEMPTS` (`llmClient.ts`, caps
+schema-repair attempts at 1), `MAX_OUTPUT_TOKENS` (`llmClient.ts`, 8192-token generation cap), and
+`MAX_SEARCH_OUTPUT_TOKENS` (`searchWebAdapter.ts`, 1024-token search-call cap, named and extracted
+from a bare literal 2026-09-05 per DDR-0002 item 4) each have no mathematical, scientific, or
+programmatic precedent — per Danny's explicit ruling, none may carry a named owner until real
+precedent exists; an `owner: unassigned` label is also not acceptable (Frank: "a fourth option the
+rule doesn't allow"). The rule itself is now tracked in
+`docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`, not left to conversation and
+commit-message history alone (a Cold Frank HALT on commit ac63adf found the rule invisible to an
+isolated-worktree gate before the DDR existed). This is a tracked task, not a label on the
+constant: next real step is dispatching `benchmark` to (a) produce a persisted, reproducible
+measurement artifact for `MIN_CONTENT_LENGTH` (URL list, fetch script, raw byte length vs.
+extracted-text length, saved under `docs/specs/`, not asserted in a comment), and (b) check
+whether this pipeline's own `SchemaValidationAttempt` history already has real data on
+repair-attempt success rates that could ground `MAX_REPAIR_ATTEMPTS` instead of leaving it a bare
+assumption. Until either lands, these four constants stay exactly as documented in their own
+source comments: real, in production, unsourced, undeleted (deleting/redesigning around them was
+assessed and deferred for `MIN_CONTENT_LENGTH` — it still functions correctly as a literal
+near-empty-response guard even without a defensible specific value) — not quietly built on
+further.
 
 Test counts ARE now recorded for closed slices, but only as runner output taken at a quiescent
 database against a schema replayed from the migrations as written — never as an agent's report.

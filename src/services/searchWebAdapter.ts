@@ -8,6 +8,15 @@ import type { SearchWebAdapterResult } from '../types/domain.js';
  *  provider-SDK-specific error shape. DDR-0001 selected Anthropic's built-in `web_search` server
  *  tool (row 9) as the search provider for this milestone's runtime; this adapter wraps that
  *  specific call, so a future provider swap touches only this file. */
+/** Unsourced — no mathematical, scientific, or programmatic precedent has been shown for 1024
+ *  specifically. This value must not be treated as accepted: it has no named owner because
+ *  nobody has reviewed real evidence for it, and "PROVISIONAL, owner: [name]" is not a
+ *  substitute for that evidence — a label is not a citation. Per DDR-0002
+ *  (`docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`) this constant is tracked
+ *  in `PROGRESS.md` pending real grounding (e.g. a `benchmark`-dispatched measurement of actual
+ *  `web_search` response sizes against this cap) before it can be either cited or replaced. */
+const MAX_SEARCH_OUTPUT_TOKENS = 1024;
+
 export async function searchWebAdapter(query: string): Promise<SearchWebAdapterResult> {
   const performedAt = new Date().toISOString();
 
@@ -16,7 +25,7 @@ export async function searchWebAdapter(query: string): Promise<SearchWebAdapterR
     const anthropic = getClient();
     response = await anthropic.messages.create({
       model: MODEL,
-      max_tokens: 1024,
+      max_tokens: MAX_SEARCH_OUTPUT_TOKENS,
       messages: [
         {
           role: 'user',

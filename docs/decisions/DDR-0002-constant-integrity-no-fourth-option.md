@@ -113,7 +113,7 @@ redesign-around has not yet been assessed per-constant.
 | 1 | `MIN_CONTENT_LENGTH` | `src/services/resolveSourceArtifact.ts` | Fabricated citation identified this session; no real source, no genuinely-reviewed owner. Must not carry a named owner under this rule until one is obtained. |
 | 2 | `MAX_REPAIR_ATTEMPTS` | `src/services/llmClient.ts` | No real source, no genuinely-reviewed owner. Must not carry a named owner under this rule until one is obtained. |
 | 3 | `MAX_OUTPUT_TOKENS` | `src/services/llmClient.ts` | No real source, no genuinely-reviewed owner. Must not carry a named owner under this rule until one is obtained. |
-| 4 | `max_tokens: 1024` | `src/services/searchWebAdapter.ts` | Not yet named or extracted as its own constant — currently a bare untagged literal. This DDR notes explicitly that it needs the same treatment as the other three: naming/extraction as a constant, then subject to this rule's (a)/(b)/(c) branches. It must not remain a bare untagged literal exempt from this rule merely because it has not yet been given a name. |
+| 4 | `MAX_SEARCH_OUTPUT_TOKENS` (named and extracted from a bare `max_tokens: 1024` literal, 2026-09-05) | `src/services/searchWebAdapter.ts` | No real source, no genuinely-reviewed owner. Must not carry a named owner under this rule until one is obtained. |
 
 None of the four is resolved by this DDR. This DDR closes the question of what the rule *is*; it
 does not close the question of what happens to each of these four constants — that work proceeds

@@ -2020,12 +2020,20 @@ interface GenerationStep {
  *  model with the original output and the validation error, and re-validate the result.
  *
  *  MAX_REPAIR_ATTEMPTS = 1 (one repair attempt, i.e. at most two total generation attempts per
- *  field: original + one repair). Source: Danny's binding decision text names "1-2 attempts" as
- *  reasonable; 1 is chosen as the smaller bound to keep the loop provably non-open-ended and
- *  because a single validation-error-guided re-prompt is the standard bounded-repair shape — a
- *  second failure after being shown the exact error is treated as a genuine generation failure,
- *  not a transient one worth more retries. This constant is configuration, not hardcoded per
- *  call site; a future PR changing it does not require a schema change.
+ *  field: original + one repair). This section is itself the design decision that fixed the
+ *  value at 1 — a single validation-error-guided re-prompt is the standard bounded-repair shape,
+ *  and a second failure after being shown the exact error is treated as a genuine generation
+ *  failure, not a transient one worth more retries. Corrected 2026-09-05 (Frank spec-gate FAIL,
+ *  benchmark-agent audit): this section previously cited "Danny's binding decision text names
+ *  '1-2 attempts' as reasonable" as the deeper source for the value 1. That quotation does not
+ *  appear verbatim anywhere in this repo's doc history; the citation chain terminates in an
+ *  unreproducible quote and is retracted, not merely unsourced. Unsourced: no mathematical,
+ *  scientific, or programmatic precedent has been shown for stopping at exactly one repair. Per
+ *  DDR-0002 (`docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`) this constant
+ *  currently carries no owner — a label naming an owner is not a substitute for evidence nobody
+ *  has reviewed — and is tracked in `PROGRESS.md` pending real grounding. This constant is
+ *  configuration, not hardcoded per call site; a future PR changing it does not require a schema
+ *  change.
  *
  *  If the repaired output still fails validation, the step is terminal-failed: it does not
  *  produce a usable outputRef for the failed field, and the owning GenerationRun.outcome is set

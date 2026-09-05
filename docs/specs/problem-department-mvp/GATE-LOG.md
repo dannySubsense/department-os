@@ -43,3 +43,24 @@ Standing caveat recorded at close: one proof can no longer be completed. Whether
 file is byte-identical to what was ACTUALLY applied to `deptos_core` is now unfalsifiable — the database
 was replayed without a prior `pg_dump -s`. Convergence is proven FROM THE QUARANTINED FILE; the two main
 drift dimensions (column types, missing constraints) were captured before the drop, but not a full dump.
+
+## Constant-Integrity Audit and Cold Frank Passes — branch `fix/llm-and-resolver-constant-integrity`
+
+Benchmark-agent audit (2026-09-05) found `MIN_CONTENT_LENGTH`'s code comment in
+`resolveSourceArtifact.ts` cited a spec passage that does not exist in any revision of this
+repo's docs — fabricated at authoring time, not merely unsourced — and separately claimed a
+paywall/JS-shell detection capability the code does not have (it compares raw HTTP body length
+before any extraction). The disproven claim also reached users via `noContentReason`, duplicated
+in `classifyRetrievalOutcome.ts`.
+
+| Attempt | Date | Verdict | Findings Summary | Snapshot |
+|---|---|---|---|---|
+| 1 | 2026-09-05 | FAIL | Cold Frank pass (unbriefed, live working tree). Findings: `llmClient.ts`'s `max_tokens` cap (8192, previously unsourced and untagged) had a dangling citation to a `stop_reason === 'max_tokens'` check that did not actually exist in the code yet; no constant (`MIN_CONTENT_LENGTH`, `MAX_REPAIR_ATTEMPTS`, prospective `MAX_OUTPUT_TOKENS`) carried a named owner, and a prior draft had written "owner: Danny" onto values he had not reviewed; unpersisted measurement figures (byte/character counts for named real URLs) sat in a permanent code comment as an artifact-less hypothesis. Resolved in commit a6ac1df: `MAX_OUTPUT_TOKENS` named with a real `stop_reason` check added (not just claimed), false ownership retracted, unpersisted figures removed. | commit a6ac1df |
+| 2 | 2026-09-05 | FAIL | Second Cold Frank pass (unbriefed, commit a6ac1df). Findings: (1) `resolveSourceArtifact.ts`'s corrected comment pointed to `product-surface-checkpoint-2/05-REVIEW.md` for "the fuller correction history" — that file contains no mention of `MIN_CONTENT_LENGTH` or this correction, a dangling pointer of the same defect class as the fabricated citation being fixed; (2) the same comment overstated that checkpoint-2 §4.8 "discloses this specific limitation explicitly" — checked directly, it does not; (3) `02-ARCHITECTURE.md` itself (lines 216, 309) still described `MIN_CONTENT_LENGTH` as "the paywall/JS-shell content-length heuristic" and specified the retracted failure string verbatim, directly contradicting the corrected code. Resolved in commit 12d251b: repointed to this file's own git history plus `02-ARCHITECTURE.md`'s corrected entry, overstated claim removed, doc set swept per this repo's "one unsourced number found, sweep the whole doc set" rule. | commit 12d251b |
+| — | 2026-09-05 | HALT | Cold Frank HALTed the branch at commit ac63adf: the "no owner without genuine review, owner: unassigned is not acceptable, delete or redesign is the only remaining move" rule this branch was applying existed only in conversation and commit messages, invisible to an isolated-worktree gate with no access to that history. Resolved via `docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`, recording the rule as a tracked, gate-checkable document rather than an unverifiable commit-message account of it. | commit ac63adf; resolved by DDR-0002 (commit b2d6ba6) |
+
+Convergence judgment: SHRINKING — defect class narrowed from a fabricated citation plus false
+capability claims (attempt 1) to two dangling/overstated pointers plus one doc-set contradiction
+(attempt 2) to a governance-visibility gap resolved by a DDR, not a further code/doc defect (the
+HALT). No PASS yet recorded for this constant-integrity work as of this entry; a Cold Frank pass
+on the current tip (after DDR-0002 and this session's four further fixes) has not yet run.
