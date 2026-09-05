@@ -161,6 +161,32 @@ describe('callForcedTool (R-4 validate -> repair-once -> hard-fail)', () => {
     expect(message).not.toBe('model response contained no tool_use block');
   });
 
+  it('reports a max_tokens response with a truncated tool_use block still present as truncation, not a generic schema-validation error (F1, Cold Frank FAIL, 2026-09-05)', async () => {
+    // The tool_use block IS present here, but the response was still cut off at the token cap
+    // mid-generation (stop_reason: max_tokens) — so its `input` is partial/malformed. Prior to this
+    // fix, this case skipped the truncation branch entirely (since a tool_use block exists), handed
+    // the malformed input to `validate`, and reported a generic schema-validation failure.
+    createMock.mockResolvedValue({
+      content: [{ type: 'tool_use', id: 'toolu_1', name: 'test_tool', input: { partial: 'trunc' } }],
+      stop_reason: 'max_tokens',
+    });
+
+    let thrown: unknown;
+    try {
+      await callForcedTool({
+        ...baseParams,
+        validate: () => ({ valid: false, error: 'schema validation error: unexpected shape' }),
+      });
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(LlmValidationError);
+    const message = (thrown as InstanceType<typeof LlmValidationError>).message;
+    expect(message).toMatch(/max_tokens/i);
+    expect(message).not.toMatch(/schema validation error: unexpected shape/i);
+  });
+
   it('reports a pause_turn response with no tool_use block by naming the real stop_reason, not a generic message', async () => {
     createMock.mockResolvedValue({ content: [{ type: 'text', text: 'paused' }], stop_reason: 'pause_turn' });
 

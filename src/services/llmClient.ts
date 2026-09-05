@@ -31,10 +31,12 @@ const MAX_REPAIR_ATTEMPTS = 1;
  *  nobody has reviewed real evidence for it, and "PROVISIONAL, owner: [name]" is not a
  *  substitute for that evidence — a label is not a citation. Requires a real measurement of
  *  extraction output size against source-set size (dispatch `benchmark`) before this constant
- *  can be either cited or replaced. The `stop_reason === 'max_tokens'` branch below at least
- *  ensures that IF this cap is hit, it is reported as truncation, not misclassified as a
- *  schema/model failure — that gap (a false claim that this check existed) was caught and fixed
- *  2026-09-05, Frank spec-gate FAIL. */
+ *  can be either cited or replaced. The `response.stop_reason === 'max_tokens'` check in
+ *  `callForcedTool` below reports this cap as truncation whenever it is hit, whether or not a
+ *  (possibly incomplete) `tool_use` block happens to be present in the same response — a prior
+ *  version of this comment claimed the no-tool_use-block branch alone covered this and that claim
+ *  was false for the tool_use-block-present-but-truncated case; fixed 2026-09-05, Cold Frank
+ *  spec-gate FAIL. */
 const MAX_OUTPUT_TOKENS = 8192;
 
 let cachedClient: Anthropic | null = null;
@@ -145,23 +147,62 @@ export async function callForcedTool<T>(
       (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use',
     );
 
+    if (response.stop_reason === 'max_tokens') {
+      // The response was truncated at the token cap. This is checked BEFORE (and independent of)
+      // whether a `tool_use` block is present: a forced tool call can be cut off mid-generation
+      // either before any tool_use block is produced at all, or WHILE a tool_use block is being
+      // generated — in the latter case `toolUseBlock` is truthy but its `input` is partial/
+      // malformed JSON, which would otherwise be handed straight to `validate`, fail schema
+      // validation for a reason that has nothing to do with the model's actual output quality, and
+      // burn the one repair attempt while reporting a generic schema-validation error that hides
+      // the real cause (truncation). Reported as truncation in both cases.
+      lastRawOutput = toolUseBlock ? toolUseBlock.input : response.content;
+      lastError =
+        `model response was truncated at the ${MAX_OUTPUT_TOKENS}-token output cap` +
+        (toolUseBlock
+          ? ' while a tool_use block was still being generated (stop_reason: max_tokens) — the ' +
+            'tool call input is partial/malformed as a result'
+          : ' before a tool_use block could be produced (stop_reason: max_tokens)') +
+        ' — this is NOT a model refusal or schema failure, the response was cut off mid-generation';
+      const invalidAttempt: SchemaValidationAttempt = {
+        attemptNumber: attempt,
+        rawOutput: JSON.stringify(lastRawOutput),
+        valid: false,
+        validationError: lastError,
+        startedAt,
+        completedAt,
+        modelIdentifier: MODEL,
+        tokenUsage,
+      };
+      attemptHistory.push(invalidAttempt);
+      recordToolInvocation({
+        toolName: params.toolName,
+        startedAt,
+        completedAt,
+        modelIdentifier: MODEL,
+        attemptNumber: attempt,
+        rawOutput: lastRawOutput,
+        valid: false,
+        validationError: lastError,
+        tokenUsage,
+        callId,
+      });
+      continue;
+    }
+
     if (!toolUseBlock) {
       // This call forces a single client tool via `tool_choice: { type: 'tool', ... }`, so per the
       // SDK's own doc comment (`node_modules/@anthropic-ai/sdk/resources/messages/messages.d.ts`
       // lines 722-738), a response containing the forced tool_use block is the normal, complete
-      // success path regardless of stop_reason (handled above, before this branch). Reaching this
-      // branch means no tool_use block was produced at all — every possible `stop_reason` value in
-      // that case (`max_tokens`, `pause_turn`, `refusal`, `stop_sequence`,
+      // success path regardless of stop_reason. The `max_tokens` case is handled above, before this
+      // branch, independent of tool_use-block presence. Reaching this branch means no tool_use
+      // block was produced at all AND the response was not truncated at the token cap — every
+      // remaining possible `stop_reason` value (`pause_turn`, `refusal`, `stop_sequence`,
       // `model_context_window_exceeded`, or even `end_turn`/`tool_use` on a malformed response) is
       // a genuine failure to fulfil the forced tool call, and the real value must be preserved and
       // reported — never collapsed into a generic message that discards it.
       lastRawOutput = response.content;
-      lastError =
-        response.stop_reason === 'max_tokens'
-          ? `model response was truncated at the ${MAX_OUTPUT_TOKENS}-token output cap before a ` +
-            'tool_use block could be produced (stop_reason: max_tokens) — this is NOT a model ' +
-            'refusal or schema failure, the response was cut off mid-generation'
-          : `model response contained no tool_use block (stop_reason: ${response.stop_reason})`;
+      lastError = `model response contained no tool_use block (stop_reason: ${response.stop_reason})`;
       const invalidAttempt: SchemaValidationAttempt = {
         attemptNumber: attempt,
         rawOutput: JSON.stringify(lastRawOutput),

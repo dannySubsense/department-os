@@ -126,6 +126,17 @@ assessed and deferred for `MIN_CONTENT_LENGTH` — it still functions correctly 
 near-empty-response guard even without a defensible specific value) — not quietly built on
 further.
 
+**Real-LLM test environment gap (as of this commit, branch `fix/llm-and-resolver-constant-integrity`).**
+The real-LLM-call test suite (`extractClaimsAndEvidence.test.ts`) cannot run in this environment:
+it fails with `400 invalid_request_error: Your credit balance is too low`. The same failure was
+confirmed present at this branch's base commit (i.e. environmental, not a regression introduced by
+this branch's changes). Consequence: the `stop_reason` classification logic added/changed in both
+`llmClient.ts` (`callForcedTool`'s `max_tokens`/`pause_turn`/`refusal` branches) and
+`searchWebAdapter.ts` (its `end_turn`/`pause_turn`/`tool_use` handling) has only been verified
+against mocked Anthropic SDK responses at this commit — it has not been exercised against a live
+model call. Not fixed here; this note only records the gap honestly. Credentials/credit
+replenishment is out of scope for this fix.
+
 Test counts ARE now recorded for closed slices, but only as runner output taken at a quiescent
 database against a schema replayed from the migrations as written — never as an agent's report.
 
