@@ -64,8 +64,10 @@ export function classifyRetrievalOutcome(outcome: RetrievalOutcome): RetrievalCl
           return {
             status: 'blocked',
             failureReason:
-              'Response returned successfully but contained little or no extractable text — ' +
-              'likely a paywall, login wall, or JS-only render',
+              'Response returned successfully but the raw response body was very short ' +
+              `(under ${MIN_CONTENT_LENGTH} characters) — likely an empty or near-empty page. ` +
+              'This check does not detect paywalls, login walls, or JS-rendered pages, which ' +
+              'typically return substantial raw HTML regardless of visible content.',
           };
         }
         return { status: 'retrieved' };

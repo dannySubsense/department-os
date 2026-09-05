@@ -40,7 +40,7 @@ describe('classifyRetrievalOutcome — blocked cases', () => {
     expect(result.failureReason).toBe('HTTP 451 Unavailable For Legal Reasons');
   });
 
-  it('classifies a 2xx response with body length below MIN_CONTENT_LENGTH as blocked (paywall/login-wall/JS-only heuristic)', () => {
+  it('classifies a 2xx response with body length below MIN_CONTENT_LENGTH as blocked (empty/near-empty response guard, not a paywall/JS-shell detector)', () => {
     const result = classifyRetrievalOutcome({
       kind: 'http-response',
       statusCode: 200,
@@ -48,7 +48,8 @@ describe('classifyRetrievalOutcome — blocked cases', () => {
       bodyLength: MIN_CONTENT_LENGTH - 1,
     });
     expect(result.status).toBe('blocked');
-    expect(result.failureReason).toMatch(/paywall|login wall|JS-only/i);
+    expect(result.failureReason).toMatch(/short|empty/i);
+    expect(result.failureReason).toMatch(/does not detect/i);
   });
 
   it('classifies a thrown EBLOCKEDHOST error (from safeLookup mid-redirect) as blocked', () => {

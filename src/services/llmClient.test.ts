@@ -141,6 +141,25 @@ describe('callForcedTool (R-4 validate -> repair-once -> hard-fail)', () => {
     expect(result.attempts).toBe(2);
     expect(createMock).toHaveBeenCalledTimes(2);
   });
+
+  it('reports a response truncated at the max_tokens cap as truncation, not the generic "no tool_use block" message (Frank spec-gate FAIL, 2026-09-05 — a comment previously asserted this check existed before it did)', async () => {
+    createMock.mockResolvedValue({ content: [{ type: 'text', text: 'partial...' }], stop_reason: 'max_tokens' });
+
+    let thrown: unknown;
+    try {
+      await callForcedTool({
+        ...baseParams,
+        validate: () => ({ valid: true, value: {} as unknown as { ok: boolean } }),
+      });
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(LlmValidationError);
+    const message = (thrown as InstanceType<typeof LlmValidationError>).message;
+    expect(message).toMatch(/max_tokens/i);
+    expect(message).not.toBe('model response contained no tool_use block');
+  });
 });
 
 describe('callForcedTool — attemptHistory telemetry (Architecture §1.9 points 1/2)', () => {

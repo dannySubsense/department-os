@@ -7,16 +7,30 @@ import {
   __resetPrivateNetworkTestAllowlist,
 } from './ssrfGuardedFetch.js';
 
-/** Below this many non-whitespace characters of fetched body text, a successfully-fetched
- *  (2xx) response is treated as `reachable-no-content` rather than `content-retrieved`. This is
- *  a deliberately simple MVP heuristic (Architecture §4/Roadmap Slice 3 — "a reasonable heuristic
- *  ... is acceptable, document your heuristic explicitly"), not real content extraction: a page
- *  that renders almost entirely client-side (JS-only), sits behind a paywall/login-wall
- *  interstitial, or serves an empty body tends to return very little raw text in the initial
- *  HTML response, while genuine article/document content does not. PROVISIONAL — unvalidated
- *  against real-world paywall/JS-shell samples; owner: Ledger. Revisit if false
- *  positives/negatives are observed in practice. Reused (imported, not copied) by the Landscape
- *  Researcher's controlled retrieval path (Architecture §1.6). */
+/** Below this many characters of raw HTTP response body (decoded UTF-8, HTML markup and all —
+ *  NOT extracted text — verifiable directly from this file's own code below, not a measurement
+ *  claim), a successfully-fetched (2xx) response is treated as `reachable-no-content` rather than
+ *  `content-retrieved`. Corrected 2026-09-05 (Frank spec-gate FAIL, twice): this comment
+ *  previously attributed the design to a quoted spec passage ("Architecture §4/Roadmap Slice 3 —
+ *  'a reasonable heuristic ... is acceptable, document your heuristic explicitly'") that does not
+ *  exist in any revision of this repo's spec docs, in any commit — fabricated at authoring time,
+ *  retracted, not merely unsourced (this retraction itself independently re-verified by Frank
+ *  against git history). It also previously asserted specific measurement numbers (a byte/
+ *  character count for named real URLs) that were never persisted anywhere reproducible in this
+ *  repo — an unpersisted number in a permanent comment is a hypothesis with a date on it, the
+ *  same failure shape being corrected here, so those specific figures are removed pending a real,
+ *  artifact-backed `benchmark` run (tracked file, not a comment, holding the URL list, script, and
+ *  byte counts). What remains true and directly verifiable from the code alone, not from any
+ *  claimed measurement: this comparison operates on raw `body` text (see below), before any HTML
+ *  parsing or extraction — so it cannot distinguish "small amount of real content" from "large
+ *  amount of markup wrapping almost no real content," which is exactly the JS-shell/paywall
+ *  failure mode. Unsourced: no mathematical, scientific, or programmatic precedent has been shown
+ *  for 200 specifically. No owner is named — a label is not a substitute for evidence nobody has
+ *  reviewed. Reused (imported, not copied) by the Landscape Researcher's controlled retrieval path
+ *  (Architecture §1.6), and inherited by Product Surface Checkpoint 2's US-13 evidence-eligibility
+ *  mechanism (docs/specs/product-surface-checkpoint-2/02-ARCHITECTURE.md §4.8) — that inheritance
+ *  is disclosed there, not built on silently. See
+ *  docs/specs/product-surface-checkpoint-2/05-REVIEW.md for the fuller correction history. */
 export const MIN_CONTENT_LENGTH = 200;
 
 interface SourceArtifactRow {
@@ -120,8 +134,10 @@ async function resolveUrl(
           status: 'reachable-no-content',
           resolvedAt,
           noContentReason:
-            'Response returned successfully but contained little or no extractable text — ' +
-            'likely a paywall, login wall, JS-only render, or empty page.',
+            'Response returned successfully but the raw response body was very short ' +
+            `(under ${MIN_CONTENT_LENGTH} characters) — likely an empty or near-empty page. ` +
+            'This check does not detect paywalls, login walls, or JS-rendered pages, which ' +
+            'typically return substantial raw HTML regardless of visible content.',
         },
         resolvedContent: null,
       };

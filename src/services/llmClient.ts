@@ -11,10 +11,31 @@ import type { SchemaValidationAttempt } from '../types/domain.js';
  *  free-text drifts off-schema). */
 export const MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-5-20250929';
 
-/** R-4 (Danny, binding, Architecture §3/§4): at most one repair attempt, i.e. at most two total
- *  generation attempts per call (original + one repair). Configuration, not hardcoded per call
- *  site. */
+/** At most one repair attempt, i.e. at most two total generation attempts per call (original +
+ *  one repair). Configuration, not hardcoded per call site. Corrected 2026-09-05
+ *  (Frank spec-gate FAIL, benchmark-agent audit): the value 1 is confirmed live in
+ *  problem-department-mvp/02-ARCHITECTURE.md §3 (lines 1529-2076, not §4 as previously cited —
+ *  §4 does not discuss repair). That section's own stated basis — a quotation of Danny's decision
+ *  text naming "1-2 attempts" as reasonable — does not appear verbatim anywhere in this repo's
+ *  doc history; the citation chain terminates in an unreproducible quote. Unsourced: no
+ *  mathematical, scientific, or programmatic precedent has been shown for stopping at exactly
+ *  one repair. A label naming an owner is not a substitute for that evidence, so none is written
+ *  here. Candidate real precedent not yet checked: whether real schema-validation failures in
+ *  this pipeline's own attempt history (`SchemaValidationAttempt` records) tend to repair-succeed
+ *  on attempt 2 or need more — that data may already exist and would be a real, reproducible
+ *  basis for this number instead of an assumption. */
 const MAX_REPAIR_ATTEMPTS = 1;
+
+/** Unsourced — no mathematical, scientific, or programmatic precedent has been shown for 8192
+ *  specifically. This value must not be treated as accepted: it has no named owner because
+ *  nobody has reviewed real evidence for it, and "PROVISIONAL, owner: [name]" is not a
+ *  substitute for that evidence — a label is not a citation. Requires a real measurement of
+ *  extraction output size against source-set size (dispatch `benchmark`) before this constant
+ *  can be either cited or replaced. The `stop_reason === 'max_tokens'` branch below at least
+ *  ensures that IF this cap is hit, it is reported as truncation, not misclassified as a
+ *  schema/model failure — that gap (a false claim that this check existed) was caught and fixed
+ *  2026-09-05, Frank spec-gate FAIL. */
+const MAX_OUTPUT_TOKENS = 8192;
 
 let cachedClient: Anthropic | null = null;
 
@@ -103,7 +124,7 @@ export async function callForcedTool<T>(
     const startedAt = new Date().toISOString();
     const response = await anthropic.messages.create({
       model: MODEL,
-      max_tokens: 8192,
+      max_tokens: MAX_OUTPUT_TOKENS,
       system: params.systemPrompt,
       messages: [{ role: 'user', content: userContent }],
       tools: [
@@ -126,7 +147,12 @@ export async function callForcedTool<T>(
 
     if (!toolUseBlock) {
       lastRawOutput = response.content;
-      lastError = 'model response contained no tool_use block';
+      lastError =
+        response.stop_reason === 'max_tokens'
+          ? `model response was truncated at the ${MAX_OUTPUT_TOKENS}-token output cap before a ` +
+            'tool_use block could be produced (stop_reason: max_tokens) — this is NOT a model ' +
+            'refusal or schema failure, the response was cut off mid-generation'
+          : 'model response contained no tool_use block';
       const invalidAttempt: SchemaValidationAttempt = {
         attemptNumber: attempt,
         rawOutput: JSON.stringify(lastRawOutput),
