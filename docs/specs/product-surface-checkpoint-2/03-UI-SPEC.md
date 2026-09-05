@@ -43,6 +43,24 @@ per-row "Open current view" affordance from the legacy Express route to this new
 those are edits to existing components' navigation targets, not new screens, and do not otherwise
 change Checkpoint 1's shipped layout, data, or visual treatment.
 
+**Checkpoint-1 surface capability boundary, restated for sequencing (binding).** The existing,
+unmodified Checkpoint-1 browser surface (`src/types/readModels.ts`'s `InvestigationSummary`,
+`ProblemDepartmentScreen.tsx`, `StartInvestigationForm.tsx`, `InvestigationPortfolioTable.tsx`)
+exposes only an Investigation's aggregate `sourceCount`/`evidenceCount` and its overall
+`InvestigationStatus` — it has no per-`SourceArtifact` view of any kind, and this document does not
+add one to any Checkpoint-1 screen. Confirming that a specific submitted source's persisted
+`resolutionStatus` reached `content-retrieved` therefore cannot be demonstrated "via the actual
+rendered result" anywhere on the Checkpoint-1 surface alone — only that the Investigation as a
+whole did or did not become `'open'`/`'blocked'`. That per-source `resolutionStatus` rendering is
+new content this document adds to the Investigation Workspace screen's region 1
+(`InvestigationIdentityHeader`'s Sources list, § Sections, § Component Hierarchy, below) — the real
+source-detail surface capable of demonstrating an individual source's resolution outcome in the
+browser. Work that lands the Node 22 URL-resolution fix alone, before the Workspace screen exists,
+can only be demonstrated against the Checkpoint-1 surface's own aggregate signal (the Investigation
+resolving to `'open'` rather than `'blocked'`, per `InvestigationSummary`/`InvestigationPortfolioTable`)
+— not against a rendered per-source `resolutionStatus`, which requires the Workspace screen this
+document specifies below.
+
 This document does not restate Checkpoint 1's Visual Direction section — that section's Grounding,
 identity/shell, mission-control/workbench character, typography, palette, spacing, and desktop-
 layout rules (`product-surface-checkpoint-1/03-UI-SPEC.md`, "Visual Direction (Binding)") apply
@@ -73,7 +91,7 @@ prior version is never mistaken by the operator for one recorded against the cur
 
 | Screen | Route | Purpose | Entry Point |
 |---|---|---|---|
-| Investigation Workspace | `/departments/problem-department/investigations/:investigationId` (current version) and `/departments/problem-department/investigations/:investigationId/versions/:versionNumber` | Single durable surface, at two reload-stable URLs, covering an Investigation's identity, sources, generation history (honest in-progress/stale-or-interrupted/blocked/failed/succeeded), Brief review (current or a specific prior version), evidence/provenance, decision recording, non-valid/supersession surfacing, and evidence-driven correction | Submitting sources via Start Investigation (Problem Department overview); the per-row "Open current view" affordance on Mission Control or the Problem Department overview; `InvestigationIdentityHeader`'s forward/backward supersession links (navigates to the versioned route); direct URL / reload of either route |
+| Investigation Workspace | `/departments/problem-department/investigations/:investigationId` (current version) and `/departments/problem-department/investigations/:investigationId/versions/:versionNumber` | Single durable surface, at two reload-stable URLs, covering an Investigation's identity, sources (including each source's own persisted `resolutionStatus`), generation history (honest in-progress/stale-or-interrupted/blocked/failed/succeeded), Brief review (current or a specific prior version), evidence/provenance, decision recording, non-valid/supersession surfacing, and evidence-driven correction | Submitting sources via Start Investigation (Problem Department overview); the per-row "Open current view" affordance on Mission Control or the Problem Department overview; `InvestigationIdentityHeader`'s forward/backward supersession links (navigates to the versioned route); direct URL / reload of either route |
 
 No other screen is added or modified this sprint. Mission Control and the Problem Department
 overview keep their exact Checkpoint-1 layouts (`product-surface-checkpoint-1/03-UI-SPEC.md`) —
@@ -182,10 +200,14 @@ indicator both make unambiguous which version the decision was recorded against.
  investigations/{investigationId}')`, replacing Checkpoint 1's prior same-page re-fetch behavior
  inside that same handler.
 4. User sees: the workspace for the new Investigation, in whichever state resolution produced —
- `open` (at least one reachable source) or `blocked` (all sources unreachable).
+ `open` (at least one reachable source) or `blocked` (all sources unreachable), with each
+ submitted source's own persisted `resolutionStatus` visible in region 1's Sources list
+ (§ Sections, Investigation Header row) — the real per-source rendering that the Checkpoint-1
+ submission form itself cannot show (§ Checkpoint-1 surface capability boundary, above).
 5. End state: user is inside the durable workspace, continuous with the submission they just made.
 
-**Success path (reachable source):** workspace renders `open`/eligible state; generation trigger
+**Success path (reachable source):** workspace renders `open`/eligible state; the submitted
+source's Sources-list entry reads `resolutionStatus: 'content-retrieved'`; generation trigger
 available (Flow US-3).
 **Blocked path:** workspace renders the Blocked outcome (§ Screen, Outcome/Status Panel — Blocked)
 in the same load, no separate screen.
@@ -414,11 +436,18 @@ content", extended by US-1 AC5 to prior versions).
  check).
 5. System response: `POST /api/brief-versions/:briefVersionId/decisions` (via `recordDecision`)
  persists the `Decision` bound to the exact `briefVersionId` currently on screen.
-6. User sees: an in-place confirmation on the same URL (no navigation) — the new `Decision` appears
- at the end of both the (still-visible, unchanged) per-version `priorDecisions` list and the
- whole-Investigation `decisionLineage` list.
-7. End state: reload re-fetches the workspace and Brief; the same Brief and the same two decision
- lists render identically, in the same order.
+6. System response (refetch, binding mechanism): on a `201` response, `DecisionForm` does not
+ construct either decision list from the `201` response body itself — it triggers exactly two
+ refetches: `GET.../workspace` (which returns the updated `decisionLineage`) and
+ `GET.../brief-versions/by-version/:versionNumber` for the version currently on screen (which
+ returns the updated `priorDecisions`, correctly scoped to that `briefVersionId`). Both refetches
+ happen automatically as part of the same in-place update — the operator performs no further
+ action and no full page reload/navigation occurs.
+7. User sees: an in-place confirmation on the same URL (no navigation) — once both refetches in
+ step 6 resolve, the new `Decision` appears at the end of both the per-version `priorDecisions`
+ list and the whole-Investigation `decisionLineage` list.
+8. End state: reload re-fetches the workspace and Brief via the same two requests described in step
+ 6; the same Brief and the same two decision lists render identically, in the same order.
 
 **Success path:** as above.
 **Watch-rejected path (client-side):** submit control stays disabled until ≥1 non-whitespace
@@ -426,7 +455,7 @@ condition is entered — no request is sent for a zero-condition Watch attempt.
 **Watch-rejected path (server-side, defense in depth):** if a request somehow reaches the server
 with zero/whitespace-only conditions, the server rejects it (`error: 'watch-requires-condition'`);
 the workspace shows an inline error and does not add a phantom entry to either decision list,
-matching "no Decision persisted on rejection."
+matching "no Decision persisted on rejection," and neither refetch in step 6 above is triggered.
 **Reject path:** after a recorded Reject, no Reopen control, button, or route is rendered anywhere
 in the workspace — the Investigation, Brief, evidence, and provenance remain visible and unchanged.
 **Multiple-decisions path:** a Watch followed later by an Approve on the same `briefVersionId` both
@@ -520,7 +549,9 @@ version is itself viewed (Flow US-1 AC5).
  trimmed-`raw` match of any source that run DID consume — the real, persisted-consumption mechanism
  `hasEligibleNewEvidenceSinceCurrentBriefVersion` checks (`02-ARCHITECTURE.md` §4.8; no timestamp
  boundary of any kind), so `workspace.newEvidenceSinceCurrentBriefVersion` flips to `true` — that
- flag, not `investigation.status`, is what changes as a result of this request.
+ flag, not `investigation.status`, is what changes as a result of this request. The new source's
+ own `resolutionStatus` is also now visible in region 1's Sources list (§ Sections, Investigation
+ Header row), alongside every other source already on the Investigation.
 5. User sees: the "Regenerate with new evidence" control becomes enabled — specifically and only
  because of step 4's real, re-fetched eligibility result, never because `'brief-generated'` status
  alone permits it, and never because of an assumed optimistic response from `AddSourceInline`'s
@@ -591,6 +622,13 @@ checkpoint's second, version-scoped URL.
 │ (unchanged,   │    Investigation — YYYY-MM-DD HH:mm · Status: X   │
 │ Checkpoint 1) │    Status reason: "..." (when present)            │
 │               │    Sources: N · shortened id (secondary, labeled) │
+│               │    Per-source list: type, resolved label, and     │
+│               │    each source's own persisted resolutionStatus   │
+│               │    (content-retrieved / reachable-no-content /    │
+│               │    unreachable), with failureReason/               │
+│               │    noContentReason shown when applicable — the    │
+│               │    real per-source detail Checkpoint 1's own      │
+│               │    surface cannot render                          │
 │               │    [once ≥1 BriefVersion] Version N of M          │
 │               │    [ (current) | link forward to immediate        │
 │               │      successor ]                                  │
@@ -624,17 +662,23 @@ checkpoint's second, version-scoped URL.
 │               │    └─────────────────────────────────────────┘    │
 │               ├───────────────────────────────────────────────────┤
 │               │ 4. Research / Provenance Rail (present once ≥1    │
-│               │    GenerationRun exists — any outcome; ALL runs,  │
-│               │    version-independent)                           │
-│               │    - Evidence excerpt/label/source/stance/        │
-│               │      relevance (from the version currently on     │
-│               │      screen)                                      │
-│               │    - SearchScopeNotice (queries, failed/blocked)  │
-│               │    - CitationScopeNotice (fixed, always visible)  │
-│               │    - Runtime / models / tools / steps / per-step  │
+│               │    GenerationRun exists — any outcome; contains   │
+│               │    BOTH version-scoped and version-independent    │
+│               │    content — see the two groups below)            │
+│               │    - VERSION-SCOPED (refetched with the           │
+│               │      displayed version's Brief payload, changes   │
+│               │      on version navigation, Flow US-1 AC5):       │
+│               │      Evidence excerpt/label/source/stance/        │
+│               │      relevance                                    │
+│               │    - VERSION-INDEPENDENT (whole-Investigation run │
+│               │      history, unchanged across version            │
+│               │      navigation):                                 │
+│               │      SearchScopeNotice (queries, failed/blocked); │
+│               │      CitationScopeNotice (fixed, always visible); │
+│               │      Runtime / models / tools / steps / per-step  │
 │               │      validationRecords/toolInvocations / per-run  │
-│               │      webSearchQueries                             │
-│               │    - [Technical disclosure ▸] raw validation      │
+│               │      webSearchQueries;                            │
+│               │      [Technical disclosure ▸] raw validation      │
 │               │      detail                                       │
 │               ├───────────────────────────────────────────────────┤
 │               │ 5. Decision Area and Decision History Banner      │
@@ -704,7 +748,7 @@ same five-rule order, 0-4):
 | Section | Content | Data Source |
 |---|---|---|
 | Outcome/Status Panel — Version Not Found | Renders the explicit "Version N does not exist for this Investigation" message (§ Flow US-1 Not-found path / § Flow US-1 AC5 Non-existent version path) in region 2. No `AddSourceInline`, no `GenerateButton`, no other variant's controls of any kind — this is the ONLY case where region 2 itself carries no status-derived content, matching regions 3-5's existing treatment of the same case. Evaluated before every other Outcome/Status Panel rule (§5.4 rule 0), regardless of `investigation.status` or `latestGenerationRun?.outcome`. | `GET.../brief-versions/by-version/:versionNumber` returns `404` (`error: 'brief-version-not-found'`) while the Investigation itself resolves |
-| Investigation Header | Human-readable creation date/time, humanized `status`, `statusReason` (only when present), `sources.length`. A shortened id renders only as a clearly-labeled secondary detail (e.g. "ID: a1b2c3d8…"), never as the primary label. Once ≥1 `BriefVersion` exists, also renders "Version N of M" for whichever version is displayed, with "(current)" appended when `isCurrent === true`, and, when viewing a prior version, a navigable forward link to that version's own immediate successor via `forwardSupersededByVersionNumber` (not necessarily the current version in a lineage of 3+). Also renders a compact non-valid/supersession notice for the DISPLAYED version (sourced from the routed `GetBriefForReviewResult`, never `workspace.briefs.find(isCurrent)`) — rendered as a plain-language statement only when `assignedState !== 'valid'`, and/or a navigable `isSuperseded` link (human-readable `versionNumber`, never a raw UUID) when `true`; absent when both are the common case (`'valid'`, not superseded). **Also renders a BACKWARD link: whenever the displayed version's own `supersedesVersionId` is non-null, a navigable link to that prior version (human-readable `versionNumber`, resolved against `workspace.briefs`, never a raw UUID) — the two links point in opposite directions and may both render simultaneously (a middle version in a lineage of 3+ has both a successor and a predecessor).** This is the SAME underlying facts as region 5's banner, surfaced compactly right below the version indicator — not a duplicate control, not a second source of truth. | `WorkspaceInvestigationSummary`, `workspace.briefs`, the routed `GetBriefForReviewResult.version`/`assignedState`/`isSuperseded` |
+| Investigation Header | Human-readable creation date/time, humanized `status`, `statusReason` (only when present), `sources.length`. A shortened id renders only as a clearly-labeled secondary detail (e.g. "ID: a1b2c3d8…"), never as the primary label. **Also renders a per-source list — one row per `workspace.sources` entry — showing that source's `type`, a resolved human-readable label, and its own persisted `resolutionStatus` (`'content-retrieved'` / `'reachable-no-content'` / `'unreachable'`), with `failureReason` (unreachable) or `noContentReason` (reachable-no-content) shown inline when populated. This is the real, individual-source detail the Checkpoint-1 surface's aggregate `sourceCount` cannot render (§ Checkpoint-1 surface capability boundary, top of this document) — it is present as soon as region 1 itself renders, for every `investigation.status`, not only `'blocked'` (the Outcome/Status Panel — Blocked row, § below, additionally surfaces `failureReason` alongside its own recovery controls for unreachable sources specifically; this header list is the general, always-visible, all-sources view).** Once ≥1 `BriefVersion` exists, also renders "Version N of M" for whichever version is displayed, with "(current)" appended when `isCurrent === true`, and, when viewing a prior version, a navigable forward link to that version's own immediate successor via `forwardSupersededByVersionNumber` (not necessarily the current version in a lineage of 3+). Also renders a compact non-valid/supersession notice for the DISPLAYED version (sourced from the routed `GetBriefForReviewResult`, never `workspace.briefs.find(isCurrent)`) — rendered as a plain-language statement only when `assignedState !== 'valid'`, and/or a navigable `isSuperseded` link (human-readable `versionNumber`, never a raw UUID) when `true`; absent when both are the common case (`'valid'`, not superseded). **Also renders a BACKWARD link: whenever the displayed version's own `supersedesVersionId` is non-null, a navigable link to that prior version (human-readable `versionNumber`, resolved against `workspace.briefs`, never a raw UUID) — the two links point in opposite directions and may both render simultaneously (a middle version in a lineage of 3+ has both a successor and a predecessor).** This is the SAME underlying facts as region 5's banner, surfaced compactly right below the version indicator — not a duplicate control, not a second source of truth. | `WorkspaceInvestigationSummary`, `workspace.sources` (per-source `resolutionStatus`/`failureReason`/`noContentReason`), `workspace.briefs`, the routed `GetBriefForReviewResult.version`/`assignedState`/`isSuperseded` |
 | Outcome/Status Panel — Open/Eligible | "Ready to generate" state copy; a "Start generation" control, enabled iff `workspace.generationEligible === true` — the single server-computed flag, not re-derived from `status` | `investigation.status === 'open'`, `workspace.generationEligible` |
 | Outcome/Status Panel — In-Progress | Run start time, runtime identifier, list of persisted `WorkspaceGenerationStepSummary` rows (component, started/completed times, outcome, model identifier, `validationRecords`, `toolInvocations`). Generation trigger hidden/disabled while in-progress (reflected by `workspace.generationEligible === false` during this state). | `latestGenerationRun` where `outcome === 'in-progress'` and `livenessState === 'active'` |
 | Outcome/Status Panel — Stale/Interrupted | A distinct, non-in-progress-styled disclosure: "This run has not reported progress recently and may have been interrupted." A real "Refresh status" control (re-issues one manual read) AND a real "Abandon and retry" control (`02-ARCHITECTURE.md` §1.6 — calls the abandon route, finalizing the run `'failed'` and clearing the concurrency guard so retry becomes possible) are both rendered here. Everything else the In-Progress panel shows (persisted steps, honest-gap sentence context) remains visible below the disclosure — nothing hidden, only the "is this healthily running" claim is corrected. Rendered only when `workspace.briefs.length === 0` (no `BriefVersion` exists yet) or the displayed `BriefVersion` is current (§5.4 rule 1) — while viewing a prior version, this state instead renders as the Viewing Prior Version row's read-only notice, below, with no "Abandon and retry" control; a prior version can only be viewed when `briefs.length > 0`, so this condition never exposes the control to a prior-version view. | `latestGenerationRun` where `outcome === 'in-progress'` and `livenessState === 'stale-or-interrupted'` |
@@ -713,8 +757,8 @@ same five-rule order, 0-4):
 | Outcome/Status Panel — Brief-Generated summary | Compact generation confirmation; its own real `AddSourceInline` component calling the existing, extended `POST /api/investigations` route with `investigationId` in the body (this request never transitions the Investigation's status — it remains `'brief-generated'` — it only appends sources, and only `workspace.newEvidenceSinceCurrentBriefVersion` changes as a result); and a "Regenerate with new evidence" control, enabled iff `workspace.generationEligible === true` (which for this status requires `workspace.newEvidenceSinceCurrentBriefVersion === true` per the revised Generation Eligibility Rule) and disabled with an explicit reason otherwise. This panel renders **no unconditional/bare "Generate correction" control** — the only generation-trigger here is evidence-gated (Out of Scope, US-13). This panel — and therefore the correction trigger — renders only when viewing the current version; a prior version's Outcome/Status Panel region instead renders the **Viewing Prior Version** row below. | `workspace.briefs` (`isCurrent: true` entry), `investigation.status === 'brief-generated'`, `workspace.newEvidenceSinceCurrentBriefVersion`, `workspace.generationEligible` |
 | Outcome/Status Panel — Viewing Prior Version | A minimal, read-only statement: "You are viewing a prior version of this Brief. No correction can be triggered from this view." plus the same navigable forward link to this version's own immediate successor (`forwardSupersededByVersionNumber`, human-readable `versionNumber`, region 1) `InvestigationIdentityHeader` already renders. No `AddSourceInline`, no `GenerateButton`, no "Abandon and retry", no evidence-driven correction control or other current-run-mutating control of any kind — correction always targets `ProblemBrief.currentVersionId`, which by definition is not the version on screen here. **When `workspace.latestGenerationRun?.outcome === 'in-progress'` (against the current version, active or stale/interrupted), also renders a distinct, clearly labeled read-only notice — "A generation run is currently active/stalled on the current version — go to the current workspace to view or manage it" — with a real navigable link to the current version's workspace route, where `GenerationProgressPanel` and its controls (including "Abandon and retry") then correctly live.** This variant is reachable regardless of the CURRENT version's own live generation state, INCLUDING while that run is actively `'in-progress'` — it is also reached once a run against the current version is either absent or has reached a terminal outcome (`'failed'` or `'succeeded'`), while viewing a prior version — including immediately after that run has just failed — and still guarantees no current-run-mutating control of any kind. **Renders whenever the displayed version is not current (§5.4 rule 2), regardless of `latestGenerationRun?.outcome`, including `'in-progress'` (rendering the notice above), `'failed'` (a failed correction viewed from a prior version, so this row, not Generation-Failed, is what renders in that case), or terminal/absent (the plain read-only statement with no notice).** | displayed `BriefVersion.isCurrent === false`, `workspace.latestGenerationRun` |
 | Complete Brief Review | All seven elements, uncollapsed by default (see the collapse-by-default rule stated below), for whichever version the current URL addresses (current or a specific prior version); `NegativeFindingNotice` for the four negatable elements when a matching `NegativeFinding` exists; Personal Pull rendered as its own subsection, visually and structurally separate from Demand Evidence. No generation-trigger control appears anywhere in this panel — that control lives only in the Outcome/Status Panel above (Open/Eligible, Generation-Failed, or Brief-Generated summary variants, current version only). | `GetBriefForReviewResult` (fetched by `versionNumber`, §3.1a) |
-| Research/Provenance Rail | Per-evidence: excerpt, label, source, stance (from `ClaimVersionEvidenceRef`, not `EvidenceItem`), relevance note; contradicting evidence shown inline with supporting evidence, never hidden or in a separate collapsed tab; `SearchScopeNotice` (queries performed + failed/blocked retrievals); fixed `CitationScopeNotice`; per-run runtime identifier/models/tools/steps for every run in `workspace.generationRuns` (not only the latest), each step's real `validationRecords`/`toolInvocations` fields, and each run's real `webSearchQueries` array (queries + per-result retrieved/blocked/failed status). | `GetBriefForReviewResult`, `workspace.generationRuns` (runtime/steps/`validationRecords`/`toolInvocations`/`webSearchQueries`) |
-| Decision Area and Decision History Banner | Approve / Reject / Watch controls using "Your decision" product language (no actor name); available for whichever version is on screen — current or prior; Watch requires ≥1 named condition before its submit control enables; in-place confirmation banner after a successful submission; no Reopen control anywhere. Below the controls, `DecisionHistoryBanner` (US-12, revised to render two requirements-distinct lists) renders, without burying or requiring scroll/interaction: (1) this version's own `priorDecisions` (`GetBriefForReviewResult.priorDecisions`, `decidedAt` ascending, scoped to exactly the `briefVersionId` on screen) with every Watch condition rendered as its resolved `description` text, never a raw id; (2) the whole-Investigation `workspace.decisionLineage` (`decidedAt` ascending across every `BriefVersion` in the lineage), each entry labeled with its own human-readable version reference — never merged with list (1). Full decision controls and both chronological lists remain in this region. No control anywhere in this section initiates `assignValidityState` (Out of Scope, US-12). | `workspace.decisionLineage`, `GetBriefForReviewResult` (`priorDecisions` — scoped to the displayed version) — the backward/forward supersession-link data (`workspace.briefs.isCurrent`/`forwardSupersededByVersionNumber`) is `InvestigationIdentityHeader`'s alone (region 1, above), not this region's. |
+| Research/Provenance Rail | **Version-scoped** (refetched with the displayed version's `GetBriefForReviewResult` and changes when the operator navigates to a different Brief version, Flow US-1 AC5): per-evidence excerpt, label, source, stance (from `ClaimVersionEvidenceRef`, not `EvidenceItem`), relevance note; contradicting evidence shown inline with supporting evidence, never hidden or in a separate collapsed tab. **Version-independent** (whole-Investigation run history; sourced from `workspace.generationRuns`; does not change when navigating between Brief versions): `SearchScopeNotice` (queries performed + failed/blocked retrievals); fixed `CitationScopeNotice`; per-run runtime identifier/models/tools/steps for every run in `workspace.generationRuns` (not only the latest), each step's real `validationRecords`/`toolInvocations` fields, and each run's real `webSearchQueries` array (queries + per-result retrieved/blocked/failed status). | `GetBriefForReviewResult` (version-scoped evidence), `workspace.generationRuns` (version-independent runtime/steps/`validationRecords`/`toolInvocations`/`webSearchQueries`) |
+| Decision Area and Decision History Banner | Approve / Reject / Watch controls using "Your decision" product language (no actor name); available for whichever version is on screen — current or prior; Watch requires ≥1 named condition before its submit control enables; in-place confirmation banner after a successful submission; no Reopen control anywhere. On a successful (`201`) submission, the form triggers exactly two refetches — `GET.../workspace` (for `decisionLineage`) and `GET.../brief-versions/by-version/:versionNumber` for the displayed version (for `priorDecisions`) — never constructing either list from the submission's own response body, and never requiring a full page reload/navigation (§ Flow US-10 step 6, § Interactions "Record Decision"). Below the controls, `DecisionHistoryBanner` (US-12, revised to render two requirements-distinct lists) renders, without burying or requiring scroll/interaction: (1) this version's own `priorDecisions` (`GetBriefForReviewResult.priorDecisions`, `decidedAt` ascending, scoped to exactly the `briefVersionId` on screen) with every Watch condition rendered as its resolved `description` text, never a raw id; (2) the whole-Investigation `workspace.decisionLineage` (`decidedAt` ascending across every `BriefVersion` in the lineage), each entry labeled with its own human-readable version reference — never merged with list (1). Full decision controls and both chronological lists remain in this region. No control anywhere in this section initiates `assignValidityState` (Out of Scope, US-12). | `workspace.decisionLineage`, `GetBriefForReviewResult` (`priorDecisions` — scoped to the displayed version) — the backward/forward supersession-link data (`workspace.briefs.isCurrent`/`forwardSupersededByVersionNumber`) is `InvestigationIdentityHeader`'s alone (region 1, above), not this region's. |
 
 **No section is hidden by conditional collapse-by-default for its required content.** The uncertain/
 negative-finding/contradicting-evidence "never collapsed by default" rule applies to every
@@ -865,7 +909,9 @@ EXISTING Investigation, sharing the route but not the form component or its crea
  `'brief-generated'`; this route never silently changes a `'brief-generated'` Investigation to
  `'open'`. `onSubmitted` here triggers a re-fetch of `GET.../workspace` for the current
  Investigation — no navigation occurs.
-3. The workspace re-renders with updated `sources`, `status` (unchanged for the
+3. The workspace re-renders with updated `sources` (including the new source's own persisted
+ `resolutionStatus` in region 1's per-source list, § Sections, Investigation Header), `status`
+ (unchanged for the
  `'brief-generated'` context — only appended sources, never a status change), `generationEligible`,
  and — for the Brief-Generated summary panel's instance specifically —
  `newEvidenceSinceCurrentBriefVersion` (recomputed from the re-fetch, not derived from step 2's
@@ -949,16 +995,23 @@ navigated by).
 3. Every region updates to reflect the target version: header's "Version N of M" indicator plus
  its compact `assignedState`/`isSuperseded`/backward-supersession-link facts (region 1,
  `InvestigationIdentityHeader` — § Decision History Banner above), region 3
- (Brief content), and the Decision Area's per-version `priorDecisions` list and Approve/Reject/Watch
- controls (bound to that version's `briefVersionId`). Region 4 (Provenance
- Rail, all runs) does not change, since it is version-independent.
+ (Brief content), region 4's `EvidenceProvenanceList` (the displayed version's own evidence,
+ refetched as part of `GetBriefForReviewResult` — version-SCOPED content), and the Decision
+ Area's per-version `priorDecisions` list and Approve/Reject/Watch
+ controls (bound to that version's `briefVersionId`). Region 4's remaining content — `RunHistoryList`
+ (all `GenerationRun`s and their steps), `SearchScopeNotice`, and `CitationScopeNotice` — does NOT
+ change on version navigation, since that content is Investigation-wide and version-INDEPENDENT
+ (sourced from `workspace.generationRuns`, which this navigation does not require re-fetching to
+ keep current).
 
-**Loading state:** the destination version's own Page-Load Fetch pattern, scoped to regions 3/5 (the
-version-dependent content) — regions 1/2/4 do not re-flash if their underlying data is unchanged.
+**Loading state:** the destination version's own Page-Load Fetch pattern, scoped to regions 3/5 and
+region 4's `EvidenceProvenanceList` (the version-dependent content) — regions 1/2 and region 4's
+`RunHistoryList`/`SearchScopeNotice`/`CitationScopeNotice` do not re-flash, since that content is
+version-independent and unchanged by this navigation.
 **Error state:** target `versionNumber` does not exist → the explicit "Version N does not exist"
 message (§ Flow US-1, Not-found path).
-**Success state:** the target version's content — header facts, Brief content, and its own
-`priorDecisions`/decision controls — is fully rendered at the versioned URL.
+**Success state:** the target version's content — header facts, Brief content, its own version-scoped
+evidence list, and its own `priorDecisions`/decision controls — is fully rendered at the versioned URL.
 
 ### Decision History Banner (US-10, US-12)
 
@@ -1000,28 +1053,38 @@ Flow US-1 AC5.
 3. On submit, `DecisionForm` calls `POST /api/brief-versions/:briefVersionId/decisions`
  (`recordDecision`, `02-ARCHITECTURE.md` §5.2), supplying the exact `briefVersionId` on screen —
  never the Investigation's current version by default when a prior version is displayed.
-4. On success, `DecisionConfirmationPanel` renders an in-place confirmation on the same URL (no
- navigation), and the workspace's decision lists (`priorDecisions` and `decisionLineage`) are
- updated to include the new `Decision` without a full page reload.
+4. On success (`201`), `DecisionForm` does NOT construct either decision list from the `201`
+ response body itself. It triggers exactly two refetches, both automatic and both required for the
+ confirmation in step 5 below to be accurate: (a) `GET.../workspace`, whose response carries the
+ updated `decisionLineage`; and (b) `GET.../brief-versions/by-version/:versionNumber` for the
+ version currently on screen, whose response carries that version's updated `priorDecisions`. No
+ full page reload or navigation occurs — both refetches happen as part of the same in-place update.
+5. Once both refetches in step 4 resolve, `DecisionConfirmationPanel` renders an in-place
+ confirmation on the same URL, and the workspace's decision lists (`priorDecisions` and
+ `decisionLineage`) reflect the new `Decision`.
 
 **Loading state:** the clicked control (Approve/Reject/Watch submit) shows a form-local pending
-treatment and disables itself for the duration of the request — no page-level spinner.
+treatment and disables itself for the duration of the request — no page-level spinner. The brief
+window between the `201` response and the two refetches in step 4 resolving is covered by this same
+pending treatment; the control does not re-enable until both refetches have completed.
 **Error state:** on `422` (`error: 'watch-requires-condition'`, `SubmitDecisionWatchRequiresConditionResponseBody` — `02-ARCHITECTURE.md` §3.1a/§4.3 — the server-side defense-in-depth
 check, reachable only if a request somehow bypasses the client-side Watch guard above), the control
 re-enables and an inline error renders in the Decision Area; no phantom `Decision` is added to
-either decision list (§ Flow US-10, "Watch-rejected path (server-side, defense in depth)"). Two
+either decision list (§ Flow US-10, "Watch-rejected path (server-side, defense in depth)"), and
+neither of step 4's refetches is triggered. Two
 other error responses are defined for this route (`02-ARCHITECTURE.md` §3.1a/§4.1) and receive the
-same treatment — control re-enables, inline error in the Decision Area, no phantom `Decision` added:
-on `400` (`error: 'invalid-request'`, `SubmitDecisionInvalidRequestResponseBody` — a malformed
+same treatment — control re-enables, inline error in the Decision Area, no phantom `Decision` added,
+no refetch triggered: on `400` (`error: 'invalid-request'`, `SubmitDecisionInvalidRequestResponseBody` — a malformed
 request body, e.g. a missing/invalid `decision` value or an invalid `reconsiderationConditions[i]`
 shape), an inline error states the request could not be submitted; on `404`
 (`error: 'brief-version-not-found'`, `SubmitDecisionVersionNotFoundResponseBody` — the
 `briefVersionId` on screen no longer resolves, e.g. a stale tab against a version that no longer
 exists), an inline error states the version could not be found and directs the operator to reload
 the workspace. `recordDecision` and its route define no other failure mode beyond these three.
-**Success state:** the in-place confirmation banner described in Behavior step 4; both the
+**Success state:** the in-place confirmation banner described in Behavior step 5; both the
 per-version `priorDecisions` list and the whole-Investigation `decisionLineage` list show the new
-`Decision` at the end, in chronological order, without navigation away from the workspace URL.
+`Decision` at the end, in chronological order, without navigation away from the workspace URL —
+populated by the two refetches in step 4, never by the submission's own request/response payload.
 
 ### Open Investigation Workspace (updated navigation target — Checkpoint-1 screens)
 
@@ -1093,6 +1156,19 @@ App (client-side router — Checkpoint 1's existing two routes UNCHANGED, plus t
  │ also renders the BACKWARD supersession
  │ link from this version's own
  │ supersedesVersionId, § Sections)
+ │ └── SourcesList (real, always-rendered-when-
+ │ sources.length > 0 subcomponent — one row
+ │ per workspace.sources entry, rendering that
+ │ source's type, resolved label, and its own
+ │ persisted resolutionStatus
+ │ ('content-retrieved' / 'reachable-no-content'
+ │ / 'unreachable'), plus failureReason/
+ │ noContentReason when populated; the concrete
+ │ per-source-detail surface this checkpoint
+ │ adds, distinct from the Checkpoint-1
+ │ aggregate-count-only surface, § Checkpoint-1
+ │ surface capability boundary, top of this
+ │ document)
  ├── OutcomeStatusPanel (region 2 — exactly one variant renders,
  │ │ selected by the fixed-precedence rule
  │ │ (§5.4, § Sections): run-outcome/liveness
@@ -1204,29 +1280,49 @@ App (client-side router — Checkpoint 1's existing two routes UNCHANGED, plus t
  │ ├── UncertaintySection (never collapsed by default)
  │ └── SystemRecommendationSection (rationale included)
  ├── ProvenanceRail (region 4 — present iff ≥1 GenerationRun;
- │ │ version-independent, all runs)
+ │ │ contains both version-scoped and
+ │ │ version-independent content, see children)
  │ ├── EvidenceProvenanceList (excerpt/label/source/stance/relevance,
- │ │ per resolvedEvidence entry — scoped to
- │ │ the displayed version)
+ │ │ per resolvedEvidence entry — VERSION-SCOPED:
+ │ │ refetched from GetBriefForReviewResult and
+ │ │ changes when the operator navigates to a
+ │ │ different Brief version, Flow US-1 AC5)
  │ ├── SearchScopeNotice (reads real
- │ │ webSearchQueries[].scopeNote/limitations)
- │ ├── CitationScopeNotice (fixed, always visible)
+ │ │ webSearchQueries[].scopeNote/limitations —
+ │ │ VERSION-INDEPENDENT, from
+ │ │ workspace.generationRuns, unchanged across
+ │ │ version navigation)
+ │ ├── CitationScopeNotice (fixed, always visible —
+ │ │ VERSION-INDEPENDENT)
  │ ├── RunHistoryList (every GenerationRun, all steps —
  │ │ not only the latest run; renders each
  │ │ step's validationRecords/toolInvocations
  │ │ and each run's webSearchQueries, real
- │ │ field names)
+ │ │ field names — VERSION-INDEPENDENT: whole-
+ │ │ Investigation run history, unchanged across
+ │ │ version navigation)
  │ └── TechnicalDisclosurePanel (collapsed by default — the ONE panel
  │ in this hierarchy allowed to start
- │ collapsed; raw validation/schema detail)
+ │ collapsed; raw validation/schema detail —
+ │ VERSION-INDEPENDENT)
  └── DecisionSection (region 5 — present iff ≥1 BriefVersion;
  │ controls act on the version displayed,
  │ current or prior)
  ├── DecisionForm (Approve/Reject/Watch; "Your decision"
  │ copy; Watch gated on ≥1 named condition;
  │ posts to the displayed version's own
- │ briefVersionId, current or prior alike)
- ├── DecisionConfirmationPanel (in-place, same URL)
+ │ briefVersionId, current or prior alike; on a
+ │ successful 201, triggers exactly two
+ │ refetches — GET.../workspace for
+ │ decisionLineage and
+ │ GET.../brief-versions/by-version/:versionNumber
+ │ for the displayed version's priorDecisions —
+ │ never constructing either list from the 201
+ │ response body itself, § Interactions "Record
+ │ Decision")
+ ├── DecisionConfirmationPanel (in-place, same URL; renders once
+ │ both of DecisionForm's post-submission
+ │ refetches above resolve)
  └── DecisionHistoryBanner (renders TWO
  requirements-distinct lists: (1)
  priorDecisions, scoped to the displayed
@@ -1257,10 +1353,12 @@ them and what happens after their shared `onSubmitted` callback triggers a works
 every mount point, when the target Investigation's pre-mutation status is `'brief-generated'`, the
 route skips its transition step entirely — none of these three instances can cause
 `investigation.status` to change; only `newEvidenceSinceCurrentBriefVersion` changes, and only via
-the next real `GET.../workspace` re-fetch.
+the next real `GET.../workspace` re-fetch. Every mount point's post-submission re-fetch also
+refreshes `SourcesList`'s per-source `resolutionStatus` rendering in region 1, since `workspace.sources`
+is part of the same `GET.../workspace` payload.
 
 No component in this hierarchy is a client-side re-derivation of `generationEligible`,
-`isCurrent`, `assignedState`, `isSuperseded`, `livenessState`, or
+`isCurrent`, `assignedState`, `isSuperseded`, `livenessState`, `resolutionStatus`, or
 `newEvidenceSinceCurrentBriefVersion` — every one of these is rendered exactly as the server
 computed it (`02-ARCHITECTURE.md` §6, "Server-computed derived flags" pattern). In particular, the
 three `GenerateButton` instances (`OpenEligiblePanel`, `GenerationFailedPanel`,
@@ -1276,12 +1374,12 @@ consumer pattern across all three contexts. No component in this hierarchy calls
 
 | State | Visible In | Updated By |
 |---|---|---|
-| `InvestigationWorkspaceView` (identity, sources, all `generationRuns` including per-run `livenessState`/`webSearchQueries` and per-step `validationRecords`/`toolInvocations`, `briefs` including `assignedState`/`isSuperseded` per version, `decisionLineage`, `generationEligible`, `newEvidenceSinceCurrentBriefVersion`) | `InvestigationWorkspaceScreen` and every child region, including `DecisionHistoryBanner` and the Brief-Generated summary panel's `AddSourceInline`/`GenerateButton` pair | `GET.../workspace` on mount, then on each poll tick (at the engineering-derived `POLL_INTERVAL_MS` interval, `02-ARCHITECTURE.md` §4.9/§5.2 — not asserted here as a specific value) while `latestGenerationRun?.livenessState === 'active'`, then on any local action that changes server state (add source, trigger generation, record decision) |
-| `GetBriefForReviewResult` (seven elements, evidence, negative findings, notices, `priorDecisions`, `assignedState`, `isSuperseded`, `version`) for the routed/current version | `BriefReviewPanel`, `ProvenanceRail`'s evidence list, `InvestigationIdentityHeader`'s "Version N of M" indicator, `DecisionHistoryBanner`'s per-version list | `GET.../brief-versions/by-version/:versionNumber`, fetched once per displayed version (current when no `:versionNumber` route param is present, the routed value otherwise) — not re-fetched on every poll tick, re-fetched on version navigation (Flow US-1 AC5) |
+| `InvestigationWorkspaceView` (identity, sources including per-source `resolutionStatus`/`failureReason`/`noContentReason`, all `generationRuns` including per-run `livenessState`/`webSearchQueries` and per-step `validationRecords`/`toolInvocations`, `briefs` including `assignedState`/`isSuperseded` per version, `decisionLineage`, `generationEligible`, `newEvidenceSinceCurrentBriefVersion`) | `InvestigationWorkspaceScreen` and every child region, including `SourcesList`, `DecisionHistoryBanner`, and the Brief-Generated summary panel's `AddSourceInline`/`GenerateButton` pair | `GET.../workspace` on mount, then on each poll tick (at the engineering-derived `POLL_INTERVAL_MS` interval, `02-ARCHITECTURE.md` §4.9/§5.2 — not asserted here as a specific value) while `latestGenerationRun?.livenessState === 'active'`, then on any local action that changes server state (add source, trigger generation, record decision — record decision refetches this endpoint specifically for its updated `decisionLineage`, § Interactions "Record Decision") |
+| `GetBriefForReviewResult` (seven elements, evidence — version-SCOPED — negative findings, notices, `priorDecisions`, `assignedState`, `isSuperseded`, `version`) for the routed/current version | `BriefReviewPanel`, `ProvenanceRail`'s `EvidenceProvenanceList` (version-scoped only — `SearchScopeNotice`/`CitationScopeNotice`/`RunHistoryList` are version-independent, sourced from `workspace.generationRuns` instead), `InvestigationIdentityHeader`'s "Version N of M" indicator, `DecisionHistoryBanner`'s per-version list | `GET.../brief-versions/by-version/:versionNumber`, fetched once per displayed version (current when no `:versionNumber` route param is present, the routed value otherwise) — not re-fetched on every poll tick, re-fetched on version navigation (Flow US-1 AC5) and after a successful Decision submission (§ Interactions "Record Decision") |
 | routed `:versionNumber` (URL param, not component state) | `InvestigationWorkspaceScreen` (`useParams`) | the browser URL itself — reload-stable, never derived from in-memory navigation history |
 | `notFound` / `error` (investigation-level or version-level) | `InvestigationWorkspaceScreen` | the initial `GET.../workspace` fetch's outcome, or the version-specific `brief-version-not-found` outcome |
 | polling interval liveness (`'active'` vs. `'stale-or-interrupted'` vs. `'terminal'`) | `GenerationProgressPanel` (rendering), `InvestigationWorkspaceScreen` (interval lifecycle) | `workspace.latestGenerationRun?.livenessState`, via a `useEffect` keyed on that value — clears on transition to `'terminal'` OR `'stale-or-interrupted'` |
-| `decisionSubmission` (pending/error/confirmedDecisionId) | `DecisionForm` / `DecisionConfirmationPanel` only | its own submit handler; cleared on next submission attempt |
+| `decisionSubmission` (pending/error/confirmedDecisionId) | `DecisionForm` / `DecisionConfirmationPanel` only | its own submit handler, including the pending state spanning both of its post-`201` refetches (§ Interactions "Record Decision"); cleared on next submission attempt |
 | Watch condition rows (client-only, pre-submit) | `DecisionForm` only | user input; not persisted until a successful submit; discarded on navigation away without submitting |
 
 No state from `InvestigationWorkspaceScreen` is shared with `MissionControlScreen` or
@@ -1312,7 +1410,8 @@ Checkpoint 1's no-state-management-library, no-cross-screen-cache design
  §2/§5.3 names (`InvestigationIdentityHeader`, `AddSourceInline`, `GenerationProgressPanel`,
  `BlockedSourcesPanel`, `BriefReviewPanel`, `DecisionForm`/`DecisionConfirmationPanel`,
  `DecisionHistoryBanner`, `GenerateButton`) appears in the hierarchy above, plus purely
- presentational subdivisions (the seven Brief-element sections, the outcome-panel variants) that
+ presentational subdivisions (the seven Brief-element sections, the outcome-panel variants,
+ `SourcesList`) that
  are layout subdivisions of architecture-assigned components, not new data-owning services.
 - Single generation-eligibility gate: yes — every generation-trigger control specified in this
  document (Open/Eligible's "Start generation", Generation-Failed's "Retry generation", and
@@ -1353,7 +1452,9 @@ Checkpoint 1's no-state-management-library, no-cross-screen-cache design
  this document specifies a human-readable label as primary, with a shortened id (if shown at all)
  explicitly named as secondary/labeled — checked against every row in the Sections and Interactions
  tables, including the new `InvestigationIdentityHeader` copy (plain-language `assignedState`/
- `isSuperseded` statements, never a raw enum literal or UUID as primary content) and the new
+ `isSuperseded` statements, never a raw enum literal or UUID as primary content), the per-source
+ `SourcesList` (human-readable `resolutionStatus` copy, type, and label, never a raw enum literal as
+ primary content), and the new
  version-navigation links.
 - Engineering-owned constants guarantee: `POLL_INTERVAL_MS` and `STALE_THRESHOLD_MS` are referenced
  throughout this document only via their engineering-derivation framing (`02-ARCHITECTURE.md`
@@ -1361,10 +1462,11 @@ Checkpoint 1's no-state-management-library, no-cross-screen-cache design
  this document asserts or implies a specific numeric value for either constant, and neither is
  framed as a Danny-owned PROVISIONAL value pending his sign-off.
 - Each of the following has a stated UI mechanism in this document, not a prose assurance:
-  - § Sections (Research/Provenance Rail, In-Progress panel), § Interactions (Honest In-Progress Rendering), § Component Hierarchy (`ProvenanceRail`) all now name `validationRecords`/`toolInvocations`/`webSearchQueries` as the real rendered field shapes.
+  - § Sections (Research/Provenance Rail, In-Progress panel), § Interactions (Honest In-Progress Rendering), § Component Hierarchy (`ProvenanceRail`) all now name `validationRecords`/`toolInvocations`/`webSearchQueries` as the real rendered field shapes, and now explicitly split which of `ProvenanceRail`'s children are version-scoped (`EvidenceProvenanceList`) versus version-independent (`SearchScopeNotice`, `CitationScopeNotice`, `RunHistoryList`).
   - new Flow "US-1 AC5", new Interaction "Navigate to a Specific Brief Version", the second route in § Screens/§ Component Hierarchy, and `InvestigationIdentityHeader`'s forward/backward supersession links now addressed by human-readable `versionNumber`.
   - § Interactions "Add Source (Blocked Recovery, Failed Retry, and Brief-Generated Resubmission)" and
- § Component Hierarchy state explicitly `AddSourceInline` is its own component calling the existing, extended `POST /api/investigations` route (`investigationId` in the request body — not a new `:id/sources` route) and rendering the real persisted `CreateInvestigationResponseBody`, never a `StartInvestigationForm` reuse or an assumed optimistic state, and never implying a `'brief-generated'` Investigation's status silently changes — only `newEvidenceSinceCurrentBriefVersion` does.
-  - § Flow US-10, § Sections, § Interactions "Decision History Banner", and § Component Hierarchy all render `priorDecisions` (per-version) and `decisionLineage` (whole-Investigation) as two separate, labeled lists, with every reconsideration condition rendered as resolved text.
+ § Component Hierarchy state explicitly `AddSourceInline` is its own component calling the existing, extended `POST /api/investigations` route (`investigationId` in the request body — not a new `:id/sources` route) and rendering the real persisted `CreateInvestigationResponseBody`, never a `StartInvestigationForm` reuse or an assumed optimistic state, and never implying a `'brief-generated'` Investigation's status silently changes — only `newEvidenceSinceCurrentBriefVersion` does; its post-submission re-fetch also refreshes `SourcesList`'s per-source `resolutionStatus`.
+  - § Flow US-10, § Sections, § Interactions "Decision History Banner" and "Record Decision", and § Component Hierarchy all render `priorDecisions` (per-version) and `decisionLineage` (whole-Investigation) as two separate, labeled lists, with every reconsideration condition rendered as resolved text, and all now state the explicit two-refetch mechanism (`GET.../workspace` for `decisionLineage`, `GET.../brief-versions/by-version/:versionNumber` for `priorDecisions`) a successful Decision submission triggers — never a client-side construction from the submission's own response, never a full page reload.
   - new "Stale/Interrupted" Outcome/Status Panel variant, § Interactions' revised polling behavior keyed on `livenessState`, honest informational-only copy plus the real "Refresh status" and "Abandon and retry" controls (`02-ARCHITECTURE.md` §1.6).
   - the binding header note (top of this document) states the determined resolution (decision controls available on the displayed version, current or prior, per `02-ARCHITECTURE.md` §5.2's explicit "prior or current alike"), and every region now discloses which version is on screen via `InvestigationIdentityHeader`'s "Version N of M" indicator.
+  - the new "Checkpoint-1 surface capability boundary" note (top of this document) and `InvestigationIdentityHeader`'s `SourcesList` subcomponent (§ Sections, § Component Hierarchy) together state where a submitted source's per-source `resolutionStatus` is actually rendered in the browser — the Investigation Workspace screen, not the Checkpoint-1 surface — resolving the sequencing question of which slice's browser demonstration can show it.

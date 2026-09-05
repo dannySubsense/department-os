@@ -237,15 +237,22 @@ research is no longer silently starved.
 **Browser Demonstration (required — real, rendered screen, real clicks, real persisted data):**
 - From the existing Checkpoint-1 Problem Department overview (`StartInvestigationForm`, unchanged
  this slice), submit a real `url`-type source pointing at a genuinely reachable host, using the
- actual rendered form and its real submit control. Confirm the source's persisted
- `resolutionStatus` is `content-retrieved`, not `unreachable`, viewed via the actual rendered
- result of the submission — not inferred from an API response alone.
+ actual rendered form and its real submit control. Confirm the Investigation's persisted,
+ rendered `evidenceCount`/aggregate resolution state reflects the new source as resolved (not
+ blocked/unreachable) — the only per-Investigation resolution signal the existing Checkpoint-1
+ surface actually renders (`src/types/readModels.ts`'s aggregate `sourceCount`/`evidenceCount`
+ fields; there is no per-source `resolutionStatus` view on this surface). Correction (2026-09-05,
+ independent review): the per-*source* `resolutionStatus` claim originally required here cannot be
+ demonstrated on the Checkpoint-1 surface, which has no per-source view — that demonstration moves
+ to C2-S2's `SourcesList` component, the real place a per-source `resolutionStatus` is rendered.
 
 **Done When:**
 - [ ] All tests above pass; Frank forge-gate PASS.
-- [ ] The browser demonstration above is performed and observed against real persisted data.
-- [ ] Stop point for Danny's product review: a real `url` source resolves successfully in the
- existing Checkpoint-1 UI.
+- [ ] The browser demonstration above is performed and observed against real persisted data
+ (aggregate resolution reflected on the existing Checkpoint-1 surface — not a per-source
+ `resolutionStatus` claim, which is C2-S2's Done-When below).
+- [ ] Stop point for Danny's product review: a real `url` source resolves successfully, reflected
+ in the existing Checkpoint-1 UI's aggregate resolution state.
 
 ---
 
@@ -317,6 +324,19 @@ including its full provenance fields, is never under-reported).
  `fence_token` at write time (`recordGenerationStep`/`finalizeGenerationRun`/`abandonGenerationRun`)
  is C2-S3's own scope — no `GenerationRun` is created by any code path in this slice, so there is
  nothing yet to fence.
+- `src/db/migrations/013_source_artifact_resolution_revision.sql` (new — exact SQL per
+ `02-ARCHITECTURE.md` §1.4a/§3.5: `ALTER TABLE source_artifact ADD COLUMN IF NOT EXISTS
+ resolution_revision INTEGER NOT NULL DEFAULT 0`. Created in this slice, alongside `009` — both
+ additive `ALTER TABLE`s this slice's own `recheckSourceArtifact.ts` compute/persist split needs;
+ `resolution_revision` is the sole CAS condition for the recheck guard, added 2026-09-05 per
+ independent review because the pre-existing `resolution_status`/`resolution_resolved_at` pair is
+ not collision-free.)
+- `src/client/components/SourcesList.tsx` (new — subcomponent of `InvestigationIdentityHeader`,
+ `02-ARCHITECTURE.md` §5.3, added 2026-09-05 per independent review) — renders each `source_artifact`
+ row's real, persisted `resolutionStatus` individually, with `failureReason`/`noContentReason`
+ where applicable. Closes the gap C2-S1's Done-When left when its per-source `resolutionStatus`
+ browser demonstration was moved to this slice (see C2-S1's Done-When and this slice's own
+ Browser Demonstration bullet, above).
 - `src/services/resolveSourceArtifact.ts` — edit, two changes, both required before
  `recheckSourceArtifact.ts` (below) can be correct: (1) **`02-ARCHITECTURE.md` §1.4a's
  compute/persist split** — extract the existing type-branch resolution logic
@@ -594,7 +614,15 @@ including its full provenance fields, is never under-reported).
  `UPDATE`. This is the regression test for the specific defect Finding 3 identified: without the
  split, `resolveSourceArtifact`'s own internal `persistResolution` call would make both calls
  write unconditionally before either CAS guard evaluates, so this test would previously observe
- TWO writes and a `rowCount` outcome that does not correspond to "one real winner."
+ TWO writes and a `rowCount` outcome that does not correspond to "one real winner." **CAS
+ mechanism correction (Sol finding, `02-ARCHITECTURE.md` §1.4a, migration `013`):** the guard is
+ the new monotonic `resolution_revision` column (`UPDATE ... WHERE id = $1 AND
+ resolution_revision = $read`, incremented atomically by the same statement), not the
+ `(resolution_status, resolution_resolved_at)` pair alone — the doc had previously acknowledged
+ that pair is not collision-free (two identical concurrent writes could both report success),
+ which directly contradicted this test's exactly-one-writer requirement. This test's
+ `rowCount === 1`/`rowCount === 0` split is only a real exactly-one-writer guarantee because it is
+ exercising the `resolution_revision` CAS, not the older, weaker guard.
 - [ ] **New, required — blank/whitespace-only text does not resolve `'content-retrieved'`
  (§1.4b, closes the Finding-2 defect).** A `source_artifact` seeded/submitted with `type: 'text'`
  and `raw: '   '` (or any string that trims to zero length) resolves to
@@ -646,19 +674,26 @@ including its full provenance fields, is never under-reported).
  `AddSourceInline` to an Investigation that already has a resolved source, and confirm — via the
  actual rendered panel and a direct database read of the pre-existing row — that the pre-existing
  source's rendered state is unchanged by the add-source submission.
+- **Per-source `resolutionStatus`, rendered (moved from C2-S1, 2026-09-05 independent-review
+ correction):** in the same workspace, confirm `SourcesList` (under `InvestigationIdentityHeader`)
+ renders each individual source's real, persisted `resolutionStatus` (`content-retrieved`,
+ `unreachable`, etc., with `failureReason`/`noContentReason` where applicable) — this is the first
+ slice where a per-source view exists; C2-S1's own Checkpoint-1 surface only has the aggregate
+ counts C2-S1's Done-When checks.
 
 **Done When:**
 - [ ] All tests above pass; Frank forge-gate PASS.
-- [ ] All seven browser demonstration bullets above are performed and observed against real
+- [ ] All eight browser demonstration bullets above are performed and observed against real
  persisted data.
 - [ ] Stop point for Danny's product review: submitting sources lands in a durable workspace;
  Blocked recovery works in place via the real `AddSourceInline` component and the extended
  `POST /api/investigations` route; direct URL/reload/not-found all behave correctly; both
  updated call sites route to the new screen; pre-existing generation history (if any) renders
  honestly with its full real provenance fields; adding a source never silently overwrites an
- already-resolved sibling source's persisted state, and intentional single-source re-check via
- the explicit "Re-check this source" control works end to end. **US-5 AC3 is NOT claimed
- complete by this slice alone — see C2-S3.**
+ already-resolved sibling source's persisted state, intentional single-source re-check via
+ the explicit "Re-check this source" control works end to end, and `SourcesList` renders each
+ source's real per-source `resolutionStatus`. **US-5 AC3 is NOT claimed complete by this slice
+ alone — see C2-S3.**
 
 ---
 
@@ -724,6 +759,25 @@ C2-S4/C2-S5's scope).
 - `src/db/migrations/012_generation_run_consumed_source.sql` (new — exact SQL per
  `02-ARCHITECTURE.md` §4.8/§3.5: `generation_run_consumed_source (generation_run_id, source_artifact_id)`,
  the real per-run consumed-evidence ledger `hasEligibleNewEvidenceSinceCurrentBriefVersion` reads).
+- `src/db/migrations/014_source_artifact_identity_fingerprint.sql` (new — exact SQL per
+ `02-ARCHITECTURE.md` §4.8: `ALTER TABLE source_artifact ADD COLUMN IF NOT EXISTS
+ canonical_identity TEXT, ADD COLUMN IF NOT EXISTS resolved_content_fingerprint TEXT`. Created in
+ this slice, alongside `012` — both belong to the slice that builds the resubmission eligibility
+ mechanism.)
+- `src/services/resolveSourceArtifact.ts` — a further edit, in THIS slice (added 2026-09-05 per
+ independent review — the columns migration `014` creates must be populated by the same slice, or
+ the eligibility query's `IS NULL`-treated-as-eligible fallback silently degrades finding 4's fix
+ to id-anti-join-only): `computeSourceResolution` (split out in C2-S2, §1.4a) gains the
+ `canonical_identity`/`resolved_content_fingerprint` computation described in §4.8 — URL
+ normalization for `canonical_identity` (`type: 'url'` only, `NULL` for `type: 'text'`), and
+ `sha256(trim(resolvedContent))` for `resolved_content_fingerprint` on any `'content-retrieved'`
+ result of either type. `resolveSourceArtifact`'s own existing unconditional persist call adds
+ both fields to its `INSERT`/`UPDATE`.
+- `src/services/recheckSourceArtifact.ts` — a further edit, in THIS slice (same reason as above):
+ the CAS-guarded `UPDATE` (§1.4a, built in C2-S2) adds `canonical_identity`/
+ `resolved_content_fingerprint` to its `SET` list, populated from the same
+ `computeSourceResolution` call this function already makes — no second computation, no second
+ network fetch.
 - `src/services/extractClaimsAndEvidence.ts` — same file, a further edit (corrected ledger source,
  `02-ARCHITECTURE.md` §4.8): its return type gains one additive field, `usableSourceIds: string[]`
  (the array its own top-level wrapper already computes internally — the real `content-retrieved`
@@ -793,8 +847,11 @@ C2-S4/C2-S5's scope).
  and anti-joining against the new `generation_run_consumed_source` table (migration `012`, this
  slice — the real per-run record of exactly which `source_artifact` rows the current
  `BriefVersion`'s producing `GenerationRun` actually read), both by `source_artifact.id` (excludes
- already-reflected-in-the-current-Brief) and by trimmed `raw` content equality against every
- consumed row's own `raw` (excludes duplicate-of-consumed under a newly-submitted, distinctly-`id`d
+ already-reflected-in-the-current-Brief) and by `canonical_identity`/`resolved_content_fingerprint`
+ equality (migration `014`, §4.8 — corrected 2026-09-05 per independent review; replaces trimmed
+ `raw` content equality, which misses equivalent URLs/redirects with different raw text) against
+ every consumed row's own canonical identity/fingerprint (excludes duplicate-of-consumed under a
+ newly-submitted, distinctly-`id`d
  row) — no coupling to `submitSources`/`resolveInvestigationSources`; wired into
  `InvestigationWorkspaceView.newEvidenceSinceCurrentBriefVersion` and into `generationEligible`'s
  `'brief-generated'` branch;
@@ -1102,9 +1159,18 @@ C2-S4/C2-S5's scope).
 - [ ] `hasEligibleNewEvidenceSinceCurrentBriefVersion`: `false` when no `ProblemBrief`
  exists yet; `false` for a source whose `resolution_status` is `unreachable` or not yet
  resolved; `false` for a `reachable-no-content` (empty) source; `false` for a source whose
- (trimmed) `raw` duplicates a source already consumed by the current `BriefVersion`'s evidence
- chain, even as a distinct `Source` row; `true` given a real, genuinely new, `content-retrieved`
- source not already consumed — real seeded rows against real tables, not mocked.
+ `canonical_identity` OR `resolved_content_fingerprint` (migration `014`, §4.8, corrected
+ 2026-09-05 per independent review — replaces trimmed-`raw` string equality, which misses
+ equivalent URLs/redirects with different raw text) matches a source already consumed by the
+ current `BriefVersion`'s evidence chain, even as a distinct `Source` row; `true` given a real,
+ genuinely new, `content-retrieved` source not already consumed — real seeded rows against real
+ tables, not mocked. **New, required — canonical-identity dedup, distinct raw strings (Sol
+ finding)**: two distinct `source_artifact` rows with different raw submitted strings (e.g. a
+ shortlink and its resolved destination URL, or the same URL with/without a tracking parameter)
+ but the same `canonical_identity` or the same `resolved_content_fingerprint` — both correctly
+ disqualified as duplicates; asserts the check is NOT satisfied by raw string/URL text equality
+ alone (a real row pair with distinct raw text and matching canonical identity must be excluded
+ even though a naive `trim(raw)` comparison would have wrongly admitted it).
 - [ ] **New, required — mid-run over/under-recording guard, ledgered against Extraction's own real
  read set (§4.8), not a `started_at` boundary**: a real source resolved to `content-retrieved`
  with `resolution_resolved_at` AFTER `generateBriefVersion`'s own Extraction step has already
@@ -1156,6 +1222,33 @@ C2-S4/C2-S5's scope).
  instead re-reads and responds with the run's real, already-persisted outcome (§1.6 step 4's own branch); AND asserts `GenerationStep[]` for this
  run contains NO step with `component: 'Operator abandonment'` — the lost-race case must leave
  no fabricated abandonment record behind, not merely a corrected response.
+- [ ] **New, required — heartbeat-vs-fence race (Sol finding, `02-ARCHITECTURE.md` §1.6)**: seed a
+ real `'in-progress'` run whose `lease_heartbeat_at` is stale enough to classify
+ `livenessState === 'stale-or-interrupted'`; between reading that stale state and issuing
+ `abandonGenerationRun`'s fence-increment `UPDATE`, commit a real `recordGenerationStep` call for
+ the SAME run (a genuine heartbeat renewal, e.g. a resumed worker) — asserts the abandonment
+ `UPDATE` returns `rowCount === 0` (because it is now gated on the exact `lease_heartbeat_at`
+ value read at the stale-check, per the corrected architecture, and that value has since
+ changed) and the endpoint responds `409`, NOT a successful abandonment — proving a run that
+ resumes between stale-classification and the abandon click cannot be fenced out from under
+ itself. Without this gate, the fence-increment used only `id`/`outcome`/the previously-read
+ fence token and would have succeeded regardless of the intervening heartbeat renewal.
+- [ ] **New, required — unfenced pre-Phase-4 writes cannot survive abandonment (Sol finding,
+ `02-ARCHITECTURE.md` §1.6's `beginFencedWrite`)**: seed a real `GenerationRun`, advance it past
+ Extraction (a real `extractClaimsAndEvidence`/`extractClaimsAndEvidenceForSourceArtifacts` call
+ that has begun but not yet committed its evidence/claim writes, or an equivalent
+ test-controlled pause point), then call `abandonGenerationRun` for the same run from a second
+ connection — asserts the paused writer's subsequent evidence/claim/landscape-search/
+ consumed-source-ledger writes are rejected with `GenerationRunFencedOutError` (via
+ `beginFencedWrite`'s token check) rather than committing, and a direct row-read after the test
+ confirms none of those rows exist for the abandoned run. A paired test then starts a genuine
+ retry (`createGenerationRun` for the same Investigation) and asserts its own Extraction read
+ (`extraction.usableSourceIds`) reflects only its own run's real evidence — none of the abandoned
+ run's rejected writes are visible to or consumed by the retry. This is the test that closes the
+ gap an earlier revision of this document left open by treating these writes as harmless because
+ "accretive" — verified false against `getEvidenceForInvestigation.ts`/
+ `getClaimVersionsForInvestigation.ts` (no run filter, read unfiltered by run at the start of
+ every run) during independent review.
 - [ ] **New, required — lost finalization race propagation**: seed a real
  `'in-progress'` `GenerationRun` mid-Phase-4 (a real transaction open on a real assembled
  `BriefVersion`, immediately before the `:677` finalize call); before that call runs, call
@@ -1462,6 +1555,16 @@ five-item demonstration, remain C2-S5's scope).
  header's "Version N of M" indicator correctly reflecting the routed (non-current) version and
  a working forward link to that version's own immediate successor (not necessarily the current
  version in a lineage of 3+).
+- [ ] **New, required — Region 4 version-scoping split (Sol finding, corrects a contradiction: an
+ earlier revision of this document claimed Region 4 does not change on version navigation while
+ also scoping `EvidenceProvenanceList` to the displayed version).** Navigating between two real
+ `BriefVersion`s of the same Investigation asserts: `EvidenceProvenanceList` DOES change —
+ it re-fetches and renders the newly-displayed version's own evidence/provenance content (never
+ the previously-displayed version's content persisting after navigation); `SearchScopeNotice`,
+ `CitationScopeNotice`, and `RunHistoryList` do NOT change — they continue rendering the same
+ whole-Investigation run/search history regardless of which version is displayed. A single test
+ asserting only "Region 4 is unchanged" or only "Region 4 always refetches" is insufficient and
+ must be replaced by this split assertion.
 - [ ] **Version Not Found, region 2**: render `InvestigationWorkspaceScreen` at a routed `:versionNumber` that
  does not resolve for a real Investigation (the 404 `brief-version-not-found` case above).
  Confirm region 1 (Investigation identity) still renders normally, and confirm region 2 renders
@@ -1643,6 +1746,24 @@ scopes).
 - [ ] `recordDecision`: persists Approve/Reject/Watch correctly; rejects zero-condition and
  whitespace-only-condition Watch attempts with no row written to either table (transaction
  rollback verified); never accepts a `decidedBy`-shaped input.
+- [ ] **New, required — Decision against a nonexistent BriefVersion returns 404, zero writes (Sol
+ finding, `02-ARCHITECTURE.md` §4.3's `BriefVersionNotFoundError`).** Service-level: calling
+ `recordDecision` with a `briefVersionId` that does not exist asserts `BriefVersionNotFoundError`
+ is thrown BEFORE any insert (verified by a real row-count check against both the decision table
+ and the reconsideration-condition table — zero rows written, no partial transaction artifact).
+ Route-level: `POST .../decisions` against a nonexistent `briefVersionId` responds
+ `404 brief-version-not-found`, not a generic `500` — closing the gap where an unguarded
+ foreign-key violation could otherwise surface as an unmapped server error.
+- [ ] **New, required — Decision success triggers both list refetches, never a client-fabricated
+ list (Sol finding, `02-ARCHITECTURE.md` §5.2/§5.3, `03-UI-SPEC.md` Flow US-10 step 6).** After a
+ real `201` `recordDecision` response (which carries only `Decision` plus condition IDs, not
+ resolved condition objects), a component/integration test asserts the UI issues exactly two
+ refetches — `GET .../workspace` (populating `decisionLineage`) and the displayed version's
+ `GET .../brief-versions/by-version/:versionNumber` (populating `priorDecisions`) — and that both
+ rendered lists show the real, persisted Decision with its real resolved reconsideration-condition
+ text (type/otherTypeLabel/description), without a full-page reload or navigation. A negative
+ assertion confirms neither list is ever constructed from the submission's own request/response
+ payload client-side.
 - [ ] `getDecisionsForBriefVersion`: returns `decidedAt` ASC; correctly aggregates resolved
  reconsideration-condition content (type/otherTypeLabel/description) without N+1 queries;
  **never returns a bare `ReconsiderationCondition` id in place of resolved content (Finding

@@ -255,52 +255,63 @@ structurally separate mechanism:
  `recheckSourceArtifact` calls `computeSourceResolution` directly — NEVER `resolveSourceArtifact` —
  so no write happens as a side effect of computing the new resolution; the only write this call
  performs is its own single, guarded `UPDATE` below.
-- **Atomic write (compare-and-set)**: two concurrent recheck requests against the same source must
- never race and have one silently overwrite the other's newly-resolved row. The real,
- already-live `source_artifact` schema (`001_initial_schema.sql`, `003_source_artifact_resolved_
- content.sql`) has no `updated_at` column and no `resolution_detail`/`resolution_content` columns —
- the persisted resolution columns are `resolution_status`, `resolution_resolved_at`,
- `resolution_failure_reason`, `resolution_no_content_reason`, and `resolved_content`
- (`resolveSourceArtifact.ts`'s own `persistResolution`, confirmed against live code). Of these,
- `resolution_resolved_at` is written on every resolution — success, `unreachable`, and
- `reachable-no-content` alike (`resolveSourceArtifact.ts:154-168`) — and changes on every resolution
- write, making it a real, already-existing compare-and-set guard; no new column is added. It is
- `new Date().toISOString()` (millisecond resolution, sourced from `resolveSourceArtifact.ts`'s own
- write, not invented here) — not a monotonic or collision-free token: two concurrent rechecks that
- resolve to the same `resolution_status` inside the same millisecond produce an identical guard
- tuple, so both `UPDATE`s below could match.
- `recheckSourceArtifact`: (1) reads the row (`id, type, raw, resolution_status,
- resolution_resolved_at`) once — this single read serves both the eligibility guard above and the
- CAS token below, not two separate reads; (2) calls `computeSourceResolution` against that row's
- `{ id, type, raw }` — a pure computation, nothing persisted by this call; (3) persists the
- computed result itself with a conditional `UPDATE` gated on the `resolution_status`/
- `resolution_resolved_at` values read at step 1:
+- **Atomic write (compare-and-set), with a monotonic revision column — corrected, MEDIUM.** Two
+ concurrent recheck requests against the same source must never race and have one silently
+ overwrite the other's newly-resolved row, AND exactly one writer must be identifiable per request
+ — `04-ROADMAP.md`'s own required test asserts exactly one update / `rowCount === 1` / one writer,
+ a guarantee a `resolution_status`/`resolution_resolved_at`-only guard cannot actually provide: as
+ originally drafted here, two concurrent rechecks resolving to the SAME `resolution_status` inside
+ the SAME millisecond (`resolution_resolved_at`'s real precision,
+ `resolveSourceArtifact.ts:154-168`) produce an identical guard tuple, so BOTH `UPDATE`s could each
+ report `rowCount === 1` against their own request — satisfying this section's own no-lost-update
+ property while contradicting the roadmap's stronger exactly-one-writer contract. The fix: add a
+ real, DB-assigned monotonic column and gate the guard on it as well, so the CAS token can never
+ collide regardless of timestamp precision.
+ ```sql
+ -- 013_source_artifact_resolution_revision.sql (§1.4a correction)
+ ALTER TABLE source_artifact
+ ADD COLUMN IF NOT EXISTS resolution_revision INTEGER NOT NULL DEFAULT 0;
+ ```
+ `resolution_revision` starts at `0` for every row (matching every row's initial `'unresolved'`
+ state) and is incremented BY the same guarded `UPDATE` that writes a resolution — never by a
+ separate statement, and never caller-supplied — so it is a true DB-enforced sequence per row, not
+ an application-computed counter that could itself race. `recheckSourceArtifact`: (1) reads the
+ row (`id, type, raw, resolution_status, resolution_resolved_at, resolution_revision`) once — this
+ single read serves both the eligibility guard above and the CAS token below, not two separate
+ reads; (2) calls `computeSourceResolution` against that row's `{ id, type, raw }` — a pure
+ computation, nothing persisted by this call; (3) persists the computed result itself with a
+ conditional `UPDATE` gated on the `resolution_revision` value read at step 1 (the sole CAS
+ condition now — `resolution_status`/`resolution_resolved_at` are still written, but no longer part
+ of the guard's `WHERE` clause, since a monotonic integer already makes the guard unambiguous on
+ its own):
  ```sql
  UPDATE source_artifact
  SET resolution_status = $2,
  resolution_resolved_at = $3,
  resolution_failure_reason = $4,
  resolution_no_content_reason = $5,
- resolved_content = $6
- WHERE id = $1 AND resolution_status = $7 AND resolution_resolved_at = $8
- RETURNING resolution_status, resolution_resolved_at;
+ resolved_content = $6,
+ resolution_revision = resolution_revision + 1
+ WHERE id = $1 AND resolution_revision = $7
+ RETURNING resolution_status, resolution_resolved_at, resolution_revision;
  ```
- (`$7`/`$8` are the `resolution_status`/`resolution_resolved_at` read at step 1 — the same fields
- the eligibility guard above already read, reused, not re-read a second time.) Because
- `computeSourceResolution` never writes, this is now genuinely the ONLY write `recheckSourceArtifact`
- performs against this row, so the guard evaluates against the real pre-call state, not a state
- this same call already overwrote. What this guard actually guarantees: no lost update — a losing
- writer never overwrites a winner's already-persisted row with a stale result. What it does NOT
- guarantee: that `rowCount === 1` reliably identifies which specific concurrent call's write
- landed — in the identical-millisecond, identical-status case, both concurrent `UPDATE`s can each
- see `rowCount === 1` against their own request, because `computeSourceResolution` is
- deterministic for the same input and both calls write byte-identical values; no data is lost in
- that case, but which call's write is recorded as "the one that landed" is not determinable from
- `rowCount` alone. `rowCount === 0` means another recheck (or any other writer of this row) already
- changed it — to a DIFFERENT `resolution_status`/`resolution_resolved_at` pair — between this
- call's read and its write; the loser performs no further write and returns the row's real current
- (freshly re-read) state rather than overwriting it — the winner's newly-resolved row is never
- silently clobbered with a different value.
+ (`$7` is the `resolution_revision` value read at step 1 — reused, not re-read a second time.)
+ Because `computeSourceResolution` never writes, this is genuinely the ONLY write
+ `recheckSourceArtifact` performs against this row, so the guard evaluates against the real
+ pre-call state, not a state this same call already overwrote. What this guard now guarantees,
+ exactly matching `04-ROADMAP.md`'s required test: `rowCount === 1` identifies EXACTLY one writer
+ as the request that landed — two concurrent rechecks reading `resolution_revision = 0` can never
+ both succeed, because the first `UPDATE` to commit moves the row to `resolution_revision = 1`,
+ and the second `UPDATE`'s `WHERE resolution_revision = 0` then matches zero rows regardless of
+ whether the two calls would have written byte-identical `resolution_status`/`resolved_content`
+ values — the identical-millisecond collision the timestamp-only guard could not resolve is now
+ structurally impossible, since `resolution_revision` is a real Postgres-serialized integer
+ increment, never two concurrent writers observing the same pre-increment value as still current.
+ `rowCount === 0` means another recheck (or any other writer of this row) already changed
+ `resolution_revision` between this call's read and its write; the loser performs no further write
+ and returns the row's real current (freshly re-read) state rather than overwriting it — the
+ winner's newly-resolved row is never silently clobbered with a different value, and the loser is
+ now unambiguously identifiable as the loser (not merely "a possible non-lost duplicate").
 - **Status recovery**: after a winning write, if the Investigation's current status is `'blocked'`,
  re-read its full source set and recompute `allUnreachable` (true only when every source is
  `'unreachable'`); if now false, call `transitionInvestigationStatus(investigationId, 'open',...)`,
@@ -321,9 +332,12 @@ interface RecheckNotEligibleResponseBody {
 }
 ```
 
-No new table, no new column. `source_artifact.resolution_status`/`resolution_resolved_at`/
+No new table. `source_artifact.resolution_status`/`resolution_resolved_at`/
 `resolution_failure_reason`/`resolution_no_content_reason`/`resolved_content` are the existing,
-already-live persisted columns this action writes through, scoped to one row.
+already-live persisted columns this action writes through, scoped to one row — plus the new
+`resolution_revision` column (migration `013`, above) added specifically as this guard's CAS
+condition, since the existing columns alone are not collision-free (corrected 2026-09-05 per
+independent review — see the guard SQL below).
 
 ### 1.4b Source Resolver — blank/whitespace-only text must not resolve `'content-retrieved'`
 
@@ -383,92 +397,195 @@ operator recovering from an apparently-dead run must not be able to create two l
 the same run's `generation_run`/`generation_step` rows. Silence alone is not proof a process is
 dead — it may be a slow LLM call. The mechanism below separates the two concerns: a **liveness
 signal** (display-only, never authorizes a destructive action by itself) and a **fencing token**
-(the actual authorization/ownership mechanism, enforced at every `generation_run`/`generation_step`
-write). What this actually protects, precisely: `generation_run` and `generation_step` writes are
-fenced directly, via the guarded `UPDATE ... WHERE fence_token = $n` below.
+(the actual authorization/ownership mechanism). What this protects, precisely: `generation_run`/
+`generation_step` writes, and — per the corrected write-path enumeration below — every pre-Phase-4
+persistence path capable of producing Investigation-visible rows a later run could read
+(evidence/claim extraction, Landscape Research's own evidence/claim path, the
+`generation_run_consumed_source` ledger, and Landscape Research's `searchWeb.ts` writes), all
+enforced at write time via the guarded `UPDATE ... WHERE fence_token = $n` (`generation_run`/
+`generation_step`) or the `beginFencedWrite` lock-and-check (the pre-Phase-4 paths, below).
 
-**Full write-path enumeration.** `generateBriefVersion`'s pipeline writes to many tables across its
-run (the exact count is not asserted here as load-bearing — see the enumeration below for what is
-actually enumerated). Only two are fenced directly; the rest fall into two other categories —
-protected indirectly via Phase 4's transaction, or genuinely unfenced but disclosed as not a
-correctness hazard. `§1.6`'s
-"writes become inert once fenced" claim (below) describes the fenced and transaction-protected paths
-only — it does NOT hold for the landscape-research writes in the last bullet, which is called out
-explicitly as the one disclosed exception.
+**Full write-path enumeration — corrected, HIGH.** The prior draft of this section classified every
+pre-Phase-4 write (evidence/claim extraction, Landscape Research's own evidence/claim path, the
+`generation_run_consumed_source` ledger, and Landscape Research's `searchWeb.ts` writes) as
+"accretive, therefore harmless" and left it unfenced. That premise is FALSE against the real base
+implementation: `getEvidenceForInvestigation` (`getEvidenceForInvestigation.ts:12-30`) and
+`getClaimVersionsForInvestigation` (`getClaimVersionsForInvestigation.ts:16-40`) both read
+`evidence_item`/`claim_version` scoped only by `investigation_id` — with NO `generation_run_id`
+filter of any kind — and `generateBriefVersion` itself calls both at the START of every run
+(`getEvidenceForInvestigation` at `:330` as `startSnapshot`, `getClaimVersionsForInvestigation` at
+`:430` for the Uncertainty Compiler). So a run that keeps writing `evidence_item`/`claim`/
+`claim_version` rows AFTER it has been fenced out (§1.6's Abandon flow explicitly permits this: the
+old process is never killed, only its subsequent `generation_run`/`generation_step` writes become
+inert) produces rows a SUBSEQUENT run — including the retry the operator explicitly triggers right
+after abandoning — will itself read and treat as real Investigation evidence, via these two
+unfiltered helpers. This is not a cosmetic display gap like the `web_search_query` provenance-rail
+case the prior draft correctly disclosed; it is a correctness hazard: an abandoned writer can keep
+committing Investigation-visible output that the retry then silently consumes, destroying the
+ownership guarantee fencing exists to provide. The design below extends fencing to every pre-Phase-4
+persistence path that can produce Investigation-visible rows, closing this gap; only the fully
+inert-on-read `attemptGenerationFailedTransition` status write remains unfenced, on the unchanged
+reasoning given for it below.
 
-- **Fenced directly** — `generation_run` and `generation_step` writes
+**Mechanism — a single guarded fence-check-and-lock helper, reused by every pre-Phase-4 persistence
+path named below (not five independent implementations of the same check):**
+
+```typescript
+// src/services/provenanceRecorder.ts — new export, alongside recordGenerationStep/finalizeGenerationRun
+
+export class GenerationRunFencedOutError extends Error {
+  constructor(public readonly generationRunId: string) {
+    super(`GenerationRun ${generationRunId} is no longer the fence owner; write rejected.`);
+  }
+}
+
+/** Opens a transaction, locks the owning GenerationRun row, and verifies it is STILL owned by
+ *  `fenceToken` and still `outcome === 'in-progress'`, immediately before the caller's own
+ *  persistence writes — closing the check-then-act window a bare pre-check (read fence, then write
+ *  minutes later after an LLM call) would leave open. Returns the open PoolClient with the
+ *  transaction and row lock held so the caller performs its OWN inserts against this same
+ *  connection before calling client.query('COMMIT'); on failure this function itself issues
+ *  ROLLBACK and throws — no partial write is ever left behind by a caller that checks first, since
+ *  the row lock is held from this call until the caller's own COMMIT/ROLLBACK. Because the lock is
+ *  acquired only immediately before the caller's own (already-computed) rows are inserted — never
+ *  held across an LLM call or a slow external fetch — a concurrent Abandon's fence-token UPDATE
+ *  (§1.6, above) is blocked for, at most, the duration of one short INSERT batch, not for the
+ *  duration of this run's own LLM/network calls. */
+export async function beginFencedWrite(input: {
+  generationRunId: string;
+  fenceToken: number;
+}): Promise<PoolClient>;
+// Implementation: client = await pool.connect(); await client.query('BEGIN');
+// const { rows } = await client.query(
+//   `SELECT fence_token, outcome FROM generation_run WHERE id = $1 FOR UPDATE`, [input.generationRunId]);
+// if (rows.length === 0 || rows[0].fence_token !== input.fenceToken || rows[0].outcome !== 'in-progress') {
+//   await client.query('ROLLBACK'); client.release();
+//   throw new GenerationRunFencedOutError(input.generationRunId);
+// }
+// return client; // caller inserts its own rows against this client, then COMMITs and releases.
+```
+
+- **Fenced directly, via the guarded `UPDATE`** — `generation_run` and `generation_step` writes
   (`recordGenerationStep`/`finalizeGenerationRun`, guarded `UPDATE ... WHERE fence_token = $n`,
-  below). A fenced-out pipeline's calls to either no-op or throw; these writes genuinely become inert
+  below). A fenced-out pipeline's calls either no-op or throw; these writes genuinely become inert
   once fenced.
 - **Protected indirectly, via transaction rollback, not a fence check of its own** — Phase 4's four
   remaining writes: `INSERT INTO problem_brief` (`generateBriefVersion.ts:606`),
   `persistBriefVersion` (`:612` — writes `brief_version` plus, per candidate, the
   `problem_statement`/`demand_signal`/`existing_solution`/`gap_hypothesis`/`personal_pull_note`/
   `negative_finding` rows; uncertainty and recommendation are columns on `brief_version` itself, not
-  separate tables), `UPDATE
-  problem_brief SET current_version_id` (`:637`), and `transitionInvestigationStatus(...,
-  'brief-generated', ...)` (`:642`). All four run inside the same transaction as the guarded
-  `finalizeGenerationRun` call at `:677` — `persistBriefVersion` is called with `client` (`:612-613`),
-  so it is transaction-protected like the other three; if that call loses the fence race, the whole
-  transaction is
-  rolled back (§1.6 above), so none of these four commits either. They are correctly protected, just
-  not by a fence-token check of their own — the transaction boundary is the protection mechanism.
-- **Evidence and claim writes** (`extractClaimsAndEvidence`, called at `generateBriefVersion.ts:338`)
-  — this call happens before Phase 4's transaction begins (`pool.connect()` at `:549`, `BEGIN` at
-  `:551`) and outside any fence-token check. `evidence_item` rows are Investigation-scoped and
-  strictly accretive (a fenced-out pipeline writing stray `EvidenceItem` rows does not corrupt or
-  overwrite anything a live pipeline depends on), so the absence of fencing there is not a
-  correctness hazard today.
-- **Landscape Research's own second evidence/claim write path**
-  (`extractClaimsAndEvidenceForSourceArtifacts`, called at `landscapeResearcher.ts:272`, itself
-  reached from `generateBriefVersion.ts:393`) — a second, independent set of `evidence_item`/
-  `claim`/`claim_version` writes, distinct from the primary `extractClaimsAndEvidence` call above.
-  Same posture, same reasoning: this call also runs before Phase 4's transaction begins and outside
-  any fence-token check, and its rows are the same `evidence_item`/`claim`/`claim_version` shapes —
-  Investigation-scoped and strictly accretive, so a fenced-out pipeline writing stray rows through
-  this path does not corrupt or overwrite anything a live pipeline depends on. The absence of
-  fencing here is not a correctness hazard today, for the identical reason given for the primary
-  path.
-- **The `generation_run_consumed_source` ledger INSERT** (§4.8, `generateBriefVersion.ts:479`) —
-  also written before Phase 4's transaction and outside any fence-token check. These ledger rows are
-  read only relative to the specific `GenerationRun` that produced the Investigation's current
-  `BriefVersion` (§4.8's eligibility query is scoped by `generation_run_id = $2`, that run's own id);
-  a fenced-out run's ledger rows are never the producing run for any `BriefVersion` (a fenced-out
-  run's Phase 4 write is exactly what the fence is designed to block), so they are never read by the
-  eligibility query and their presence or absence has no observable effect. Not fencing this write is
-  therefore not a correctness hazard today.
-- **`attemptGenerationFailedTransition`'s `transitionInvestigationStatus` write**
-  (`generateBriefVersion.ts:263-267`) — this is a guarded UPDATE in its own right (it only succeeds
-  against `ALLOWED_PRIOR_STATUSES['generation-failed']`, deliberately excluding e.g. `'blocked'`,
-  G-13) and runs outside any transaction, outside Phase 4, and outside any fence-token check. A
-  fenced-out run reaching this path can still transition the Investigation to `'generation-failed'`
-  if the row's prior status still allows it. This is acceptable because the write is idempotent in
-  effect (the Investigation was already failing; a fenced-out run's own late failure-transition
-  reports the same terminal outcome a live run would have reported) and because §4.2's eligibility
-  rule and §4.8's ledger evaluate `ProblemBrief`/evidence-consumption state, never `status` alone —
-  a stray `'generation-failed'` write from a fenced-out run does not unlock or block anything the
-  fencing mechanism exists to protect. Not fencing this write is therefore not a correctness hazard
-  today.
-- **Landscape Research's four writes, via `searchWeb.ts`** (called from
-  `generateBriefVersion.ts:393-399` via `landscapeResearcher.ts:260`) — `web_search_query`
-  (`searchWeb.ts:160,217`), `query_limitation` (`searchWeb.ts:167,234`), `source_artifact`
-  (`searchWeb.ts:247`), and `web_search_result` (`searchWeb.ts:266`). All four run before Phase 4's
-  transaction and outside any fence-token check, same posture as the two bullets above — and the same
-  accretive-facts reasoning applies: each row is a real record of a search call this run actually
-  made, not a mutable claim about the Investigation's current state, so a fenced-out run's rows do
-  not corrupt or overwrite anything a later, live run depends on. **The one place this differs from
-  the two bullets above**: `web_search_query` rows ARE surfaced directly in the UI provenance rail
-  (`03-UI-SPEC.md`, Sections table, Source column citing `workspace.generationRuns[].webSearchQueries`), so —
-  unlike the ledger and status-transition writes, whose effects are invisible once their producing run
-  is fenced out — a fenced-out run's landscape-research writes remain visibly attributed to that run
-  in the workspace UI even though its `BriefVersion` was never persisted. This is a disclosed,
-  accepted gap, not a claimed absence of one: the rows are honest (the searches genuinely happened,
-  under that run's real id), so displaying them is not itself dishonest — but §1.6's blanket "writes
-  become inert once fenced" framing does not describe this path, and this document corrects that
-  framing rather than silently continuing to claim it. Closing the gap (scoping the provenance rail to
-  only the producing `GenerationRun` of the current `BriefVersion`, or fencing these four additional
-  write paths) is deferred, Out of Scope for this checkpoint — either fix is a UI/behavior change
-  beyond this checkpoint's US-3/US-4 scope.
+  separate tables), `UPDATE problem_brief SET current_version_id` (`:637`), and
+  `transitionInvestigationStatus(..., 'brief-generated', ...)` (`:642`). All four run inside the same
+  transaction as the guarded `finalizeGenerationRun` call at `:677` — `persistBriefVersion` is called
+  with `client` (`:612-613`), so it is transaction-protected like the other three; if that call loses
+  the fence race, the whole transaction is rolled back, so none of these four commits either.
+- **Fenced directly, via `beginFencedWrite` — Evidence and claim writes**
+  (`extractClaimsAndEvidence`, called at `generateBriefVersion.ts:338`). `extractClaimsAndEvidence`'s
+  exported signature gains two required additive parameters, `generationRunId: string` and
+  `fenceToken: number` — both already available at `generateBriefVersion`'s call site from Phase 1's
+  `createGenerationRun` return value, the same values already threaded to every
+  `recordGenerationStep`/`runStepWithProvenance` call this checkpoint adds (above). Internally,
+  `extractClaimsAndEvidence` performs its LLM/extraction work exactly as today (no behavior change to
+  extraction itself, Out of Scope), then — immediately before persisting its computed
+  `evidence_item`/`claim`/`claim_version` rows, not before the LLM call — calls
+  `beginFencedWrite({ generationRunId, fenceToken })`, performs its own inserts against the returned
+  `client`, and `COMMIT`s. A `GenerationRunFencedOutError` here means this run's own retry-eligible
+  work is void: no `evidence_item`/`claim`/`claim_version` row from this call is ever persisted, and
+  the error propagates up through `generateBriefVersion`'s existing Phase 2/3 catch (`:700-715`),
+  which already finalizes-or-no-ops the run via `attemptGenerationFailedTransition`/
+  `finalizeGenerationRun` — both of which will themselves also fail their own fence-token guard
+  (this run's captured token is already stale by construction, since only a fence-out could have
+  caused `beginFencedWrite` to throw), landing on Mechanism (b)'s existing graceful-no-op path
+  (§1.6, above) rather than a second, competing terminal write. This closes the hazard directly: a
+  fenced-out run can no longer commit ANY `evidence_item`/`claim`/`claim_version` row after the
+  operator's abandon-and-retry action increments the fence, so the retry's own
+  `getEvidenceForInvestigation`/`getClaimVersionsForInvestigation` reads (`generateBriefVersion.ts:330,430`,
+  both unfiltered by `generation_run_id`, confirmed) can never observe an abandoned writer's rows.
+- **Fenced directly, via `beginFencedWrite` — Landscape Research's own second evidence/claim write
+  path** (`extractClaimsAndEvidenceForSourceArtifacts`, called at `landscapeResearcher.ts:272`,
+  itself reached from `generateBriefVersion.ts:393`). Same fix, same mechanism: this function gains
+  the identical `generationRunId`/`fenceToken` parameters (already threaded to
+  `landscapeResearcher.ts` today per its existing `generationRunId: string` parameter,
+  `landscapeResearcher.ts:208` — only `fenceToken` is new), and wraps its own
+  `evidence_item`/`claim`/`claim_version` inserts in the same `beginFencedWrite`/`COMMIT` pattern
+  immediately before persisting. A fence-out here has the identical effect and disposition as the
+  primary path above.
+- **Fenced directly, via `beginFencedWrite` — the `generation_run_consumed_source` ledger INSERT**
+  (§4.8, `generateBriefVersion.ts:479`). This INSERT now runs against the SAME `client`/transaction
+  `extractClaimsAndEvidence`'s own fenced write already opened and will `COMMIT` (both writes belong
+  to the same logical "Extraction's own persistence" step and share one fence check, not two) —
+  concretely, `consideredSourceArtifactIds` (§4.8) is computed from `extraction.usableSourceIds` at
+  `:333`'s return, and the ledger `INSERT` is issued using the `client` `extractClaimsAndEvidence`
+  itself used for its own `evidence_item`/`claim`/`claim_version` writes, before that call's own
+  `COMMIT`. This is a real, necessary sequencing change from the prior draft (which wrote the ledger
+  independently at `:479`, well after Extraction's own persistence had already committed) — the two
+  writes are now one atomic, one-fence-check unit. Fencing this write closes a second, narrower
+  channel of the same hazard: even if `evidence_item`/`claim` rows were somehow otherwise contained,
+  a stray ledger row from a fenced-out run would misrecord which sources that Investigation's FUTURE
+  correction should treat as already-consumed, corrupting §4.8's eligibility computation for every
+  subsequent run — not merely a display artifact.
+- **`attemptGenerationFailedTransition`'s `transitionInvestigationStatus` write** (unchanged from
+  the prior draft — this is the one write NOT extended into the fenced set)
+  (`generateBriefVersion.ts:263-267`) — a guarded UPDATE in its own right (it only succeeds against
+  `ALLOWED_PRIOR_STATUSES['generation-failed']`, deliberately excluding e.g. `'blocked'`) that runs
+  outside any transaction, outside Phase 4, and outside `beginFencedWrite`. A fenced-out run reaching
+  this path can still transition the Investigation to `'generation-failed'` if the row's prior status
+  still allows it. This remains acceptable, unlike the writes above, because it is genuinely
+  idempotent in EFFECT and carries no Investigation-visible content a later run could wrongly
+  consume: it is a status enum write, not a row a read helper joins into evidence/claims/eligibility,
+  and §4.2's eligibility rule and §4.8's ledger evaluate `ProblemBrief`/evidence-consumption state,
+  never `status` alone — a stray `'generation-failed'` write from a fenced-out run does not unlock or
+  block anything the fencing mechanism exists to protect. This is a narrower, still-valid instance of
+  the "accretive, harmless" reasoning the prior draft wrongly applied to the evidence/claim/ledger
+  writes above — it holds here specifically because this write has no downstream reader that treats
+  it as consumable evidence.
+- **Fenced directly, via `beginFencedWrite` — Landscape Research's four writes, via `searchWeb.ts`**
+  (called from `generateBriefVersion.ts:393-399` via `landscapeResearcher.ts:260`) —
+  `web_search_query` (`searchWeb.ts:160,217`), `query_limitation` (`searchWeb.ts:167,234`),
+  `source_artifact` (`searchWeb.ts:247`), and `web_search_result` (`searchWeb.ts:266`).
+  `SearchWebInput` (`searchWeb.ts:10-13`, already carries `generationRunId: string`) gains one
+  additive required field, `fenceToken: number` — threaded from `landscapeResearcher.ts:260`'s own
+  call site, which already receives `fenceToken` per the bullet above. `searchWeb` wraps its own
+  four inserts in the same `beginFencedWrite`/`COMMIT` pattern, immediately before persisting (not
+  before the outbound HTTP fetch itself, which is unaffected — Out of Scope, no change to retrieval
+  behavior). This closes the hazard the prior draft explicitly disclosed and left open: a
+  `source_artifact` row inserted here via Landscape Research is `origin: 'landscape-research'`
+  (§4.8's eligibility query already excludes this origin from unlocking US-13 eligibility — no
+  interaction with that mechanism), but its associated `evidence_item`/`claim` rows produced by
+  Extraction's own read of it are exactly the same unfiltered-by-`generation_run_id` hazard the two
+  bullets above close — fencing `searchWeb.ts`'s writes prevents a fenced-out run's Landscape
+  Research pass from adding NEW source rows a retry's own Extraction step would then read and
+  extract evidence from under the retry's own (different) `GenerationRun` attribution, silently
+  crediting the retry with content an abandoned process actually fetched. The one remaining, narrower
+  gap this does NOT close — disclosed, not fixed, Out of Scope — is `web_search_query` rows
+  surfaced in the UI provenance rail (`03-UI-SPEC.md`, Sections table, `webSearchQueries`) remaining
+  visibly attributed to a fenced-out run even though that run's `BriefVersion` was never persisted;
+  scoping the provenance rail to only the producing `GenerationRun` of the current `BriefVersion` is
+  a UI/behavior change beyond this checkpoint's US-3/US-4 scope, deferred as before. That residual
+  gap is now purely cosmetic/attributional (a real search this run's process genuinely performed,
+  correctly timestamped under its own real run id) — it is no longer also a correctness hazard,
+  because fencing now prevents any of these four writes from committing after abandonment, closing
+  the window a stray `source_artifact` row could otherwise open for a subsequent run's Extraction
+  step to silently consume.
+
+**Deterministic tests this section requires (04-ROADMAP.md, C2-S2/C2-S3):**
+1. Abandon a run after `extractClaimsAndEvidence`'s own extraction work has completed but before its
+   `beginFencedWrite`/persistence step fires: asserts `GenerationRunFencedOutError`, asserts ZERO
+   `evidence_item`/`claim`/`claim_version` rows from that call are persisted, and asserts a
+   subsequent retry's own `getEvidenceForInvestigation`/`getClaimVersionsForInvestigation` reads
+   never observe them.
+2. Same scenario for `extractClaimsAndEvidenceForSourceArtifacts` (Landscape Research's second
+   evidence/claim path) — identical assertions.
+3. Same scenario for `searchWeb`'s four writes — asserts zero `web_search_query`/`query_limitation`/
+   `source_artifact`/`web_search_result` rows are persisted, and that a subsequent retry's own
+   Extraction pass never reads a stray `source_artifact` row this fenced-out call would otherwise
+   have created.
+4. The `generation_run_consumed_source` ledger INSERT commits in the SAME transaction as
+   `extractClaimsAndEvidence`'s own persistence — asserts both succeed together or both roll back
+   together (no state where evidence persists but the ledger row does not, or vice versa).
+5. An ordinary, non-abandoned run's Extraction/Landscape/searchWeb writes are unaffected — same rows
+   persisted as before this correction, proving `beginFencedWrite`'s lock is not held long enough to
+   introduce a new serialization hazard against a concurrent `getInvestigationWorkspace` read.
 
 **Schema** (`generation_run`, migration `009`, added alongside §1.1's index):
 
@@ -620,21 +737,50 @@ and **mechanism (b)**, the graceful-no-op catch block:
  `'active'` → `409 AbandonGenerationRunNotEligibleResponseBody`, `currentOutcome: 'in-progress'`,
  `livenessState: 'active'` — this is the guard that prevents abandoning a run that is merely
  slow.
-4. **Authorization — increment the fence token, atomically, gated on the token this request read at
- step 3:**
+4. **Authorization — increment the fence token, atomically, gated on BOTH the token AND the exact
+ `lease_heartbeat_at` value this request read at step 3 (correction, HIGH — closes a real race a
+ fence-token-only guard left open).** Reading liveness (step 3) and incrementing the fence (this
+ step) are two operations separated by a real window: a legitimate `recordGenerationStep` call can
+ renew `lease_heartbeat_at` in that window WITHOUT changing `fence_token` (renewal never touches
+ `fence_token`; only abandonment increments it) — the run has in fact resumed, but a
+ fence-token-only guard cannot see that, so the abandonment `UPDATE` below would still match and
+ wrongly fence out an active pipeline, contradicting the 409 the UI promises for a run that resumes
+ between stale-classification and the abandon click. The fix makes step 3's read and this step's
+ increment effectively one atomic operation by including the OBSERVED heartbeat value as a third
+ condition in the same conditional `UPDATE` that increments the fence — a concurrent heartbeat
+ write between the two steps means the row's real `lease_heartbeat_at` no longer matches, so the
+ `UPDATE` matches zero rows and this attempt is correctly rejected, with no second read-then-act
+ step and no explicit row lock required:
  ```sql
  UPDATE generation_run SET fence_token = fence_token + 1
- WHERE id = $1 AND outcome = 'in-progress' AND fence_token = $2
+ WHERE id = $1 AND outcome = 'in-progress' AND fence_token = $2 AND lease_heartbeat_at = $3
  RETURNING fence_token;
  ```
- `rowCount === 0` means another writer (a concurrent abandon, or the pipeline's own legitimate
- finalization) already changed this row since step 3's read → `409
- AbandonGenerationRunNotEligibleResponseBody`, re-reading the run's real current `outcome`/
- `livenessState` and reporting them (never the values read at step 2/3, which are now stale).
- `rowCount === 1` is the moment abandonment takes effect: the
+ `$3` is the exact `lease_heartbeat_at` value read at step 3 — the SAME read `lastProgressAt` is
+ computed from, not a second read. `rowCount === 0` now collapses THREE distinct "this request no
+ longer has an accurate picture of the run's liveness" cases into one uniform disposition — a
+ concurrent abandon already won (`fence_token` changed), the pipeline's own legitimate finalization
+ already committed (`outcome` no longer `'in-progress'`), OR — the case this correction adds — a
+ legitimate `recordGenerationStep` call renewed `lease_heartbeat_at` since step 3's read, proving
+ the run is not actually stale even though `fence_token` never changed. All three respond
+ identically: `409 AbandonGenerationRunNotEligibleResponseBody`, re-reading the run's real current
+ `outcome`/`livenessState` and reporting them (never the values read at step 2/3, which are now
+ stale) — the client cannot distinguish which of the three occurred from this response, and does
+ not need to; every one of them means "this run is no longer eligible for abandonment as this
+ request understood it." `rowCount === 1` is the moment abandonment takes effect, and additionally
+ proves no heartbeat renewal landed in the window this request observed: the
  original pipeline's captured token is now stale, so every subsequent `recordGenerationStep`/
  `finalizeGenerationRun` call it makes will fail its own guarded `UPDATE` (above) and no-op or be
  rejected — its writes become inert without the process needing to be killed.
+
+ **Deterministic test this closes (04-ROADMAP.md, C2-S2/C2-S3):** commit a real
+ `recordGenerationStep` call (renewing `lease_heartbeat_at`, same `fence_token`) for a run already
+ classified `'stale-or-interrupted'` by step 3's read, timed AFTER that read but BEFORE this step's
+ `UPDATE` fires — asserts abandonment now returns `409 AbandonGenerationRunNotEligibleResponseBody`
+ (with `livenessState` reading `'active'` on a fresh `computeLivenessState` call against the now-
+ current heartbeat), never a fenced-out success. This is the regression test for the exact defect
+ this correction fixes — a plain fence-token-only guard would pass this scenario incorrectly
+ (`rowCount` would still be `1`, since `fence_token` never changed by the heartbeat renewal alone).
 5. With the new token, call `recordGenerationStep({ generationRunId, step: { component: 'Operator
  abandonment', outcome: 'failed', error: <states no progress was recorded since `lastProgressAt`>,
  ... }, fenceToken: <new token> })` to write one honest `GenerationStep`, then
@@ -679,6 +825,11 @@ never exposes "Abandon and retry" to a prior-version view.
  reached its real terminal outcome via the legitimate pipeline: asserts `409` with the run's real
  outcome, and asserts no `GenerationStep` with `component: 'Operator abandonment'` exists for that
  run.
+8. **Heartbeat-resumes-between-read-and-fence race (correction, HIGH).** A `recordGenerationStep`
+ call (same `fence_token`, renewing `lease_heartbeat_at`) is committed between step 3's liveness
+ read and step 4's guarded fencing `UPDATE`: asserts abandonment returns `409`, not a fenced-out
+ success — proves step 4's `lease_heartbeat_at` condition, not only `fence_token`, is what makes
+ this rejection possible.
 
 ---
 
@@ -837,7 +988,13 @@ interface SubmitDecisionRequestBody {
 
 // 201 — success. Response body IS the persisted Decision (§3.4) verbatim, including its
 // server-generated id and decidedAt — no wrapper object, no ReconsiderationCondition sub-objects
-// beyond what Decision.reconsiderationConditionIds already carries.
+// beyond what Decision.reconsiderationConditionIds already carries. Corrected, MEDIUM: this 201
+// body is NOT itself the mechanism that updates priorDecisions/decisionLineage on screen — it
+// carries only the bare Decision the client just submitted, with reconsiderationConditionIds
+// (unresolved ids), not the resolved reconsiderationConditions content both list views render.
+// §5.2's revised fetch cadence (below) is what actually refreshes both lists, from real persisted
+// reads, immediately after this response — the client never constructs a list entry from its own
+// submitted form data as a substitute for that refetch.
 
 // 400 — malformed body: decision field missing or not one of the three literal values; a supplied
 // reconsiderationConditions[i].type not one of ReconsiderationConditionType's values; or
@@ -1412,13 +1569,17 @@ END $$;
 ```
 
 Migration numbering: `008_reconcile_brief_versioning_constraints.sql` is the highest existing
-migration (confirmed via `ls src/db/migrations/`); `009`-`012` are the four numbers this revision
-assigns, named here rather than left to Forge to guess, matching this doc set's existing practice
-of naming exact migration files in architecture (§1.6 of the MVP architecture did the same for
-`005`). Per `04-ROADMAP.md`, the four files are CREATED in this order across slices: `009` in
-C2-S2, `012` (§4.8's `generation_run_consumed_source` table) in C2-S3, `011` (§3.6) in C2-S4, and
-`010` in C2-S5 — i.e. the migration FILES are not created in ascending numeric order (`012` and
-`011` exist on disk before `010` does). This is safe: `src/db/migrate.ts`'s runner tracks applied
+migration (confirmed via `ls src/db/migrations/`); `009`-`012` are four of the six numbers this
+revision assigns, named here rather than left to Forge to guess, matching this doc set's existing
+practice of naming exact migration files in architecture (§1.6 of the MVP architecture did the same
+for `005`); `013` (§1.4a's `resolution_revision` column, MEDIUM correction) is the fifth, created
+in C2-S2 alongside `009` (both belong to the same slice that builds `recheckSourceArtifact.ts`);
+`014` (§4.8's `canonical_identity`/`resolved_content_fingerprint` columns, MEDIUM correction) is the
+sixth, created in C2-S3 alongside `012` (both belong to the same slice that builds the resubmission
+eligibility mechanism). Per `04-ROADMAP.md`, the files are CREATED in this order across slices:
+`009` and `013` in C2-S2, `012` and `014` in C2-S3, `011` (§3.6) in C2-S4, and `010` in C2-S5 — i.e.
+the migration FILES are not created in ascending numeric order (`012`, `013`, `014`, and `011`
+exist on disk before `010` does). This is safe: `src/db/migrate.ts`'s runner tracks applied
 migrations per-filename in a `schema_migrations` table (`filename TEXT PRIMARY KEY`), applying
 whichever files in `migrations/` are not yet in that table, sorted lexically by filename at run
 time — it is not a numeric high-water-mark that assumes contiguous, in-order file creation. A
@@ -1571,7 +1732,10 @@ apiRoutes.get(
 apiRoutes.post(
  '/api/brief-versions/:briefVersionId/decisions',
  async (req, res) => { /* body-shape validation (400) before any service call, then
- recordDecision({ briefVersionId: req.params.briefVersionId,...req.body }) (§4.3) */ });
+ recordDecision({ briefVersionId: req.params.briefVersionId,...req.body }) (§4.3) — catches
+ BriefVersionNotFoundError -> 404 SubmitDecisionVersionNotFoundResponseBody and
+ WatchRequiresConditionError -> 422 SubmitDecisionWatchRequiresConditionResponseBody, exactly the
+ two typed error classes §4.3 defines, mapped 1:1, never collapsed into a generic 500 */ });
 ```
 
 ### 4.2 Generation Run Connector — orchestration
@@ -1961,8 +2125,34 @@ function recordDecision(input: {
 // No decidedBy parameter (§1.2). Never mutates or reassigns an existing Decision's briefVersionId.
 // Does not reject a second Decision on the same briefVersionId (matches problem-department-mvp §4's
 // documented multi-Decision-per-version behavior, unchanged).
+//
+// briefVersionId existence — corrected, MEDIUM. §3.1a/§4.1 already declare a route-level 404
+// (SubmitDecisionVersionNotFoundResponseBody) for a briefVersionId that does not resolve to any
+// BriefVersion, but this function's prior draft defined no corresponding check or error class —
+// a foreign-key violation on `decision.brief_version_id REFERENCES brief_version(id)` (§3.5) would
+// have surfaced as an unmapped 500, not the documented 404. Fixed: recordDecision performs a
+// same-transaction existence check, `SELECT 1 FROM brief_version WHERE id = $1 FOR UPDATE`, as the
+// FIRST statement after BEGIN — before the Watch-condition validation above and before either
+// INSERT — and rolls back and throws BriefVersionNotFoundError if it returns zero rows. This is a
+// belt-and-suspenders design deliberately combining both mechanisms 04-ROADMAP.md's tests must be
+// able to exercise: (a) the explicit existence check makes the common case (a stale/garbage-
+// collected id) a clean, fast, typed rejection with ZERO writes attempted, matching this section's
+// own "no Decision persisted on rejection" guarantee already established for WatchRequiresConditionError;
+// (b) the underlying FK constraint remains a real backstop for the check-then-act window (should
+// briefVersionId ever become deletable in a later sprint — it is not today, §3.5), and any FK
+// violation that somehow still reaches the INSERT (e.g. a race this check's own transaction
+// boundary should prevent) is caught and re-mapped to the SAME BriefVersionNotFoundError, never
+// left to surface as an unmapped 500. A service test (zero writes on 404) asserts case (a); a
+// route test (404 response) asserts the Express handler maps BriefVersionNotFoundError to
+// SubmitDecisionVersionNotFoundResponseBody (§3.1a) via a dedicated catch, exactly as it already
+// does for WatchRequiresConditionError -> 422.
 
 export class WatchRequiresConditionError extends Error {}
+export class BriefVersionNotFoundError extends Error {
+  constructor(public readonly briefVersionId: string) {
+    super(`BriefVersion ${briefVersionId} does not exist`);
+  }
+}
 ```
 
 ### 4.4 `getInvestigationWorkspace`
@@ -2398,14 +2588,65 @@ requires no timestamp comparison at all, since `usableSourceIds` is Extraction's
 the moment it read it.
 
 
-**Eligibility query** — an anti-join against the current `BriefVersion`'s producing run, by both
-`id` (an already-consumed row, resubmitted unchanged) and by exact trimmed `raw` content (a NEW
-`source_artifact` row — its own distinct id, never itself in the consumed table — whose content is
-byte-for-byte the same evidence already consumed under a different row). Content-identity, not row
-identity, is what US-13 AC2's "duplicate of an already-consumed source... even though it is a
-distinct Source row" disqualifier requires; excluding only by `id` (the prior draft of this query)
-leaves exactly that disqualified case reachable, since a resubmission always gets a fresh
-`source_artifact.id`:
+**Eligibility query — corrected, MEDIUM: canonical identity + resolved-content fingerprint, not raw
+string equality.** An anti-join against the current `BriefVersion`'s producing run, by `id` (an
+already-consumed row, resubmitted unchanged) AND by two real, persisted identity facts — a
+**canonical source identity** (closes the equivalent-URL/redirect case) and a **resolved-content
+fingerprint** (closes the case where two source rows have different raw strings but the SAME
+resolved document content). The prior draft of this query compared only `trim(raw)` — exact raw
+string equality — which a differently-formatted-but-equivalent URL (`https://Example.com/Page/` vs
+`https://example.com/page`), a URL that redirects to a target already consumed under a different
+URL, or two distinct raw strings that both resolve to byte-identical content, all defeat; none of
+those are hypothetical for a `type: 'url'` source, and `trim(raw)` cannot express any of them.
+
+**Two new persisted columns, computed by `computeSourceResolution` (§1.4a) alongside its existing
+resolution fields — not a second pass, not a new service:**
+
+```sql
+-- 014_source_artifact_identity_fingerprint.sql (§4.8 correction, MEDIUM)
+ALTER TABLE source_artifact
+ ADD COLUMN IF NOT EXISTS canonical_identity TEXT,
+ ADD COLUMN IF NOT EXISTS resolved_content_fingerprint TEXT;
+```
+
+**No backfill for pre-existing rows, by explicit decision, not omission.** Unlike migration `009`'s
+mandatory stranded-row backfill, this migration deliberately does NOT retroactively populate
+`canonical_identity`/`resolved_content_fingerprint` for `source_artifact` rows resolved before this
+migration runs (e.g. any resolved during C2-S2) — doing so would require re-fetching or re-hashing
+already-resolved content at migration time, a live network/compute operation this repo's migration
+runner does not perform for any existing migration. Both columns stay `NULL` for those rows, and
+`NULL IS NOT IN (...)` in §4.8's anti-join correctly treats a `NULL` row as "no identity/fingerprint
+match found" — i.e. that pre-migration row relies on the `id`-based anti-join alone for
+duplicate-of-consumed detection, exactly as this eligibility check did before this correction
+existed. This is a knowingly narrower guarantee for pre-`014` rows, not a defect: every row resolved
+from this migration forward (via the corrected `resolveSourceArtifact`/`recheckSourceArtifact`,
+C2-S3) gets both fields populated and the full corrected dedup coverage.
+
+- `canonical_identity` — computed only for `type === 'url'` (a `type === 'text'` source has no
+ identity independent of its own content; `canonical_identity` is `NULL` for it, and the
+ fingerprint alone carries its duplicate-detection). Normalization, applied to the URL Extraction
+ actually resolved against (post-redirect target when the fetch followed one — the SAME URL
+ `resolveSourceArtifact`'s existing fetch already lands on, not a second fetch): lowercase
+ scheme and host, strip a default port (`:80` for `http`, `:443` for `https`), strip a single
+ trailing `/` from the path, drop the fragment (`#...`), and sort query parameters alphabetically
+ by key. This is a real, deterministic, already-available-at-resolve-time string transform — no
+ new network call, no new dependency (Node's built-in `URL` class already parses everything this
+ needs). Two raw strings that normalize to the same `canonical_identity` are the "equivalent
+ URL/redirect" case AC2's disqualifier names.
+- `resolved_content_fingerprint` — computed for BOTH `type: 'url'` and `type: 'text'` sources whose
+ resolution reaches `'content-retrieved'` (the only status this eligibility query ever considers,
+ unchanged): `sha256(trim(resolvedContent))`, hex-encoded. `NULL` for any other resolution status
+ (`'unreachable'`, `'reachable-no-content'`, `'unresolved'`) — there is no content to fingerprint.
+ Two source rows with different raw strings AND different (or no) `canonical_identity` match, but
+ byte-identical resolved content, are the "same evidence already consumed... even though it is a
+ distinct Source row" case AC2's disqualifier names for non-URL/redirect duplicates (e.g. the same
+ document pasted as `type: 'text'` twice with different whitespace trimmed identically, or a URL
+ whose content happens to match a previously-submitted plain-text source verbatim).
+
+Both columns are populated by the same `computeSourceResolution` call that already computes
+`resolution_status`/`resolved_content` (§1.4a) — persisted by whichever caller persists that call's
+result (`resolveSourceArtifact`'s unconditional write, or `recheckSourceArtifact`'s guarded `UPDATE`,
+§1.4a, which gains these two columns in its `SET` list alongside the existing resolution fields).
 
 ```sql
 SELECT EXISTS (
@@ -2421,16 +2662,30 @@ SELECT EXISTS (
  FROM generation_run_consumed_source
  WHERE generation_run_id = $2 -- the current BriefVersion's producing GenerationRun
  )
- AND trim(sa.raw) NOT IN (
- SELECT trim(consumed_sa.raw)
+ AND (sa.canonical_identity IS NULL OR sa.canonical_identity NOT IN (
+ SELECT consumed_sa.canonical_identity
  FROM generation_run_consumed_source grcs
  JOIN source_artifact consumed_sa ON consumed_sa.id = grcs.source_artifact_id
- WHERE grcs.generation_run_id = $2 -- same producing run — a verbatim-content
- -- resubmission under a new source_artifact.id is
- -- still excluded, closing the id-only gap above
- )
+ WHERE grcs.generation_run_id = $2
+ AND consumed_sa.canonical_identity IS NOT NULL
+ ))
+ AND (sa.resolved_content_fingerprint IS NULL OR sa.resolved_content_fingerprint NOT IN (
+ SELECT consumed_sa.resolved_content_fingerprint
+ FROM generation_run_consumed_source grcs
+ JOIN source_artifact consumed_sa ON consumed_sa.id = grcs.source_artifact_id
+ WHERE grcs.generation_run_id = $2
+ AND consumed_sa.resolved_content_fingerprint IS NOT NULL
+ ))
 ) AS eligible;
 ```
+
+A row with both `canonical_identity IS NULL` (a `type: 'text'` source) and a
+`resolved_content_fingerprint` that matches nothing consumed is correctly eligible; a row whose
+`canonical_identity` matches an already-consumed URL's canonical form is correctly excluded
+regardless of raw-string formatting differences; a row whose `resolved_content_fingerprint` matches
+already-consumed content is correctly excluded regardless of type or raw-string difference. This
+replaces the prior draft's `trim(sa.raw)` anti-join entirely — `raw` itself is never compared for
+duplicate-detection purposes by this query anymore, only the two computed identity/content facts.
 
 1. Read `ProblemBrief.currentVersionId` for `investigationId`; if no `ProblemBrief` exists yet,
  return `false` (an initial generation is gated by the `'open'` branch of §4.2's eligibility rule,
@@ -2448,7 +2703,9 @@ non-terminal/failed state); **empty** (`resolution_status = 'content-retrieved'`
 `resolveSourceArtifact`/`computeSourceResolution` never classifies blank/whitespace-only text as
 `'content-retrieved'` — this is NOT true of today's live `type: 'text'` code path and is fixed by
 §1.4b, a required Forge-slice edit assigned to C2-S2, not an existing guarantee); **a duplicate of an
-already-consumed source, even under a distinct row** (the `trim(raw)` anti-join above); and **already
+already-consumed source, even under a distinct row** (the `canonical_identity`/
+`resolved_content_fingerprint` anti-join above — corrected 2026-09-05 per independent review; `raw`
+itself is never compared for duplicate-detection by this query, per §4.8); and **already
 reflected in the current `BriefVersion`** (the `id`-based anti-join — the exact row Extraction
 actually read). A source added during the run but never reached because the run failed before
 Extraction's own read (`:333`) has no `generation_run_consumed_source` row under either anti-join and
@@ -2688,6 +2945,23 @@ seven-element Brief payload fetched exactly once per version, not re-fetched on 
 itself carries, so a decision is only ever recorded against the exact version currently on screen,
 prior or current alike (US-10 AC1).
 
+**Refetch on Decision success — corrected, MEDIUM.** "Fetched once per displayed version" above
+describes the steady-state/poll-tick cadence; it does not mean the Brief payload is frozen for the
+lifetime of the screen. On a successful (`201`) `submitDecision` response, the screen issues BOTH:
+(1) a fresh `GET.../brief-versions/by-version/:versionNumber` call for the displayed version
+(re-populating `brief.priorDecisions` with real, resolved-condition content including the Decision
+just recorded, §4.5), and (2) a fresh `GET.../workspace` call (re-populating
+`workspace.decisionLineage` with the same new Decision, labeled with its real `versionNumber`,
+§3.2). Both refetches read the SAME real persisted rows every other fact in this document comes
+from — neither list is ever constructed client-side from the `SubmitDecisionRequestBody` the
+operator just submitted or from the bare `201` response body (§3.1a's note, above); a decision
+appears in both lists because both lists were re-read after it was durably persisted, not because
+the client assembled a matching local entry. This is two additional, explicit GETs, not a new
+polling behavior — they fire exactly once, immediately after a successful decision submission,
+independent of `POLL_INTERVAL_MS` and independent of whether a `GenerationRun` is in-progress
+(`submitDecision` is only reachable once a Brief exists to review, so there is no interaction with
+generation polling).
+
 ```typescript
 // src/client/api.ts — additions
 export async function fetchInvestigationWorkspace(investigationId: string): Promise<InvestigationWorkspaceView>;
@@ -2713,13 +2987,14 @@ export async function submitDecision(
 | Component | Responsibility |
 |---|---|
 | `InvestigationIdentityHeader` | Renders creation date, status, status reason, source count as the primary human-readable identity (US-1 AC3) — a shortened id may appear only as a secondary, explicitly-labeled detail, never the primary label. Also renders a compact non-valid/supersession notice for the DISPLAYED `BriefVersion` — its `assignedState` as a plain-language statement only when non-`'valid'`, and its `isSuperseded` as a navigable link (human-readable `versionNumber`) when `true` — the SAME displayed-version binding `DecisionHistoryBanner` uses, not a separate fact source. **Link target: the forward `isSuperseded` link targets the IMMEDIATE successor that actually named the displayed version via `supersedesVersionId` — the real "what superseded this" fact — resolved via `displayedVersion.forwardSupersededByVersionNumber` (`WorkspaceBriefSummary`, §3.2, already fetched, already server-resolved to a human-readable `versionNumber`), never `ProblemBrief.currentVersionId` and never the raw `supersedesVersionId`/`currentVersionId` UUID. For the common two-version lineage (v1 superseded by v2) the immediate successor and the current version are the same version, so this is observably identical to the round-15 behavior; they diverge only in a lineage of 3+ (v1 named by v2, not by the current v3), where this is the correct behavior and the round-15 rationale was not. A separate "jump to current/latest version" affordance is out of scope here — this link's job is only "what superseded this," not "what is newest."** |
+| `SourcesList` (subcomponent of `InvestigationIdentityHeader`; corrected 2026-09-05 per independent review, closes the gap C2-S1's Done-When left when its per-source `resolutionStatus` demonstration was moved here) | Renders each of the Investigation's `source_artifact` rows individually — its real, persisted `resolutionStatus` (`content-retrieved`/`unreachable`/`reachable-no-content`/etc.) with `failureReason`/`noContentReason` where applicable. This is the first component in the doc set with a per-source (not aggregate) view; `InvestigationIdentityHeader`'s own `source count` field above remains the aggregate. Built in C2-S2, per `04-ROADMAP.md`. |
 | `InvestigationIdentityHeader` (backward link, US-12 AC8 / US-13 AC4/AC5, 2026-08-24 whole-package convergence) | The forward `isSuperseded` link above tells the operator "a newer version exists"; it never helps someone ON the current version reach the version IT superseded — no document previously specified this, and no component owned it (a real gap independently found by end-to-end tracing). Resolution: `InvestigationIdentityHeader` ALSO renders a second, backward-facing link whenever the DISPLAYED `BriefVersion`'s own `supersedesVersionId` (already returned by `GetBriefForReviewResult.version`, §3.3 — the same domain field `BriefVersion` has always carried) is non-null: resolve it to a human-readable `versionNumber` via `workspace.briefs.find(b => b.briefVersionId === displayedVersion.supersedesVersionId)?.versionNumber` (`workspace.briefs`, §3.2, already fetched — no new backend field, no second round trip), and render it as a real, clickable link to that version's own versioned route (§5.1) labeled with its human-readable version number (e.g. "View prior Version 1") — never the raw `supersedesVersionId` UUID (Anti-Patterns). This is the ONE component that owns BOTH directions of version navigation (forward via `isSuperseded`, backward via `supersedesVersionId`). |
 | `AddSourceInline` | Revised: its OWN small form (not a reuse of `StartInvestigationForm`, which has no `investigationId` prop and always calls `createInvestigation` with `investigationId` omitted — a new-Investigation-only call site, not a route difference), calling `addSourcesToInvestigation(investigationId, artifacts)` (§5.2) — a thin wrapper that always supplies `investigationId` to the EXISTING, extended `POST /api/investigations` (§3.1b). No `:id/sources` sub-route exists or is added. Mounted directly in the workspace for the Blocked-recovery, generation-failed-retry, AND `'brief-generated'` resubmission paths (US-2 AC3/AC4, US-5 AC3, US-8 AC1, US-13 AC1) — no navigation away from the workspace URL on submit; on success, triggers a workspace re-fetch (never a redirect). This is the ONLY control that can make a `'brief-generated'` Investigation generation-eligible again — there is no separate "regenerate"/"Generate correction" button anywhere in this component tree (Out of Scope, US-13), and submitting against a `'brief-generated'` Investigation never itself flips its status (§1.4/§3.1b's explicit skip branch) — only §4.8's eligibility check, read on the next poll, can make `GenerateButton` eligible. After a successful submission, the workspace re-fetch (`workspace.newEvidenceSinceCurrentBriefVersion`, §3.2, computed per §4.8's revised mechanism) is what flips `GenerateButton`'s (below) enabled state — `AddSourceInline` itself never directly triggers a generation request. |
 | `GenerationProgressPanel` | Renders `latestGenerationRun`'s persisted steps only (US-4), including per-step `modelIdentifier`/`validationRecords`/`toolInvocations` and the run's `webSearchQueries` (§3.2) — no percent bar, no "currently executing" claim beyond the latest persisted step's `component` name. Revised: when `latestGenerationRun.livenessState === 'stale-or-interrupted'`, renders an explicit, honest disclosure (e.g. "This run has not reported progress recently and may have been interrupted") distinct from, and never visually identical to, the `'active'` in-progress rendering. **Revised further (§1.6, 2026-08-24): when `livenessState === 'stale-or-interrupted'`, also renders both the existing "Refresh status" control and a new "Abandon and retry" control that calls `POST.../generation-runs/:runId/abandon` (§1.6) — a real, explicit, distinct action from Refresh; on success, triggers a workspace re-fetch, after which `GenerateButton` reflects the cleared concurrency guard and (non-correction case) the real `'generation-failed'` status.** **Rendered only when `workspace.briefs.length === 0` (no `BriefVersion` exists yet — the first-ever-run case) or the displayed `BriefVersion` is current (§5.4 rule 1, scope corrected Danny's ruling, this checkpoint; `briefs.length === 0` disjunct added this checkpoint to close the first-run reachability gap) — never reachable while viewing a prior version, since a prior version can only be viewed when `briefs.length > 0`; that case instead renders `ViewingPriorVersionPanel`'s read-only notice (above).** |
 | `GenerateButton` | Issues `POST.../generation-runs` (§4.1) when `workspace.generationEligible` is `true`; disabled with an honest, specific reason string otherwise (e.g. "add a new source to enable correction" for an ineligible `'brief-generated'` Investigation, sourced from the connector's 422 `reason` on a stale attempt, or computed client-side from `generationEligible === false` + `status === 'brief-generated'` + `!newEvidenceSinceCurrentBriefVersion` for the pre-emptive disabled state) — never a bare unconditional "Generate correction" affordance (Out of Scope, US-13) |
 | `BlockedSourcesPanel` | Renders each `unreachable` source with its real `failureReason` (US-5 AC2); renders a "Re-check this source" control per unreachable source (§1.4a — added to this row), calling `recheckSourceArtifact(sourceArtifactId)` (§5.2) and re-fetching `GET.../workspace` on completion |
 | `BriefReviewPanel` | Renders all seven Brief elements uncollapsed by default from `getBriefForReview`'s result — unchanged rendering contract from `problem-department-mvp`'s Slice 10 forward reference, now actually wired |
-| `DecisionForm` / `DecisionConfirmationPanel` | Approve/Reject/Watch controls; in-place confirmation on the same URL (US-10 AC10); no Reopen affordance anywhere |
+| `DecisionForm` / `DecisionConfirmationPanel` | Approve/Reject/Watch controls; in-place confirmation on the same URL (US-10 AC10); no Reopen affordance anywhere; on a successful `201` submission, triggers §5.2's revised refetch of both the displayed version's Brief payload and the workspace payload (MEDIUM correction) — `DecisionHistoryBanner`'s two lists reflect the new Decision from those real reads, never from the submitted form data |
 | `GenerationFailedPanel` (component enumeration added) | Outcome/Status Panel variant selected by §5.4 rule 3 (`latestGenerationRun?.outcome === 'failed'` AND displayed version is current) — `investigation.statusReason` when present, else the failed run's own persisted step/error text (failed-correction fallback); hosts `GenerateButton` ("Retry generation") and a real `AddSourceInline` instance |
 | `BriefGeneratedSummaryPanel` (component enumeration added) | Outcome/Status Panel variant selected by §5.4 rule 4 (`status === 'brief-generated'`, no in-progress/failed run, displayed version is current) — compact confirmation, `AddSourceInline`, and the evidence-gated "Regenerate with new evidence" `GenerateButton` |
 | `ViewingPriorVersionPanel` (new; precedence corrected round-6, integrator report item 1; link description corrected; scope corrected Danny's ruling, this checkpoint) | Outcome/Status Panel variant selected by §5.4 rule 2 (displayed version `isCurrent === false`) — evaluated immediately after rule 1 (§5.4 rule 1, `GenerationProgressPanel`, which requires `briefs.length === 0` OR `isCurrent === true`); since rule 2 can only ever match when `briefs.length > 0` (there is no prior version to view when no `BriefVersion` exists), the two rules' conditions are mutually exclusive, and rule 2 wins over every later, run-outcome-selected/mutating rule (3, 4) regardless of `investigation.status` or `latestGenerationRun?.outcome`, including `'failed'` AND `'in-progress'` — read-only statement, navigable link forward to this version's own immediate successor via `forwardSupersededByVersionNumber` (NOT necessarily the current version in a lineage of 3+ — no direct jump-to-current affordance exists or is required by any AC; reaching the current version from a version 2+ hops back is a sequential walk, one forward link per hop); when the current version has an in-progress or stale/interrupted run, also a read-only notice plus a navigable link to the current version's workspace; no `AddSourceInline`, no `GenerateButton`, no "Abandon and retry", no other current-run-mutating control |
@@ -2966,7 +3241,13 @@ No new third-party dependency is introduced. This sprint extends the existing st
  catches at the eight call sites that finalize a run; §1.6 adds the `ROLLBACK`/
  `GenerationRunLostFinalizationRaceError` block at the fenced-out finalization path; and §4.8 adds
  the `consideredSourceArtifactIds` computation and its `generation_run_consumed_source` ledger
- `INSERT`. Every other line of `generateBriefVersion.ts` — its phase order, pipeline logic, prompts,
+ `INSERT` (now written inside the same fenced transaction as `extractClaimsAndEvidence`'s own
+ persistence, §1.6's corrected write-path enumeration, not as an independent write at `:479`).
+ §1.6's correction ALSO changes the call signatures of, and adds `beginFencedWrite` calls
+ inside: `extractClaimsAndEvidence` (`:338`, gains required `generationRunId`/`fenceToken`),
+ `extractClaimsAndEvidenceForSourceArtifacts` (`landscapeResearcher.ts:272`, gains required
+ `fenceToken` — `generationRunId` already threaded), and `searchWeb` (`SearchWebInput`, gains
+ required `fenceToken` — `generationRunId` already threaded). Every other line of `generateBriefVersion.ts` — its phase order, pipeline logic, prompts,
  and extraction/analysis/recommendation behavior — is unchanged.
 
 ---

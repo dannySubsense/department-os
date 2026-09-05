@@ -698,16 +698,29 @@ Acceptance Criteria:
  (e.g. still pending, or resolved to an `unreachable`/error outcome);
  - **Empty** — resolved but its content is empty or effectively empty (no usable evidentiary
  content);
- - **A duplicate of an already-consumed source** — its resolved content/identity matches a
- source the current `BriefVersion` was already generated from, even though it is a distinct
- `Source` row (e.g. the same URL or document resubmitted verbatim);
+ - **A duplicate of an already-consumed source, by canonical identity or by resolved-content
+ fingerprint** — a source is disqualified as a duplicate if EITHER (a) its canonical source
+ identity (the normalized, redirect-resolved target the source ultimately refers to — not
+ the literal submitted string) matches the canonical identity of a source already consumed
+ by the current `BriefVersion`, OR (b) its resolved content fingerprint (a deterministic
+ fingerprint of the retrieved, resolved document content — not the raw submitted text)
+ matches the resolved-content fingerprint of a source already consumed by the current
+ `BriefVersion` — regardless of whether it is a distinct `Source`/`source_artifact` row,
+ and regardless of whether its raw submitted string (URL text or pasted text) is
+ byte-identical to the original submission. Two rows whose raw submitted strings differ
+ (e.g. a redirecting shortlink vs. its resolved destination URL, or the same URL submitted
+ with/without a tracking query parameter) but which share canonical identity or resolved
+ content are the same duplicate for this rule; equality of the raw submitted string alone is
+ NEITHER necessary NOR sufficient to establish or rule out a duplicate;
  - **Already reflected in the current `BriefVersion`** — a replay of evidence the current
  Brief already incorporated, rather than evidence genuinely new to it.
  A `'brief-generated'` Investigation with no newly added source satisfying all of the above
  remains ineligible for a new generation request. The exact server-side mechanism for
- evaluating these conditions (e.g. content hashing, a consumed-source ledger) is
- architecture's responsibility to design; this AC states the eligibility requirement, not the
- implementation.
+ evaluating these conditions — the canonical-identity scheme and the resolved-content
+ fingerprinting scheme themselves — is architecture's responsibility to design; this AC states
+ the eligibility requirement (dedup MUST be evaluated against canonical source identity and
+ resolved-content fingerprint, and MUST NOT be evaluated by comparing raw submitted strings or
+ raw URL text for equality), not the implementation.
 - [ ] The resulting generation request (via US-3's endpoint) calls `generateBriefVersion` with
  `supersedesVersionId` set to `ProblemBrief.currentVersionId` at request time — the same
  contract `generateBriefVersion.ts:108-160` already validates (must belong to this
@@ -840,6 +853,16 @@ Disposition column above, not carried forward from either prior count.)
  it a first-class, testable requirement rather than an implication left to infer. This disclosure
  is read-side only and must never itself mutate persisted workflow state (see US-4's stale/
  interrupted AC).
+- **US-13 duplicate/eligibility evaluation is identity- and content-based, never raw-string-based.**
+ The "duplicate of an already-consumed source" check (US-13 AC2) MUST compare canonical source
+ identity and resolved-content fingerprint — never raw submitted string or URL text equality
+ (e.g. `trim(raw)` comparison, or source-row-id comparison alone). Two source rows that resolve
+ to the same canonical identity or the same resolved content are the same duplicate for
+ eligibility purposes regardless of differing raw submitted text (equivalent URLs, redirects,
+ tracking-parameter variants, or the same document fetched via two different routes). This
+ governs architecture's canonical-identity/content-fingerprint design and the roadmap's required
+ regression test (two distinct source rows sharing the same canonical URL and the same resolved
+ content, both correctly disqualified as duplicates).
 
 ---
 
@@ -864,6 +887,7 @@ Disposition column above, not carried forward from either prior count.)
 | A `StatusEvent` is backdated (`effectiveAt` in the past, `recordedAt` now) after a `Decision` was already recorded against the affected `BriefVersion` | `getAssignedStateAsRecorded` with `knownAsOf` before the backdated event's `recordedAt` still returns the pre-correction state for that Decision's own dependent-decision computation; `getAssignedState` reflects the new event for any `asOf` on/after the backdated `effectiveAt` — the two queries diverge as designed, not a bug |
 | A `'brief-generated'` Investigation is regenerated without any new source having been added (e.g. a stale/replayed request) | Rejected — generation-eligibility for a `'brief-generated'` Investigation requires new, usable, not-already-consumed evidence to have actually been added (US-13 AC2); no request bypasses this by status alone |
 | A `'brief-generated'` Investigation has a new `Source` row added, but that source is unreachable, empty, a duplicate of an already-consumed source, or already reflected in the current Brief | Rejected — none of these count as the "new, usable evidence" US-13 AC2 requires; generation does not become eligible from a disqualified source alone |
+| Two distinct `Source`/`source_artifact` rows under the same Investigation share the same canonical source identity (e.g. a shortlink and its resolved destination URL, or the same URL with/without a tracking query parameter) or the same resolved-content fingerprint, but differ in their raw submitted string | Both rows are correctly recognized as the same duplicate for US-13 AC2 eligibility purposes — the second row never unlocks corrective generation on the strength of its raw submitted string differing from the first; raw-string/URL-text equality is never used, alone, to decide this either way |
 | A corrective generation run (US-13) fails (`BriefGenerationFailedError`) | The prior `BriefVersion` remains `ProblemBrief.currentVersionId` and fully reviewable; the Investigation's resulting status is read back from the actual row per `generateBriefVersion`'s documented failure-status behavior, never assumed |
 | Operator navigates to a specific prior `BriefVersion` (US-1 AC5) and reloads that URL | The same prior version's content, and its own scoped decision list (US-10), render identically — reload never silently falls back to showing the current version instead |
 
@@ -952,6 +976,10 @@ Disposition column above, not carried forward from either prior count.)
 - **No eligibility unlocked by a disqualified source alone** — an unreachable/unresolved, empty,
  duplicate-of-already-consumed, or already-reflected-in-the-current-Brief source must never make
  a `'brief-generated'` Investigation eligible for a new generation request (US-13 AC2).
+- **No raw-string/URL-text equality as the dedup test.** The "duplicate of an already-consumed
+ source" determination (US-13 AC2) must never be implemented as, or reduced to, a comparison of
+ raw submitted strings, trimmed raw text, or source-row IDs — canonical source identity and
+ resolved-content fingerprint are the only bases for this determination.
 - **No coupling of invalidation and corrective generation** — `assignValidityState` and a
  `supersedesVersionId`-driven `generateBriefVersion` call remain two independent operations with
  independent triggers.
@@ -978,6 +1006,10 @@ Disposition column above, not carried forward from either prior count.)
  genuinely new, usable, not-already-consumed source evidence (US-13 AC2) — never as a
  status-driven, timestamp-only, or unconditional control, per Danny's 2026-08-22 ruling as
  tightened by the 2026-08-23 external-review correction.
+- Must: evaluate US-13's "duplicate of an already-consumed source" test (US-13 AC2) against
+ canonical source identity and resolved-content fingerprint — never against raw submitted
+ string/URL text equality alone, per the 2026-09-05 external-review correction (see
+ Non-Functional Requirements and Anti-Patterns above).
 - Must: detect and honestly disclose a stale or interrupted generation run (US-4) as a state
  distinct from a healthy in-progress run — never silently indistinguishable from one — and this
  disclosure must never itself mutate persisted workflow state.
@@ -996,6 +1028,9 @@ Disposition column above, not carried forward from either prior count.)
 - Must not: build a general `BriefVersion` lineage index/browser (list of all versions) — only
  direct navigation to one specific prior version via the current-vs-superseded pointer is in
  scope (see revised Out of Scope entry).
+- Must not: evaluate US-13's duplicate-source test by comparing raw submitted strings, trimmed raw
+ text, or source-row IDs alone — see the canonical-identity/resolved-content-fingerprint
+ requirement above.
 - Assumes: `generateBriefVersion`, `submitSources`, and `transitionInvestigationStatus` remain
  correct and unmodified in their internal contracts except where this document's US-7/US-8 fixes
  require touching `ssrfGuardedFetch.ts` specifically (US-7), and except for `generateBriefVersion`'s

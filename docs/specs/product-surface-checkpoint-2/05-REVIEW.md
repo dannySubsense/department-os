@@ -46,10 +46,18 @@ the current specification, not a history of how it got here.
   `generateBriefVersion.ts`'s real `recordGenerationStep`-bearing progress-write call sites (three
   direct, one added to the `InvalidSupersedeTargetError` preflight catch, and seven via
   `runStepWithProvenance`) renew the heartbeat, not just its four direct callers). Abandon
-  atomically increments the token only once the run is both non-`'active'` by the liveness check
-  and still `'in-progress'`; every subsequent write by the original pipeline (`recordGenerationStep`
-  and `finalizeGenerationRun`) checks the token it captured at run start and no-ops or is rejected
-  once fenced out — the original process's writes become inert without needing to kill it. Full
+  eligibility and fence-increment are one atomic conditional `UPDATE`, gated on the exact
+  `lease_heartbeat_at` value read at the stale-check — a heartbeat renewal racing the abandonment
+  attempt causes `rowCount === 0` and a `409`, closing the read-then-act gap between staleness
+  classification and fencing. Every pre-Phase-4 persistence path a running pipeline can reach
+  (extraction, landscape/search persistence, the consumed-source ledger, `recordGenerationStep`,
+  `finalizeGenerationRun`) is itself threaded with `generationRunId`/`fenceToken` via
+  `beginFencedWrite`, checking the token immediately before commit and rejecting with
+  `GenerationRunFencedOutError` once fenced out — so the original process's writes become genuinely
+  inert once abandoned, not merely its two finalize/step-recording call sites. (An earlier revision
+  of this document treated non-finalize writes as harmless because "accretive"; that was false
+  against the live implementation — those writers have no run filter downstream and a retry would
+  silently consume an abandoned run's output. Corrected 2026-09-05 per independent review.) Full
   contract: `02-ARCHITECTURE.md` §1.6.
 - **Migration `009` ships in C2-S2, not C2-S3.** `generation_run.lease_heartbeat_at` (read by
   `computeLivenessState`, §4.9) must exist before C2-S2's own Workspace Read Model can compute a
@@ -91,12 +99,47 @@ the current specification, not a history of how it got here.
   `resolveSourceArtifact.ts` is split into a non-persisting `computeSourceResolution` and the
   existing, unconditionally-persisting `resolveSourceArtifact` (unchanged for every existing
   caller); `recheckSourceArtifact` calls ONLY `computeSourceResolution`, then persists its own
-  result with a compare-and-set `UPDATE ... WHERE id = $1 AND resolution_status = $read AND
-  resolution_resolved_at = $read` (the actual, already-live columns — `source_artifact` has no
-  `updated_at` column). Without this split, `resolveSourceArtifact`'s own internal unconditional
-  write would land before the CAS guard evaluates, defeating it. Two concurrent recheck attempts
-  against the same source can never race and have one silently overwrite the other's newly-resolved
-  row. Full contract: `02-ARCHITECTURE.md` §1.4a.
+  result with a compare-and-set `UPDATE ... WHERE id = $1 AND resolution_revision = $read`
+  (migration `013`'s new monotonic column, incremented atomically by the same statement — corrected
+  2026-09-05 per independent review: the `resolution_status`/`resolution_resolved_at` pair this
+  bullet previously named as the CAS condition is NOT collision-free, since two identical
+  concurrent writes can both report success under that pair; `resolution_revision` is the sole
+  guard now). Without the compute/persist split, `resolveSourceArtifact`'s own internal
+  unconditional write would land before the CAS guard evaluates, defeating it. Two concurrent
+  recheck attempts against the same source can never race and have one silently overwrite the
+  other's newly-resolved row. Full contract: `02-ARCHITECTURE.md` §1.4a.
+- **Dedup ("new evidence") eligibility uses canonical identity and content fingerprint, never raw
+  string equality.** `01-REQUIREMENTS.md`'s US-13 AC2 duplicate-source disqualifier is evaluated
+  against `source_artifact.canonical_identity` (URL normalization, `type: 'url'` only) and
+  `resolved_content_fingerprint` (`sha256(trim(resolvedContent))`, both types) — migration `014` —
+  never against raw submitted string/URL text equality, which misses equivalent URLs, redirects, or
+  matching resolved content under different raw text. Both columns are populated by
+  `computeSourceResolution` (C2-S3's edit to `resolveSourceArtifact.ts`/`recheckSourceArtifact.ts`).
+  Pre-migration rows are not backfilled and rely on the `id`-based anti-join alone (explicit,
+  documented exemption, not an oversight — `02-ARCHITECTURE.md` §4.8). Corrected 2026-09-05 per
+  independent review. Full contract: `02-ARCHITECTURE.md` §4.8.
+- **Region 4 provenance is version-scoped for evidence, version-independent for run/search
+  history — never uniformly either.** `EvidenceProvenanceList` re-fetches and renders the
+  currently-displayed `BriefVersion`'s own evidence/provenance content, changing on version
+  navigation; `SearchScopeNotice`, `CitationScopeNotice`, and `RunHistoryList` render the same
+  whole-Investigation run/search history regardless of which version is displayed. Corrected
+  2026-09-05 per independent review (a prior revision of this document's UI spec described Region 4
+  as uniformly unchanged on navigation, which contradicted `EvidenceProvenanceList`'s own
+  version-scoped binding elsewhere in the same document). Full contract: `03-UI-SPEC.md` Region 4.
+- **A Decision against a nonexistent `BriefVersion` returns a typed 404, never a generic 500.**
+  `recordDecision` performs a same-transaction existence check (`SELECT ... FOR UPDATE`) as its
+  first statement after `BEGIN` and throws `BriefVersionNotFoundError` before any insert if the
+  target `BriefVersion` does not exist; a foreign-key-violation backstop maps to the same error.
+  The route returns `404 brief-version-not-found`. Corrected 2026-09-05 per independent review
+  (this endpoint's declared 404 previously had no service-level mapping). Full contract:
+  `02-ARCHITECTURE.md` §4.3.
+- **A successful Decision submission triggers exactly two refetches — `priorDecisions` and
+  `decisionLineage` are never constructed from the submission's own response.** After a real `201`
+  `recordDecision` response, the UI refetches the workspace payload (populating
+  `decisionLineage`) and the displayed version's Brief payload (populating `priorDecisions`) — the
+  success response itself carries only `Decision` plus condition IDs, not resolved condition
+  content, so neither list can be correctly built from it directly. Corrected 2026-09-05 per
+  independent review. Full contract: `02-ARCHITECTURE.md` §5.2/§5.3, `03-UI-SPEC.md` Flow US-10.
 - **Blank/whitespace-only submitted text is not evidence.** `computeSourceResolution`'s
   `type === 'text'` branch resolves blank/whitespace-only `raw` content to `'reachable-no-content'`,
   matching the `type === 'url'` branch's existing content-length guard — closing the gap where such
@@ -134,16 +177,42 @@ the current specification, not a history of how it got here.
 - **`priorDecisions` interim value.** `getBriefForReview` returns `priorDecisions: []`
   unconditionally in C2-S4 (before migration `010`/`getDecisionsForBriefVersion` exist) — a real,
   correct answer, not a placeholder; C2-S5 wires the real query in.
+- **C2-S1's browser demonstration is aggregate-only; per-source `resolutionStatus` is C2-S2's
+  scope.** The Checkpoint-1 surface C2-S1 demonstrates against has no per-source view — only
+  aggregate `sourceCount`/`evidenceCount`. C2-S1's Done-When claims only that aggregate resolution
+  state, not an individual source's rendered `resolutionStatus`; that demonstration is C2-S2's own
+  Done-When, via the new `SourcesList` subcomponent of `InvestigationIdentityHeader`. Corrected
+  2026-09-05 per independent review (a prior revision of C2-S1's Done-When required a per-source
+  browser result the Checkpoint-1 surface cannot produce). Full contract: `03-UI-SPEC.md`
+  Checkpoint-1 surface capability boundary; `04-ROADMAP.md` C2-S1/C2-S2.
 
 ## Genuinely Open
 
 - **Human confirmation.** Danny has not yet confirmed, in this session, that the rulings restated
   above faithfully state his actual decisions. Due at human approval.
 - **Fresh gate required.** This specification was materially revised (fencing-token generation
-  ownership, exact-consumption US-13 eligibility, atomic single-source recheck, and a document-wide
+  ownership, exact-consumption US-13 eligibility, atomic single-source recheck, canonical-identity/
+  fingerprint dedup, the Region 4 version-scoping split, the Decision 404 mapping, the Decision
+  dual-list refetch, and the C2-S1/C2-S2 browser-demonstration boundary, plus a document-wide
   narrative cleanup) after its prior Frank spec-gate PASS, which was recorded against an earlier
-  text and does not carry forward. A new Frank spec-gate pass against the current `01`-`04` is
+  text and does not carry forward. A new Frank spec-gate pass against the current `01`-`04`,
+  inclusive of `03-UI-SPEC.md` (which received several of the above corrections directly), is
   required before this checkpoint is considered approved.
 - **Real-run measurement.** `POLL_INTERVAL_MS`/`STALE_THRESHOLD_MS` remain undetermined until Forge
   executes `02-ARCHITECTURE.md` §4.9's measurement methodology during C2-S3 — expected, in-scope
   Forge work, not a spec defect.
+- **Pre-migration-`014` rows exempt from identity/fingerprint dedup.** `source_artifact` rows
+  resolved before migration `014` runs carry `NULL` `canonical_identity`/
+  `resolved_content_fingerprint` and are not backfilled (explicit decision, not oversight — see
+  `02-ARCHITECTURE.md` §4.8) — they rely on the `id`-based anti-join alone. Acceptable because this
+  narrows, rather than removes, an existing guarantee, and only for data that predates this
+  correction; not something Forge needs to additionally address.
+- **`SearchScopeNotice`'s version-independence and US-9 AC6 need one more look.**
+  `SearchScopeNotice` (`03-UI-SPEC.md`) sources from `workspace.generationRuns` (whole-Investigation,
+  version-independent) but US-9 AC6 requires it to render the queries actually performed for the
+  Brief under review — when viewing a prior version after a later correction run, the notice would
+  include that later run's queries. This is the same class of gap `02-ARCHITECTURE.md` §1.6 already
+  discloses (deliberately, as a deferred, cosmetic provenance-attribution issue) for a related
+  component; this document does not yet make the same disclosure for `SearchScopeNotice` against
+  US-9 AC6 specifically. Needs an explicit ruling (accept as the same deferred class, or
+  version-scope the component) before or at the fresh Frank gate — flagged here, not yet resolved.
