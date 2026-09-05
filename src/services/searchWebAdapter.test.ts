@@ -34,6 +34,7 @@ describe('searchWebAdapter — success path', () => {
           ],
         },
       ],
+      stop_reason: 'end_turn',
     });
 
     const result = await searchWebAdapter('test query');
@@ -47,6 +48,7 @@ describe('searchWebAdapter — success path', () => {
   it('returns outcome "succeeded" with an empty selectedResultUrls (legitimate zero-results) when no web_search_tool_result block is present', async () => {
     createMock.mockResolvedValueOnce({
       content: [{ type: 'text', text: 'nothing to search for' }],
+      stop_reason: 'end_turn',
     });
 
     const result = await searchWebAdapter('empty query');
@@ -196,5 +198,41 @@ describe('searchWebAdapter — provider-level failure shapes → outcome: "query
     expect(result.selectedResultUrls).toEqual(['https://example.com/partial']);
     expect(result.queryLimitation).toBeDefined();
     expect(result.queryLimitation?.reason).toMatch(/max_tokens/i);
+  });
+
+  it('reports a pause_turn response with zero result blocks as a limitation, not a clean unqualified "succeeded" (Cold Frank gate FAIL, commit 9f3e150 — blacklist-of-one defect)', async () => {
+    createMock.mockResolvedValueOnce({
+      content: [],
+      stop_reason: 'pause_turn',
+    });
+
+    const result = await searchWebAdapter('pause_turn query');
+
+    expect(result.outcome).toBe('query-limited');
+    expect(result.selectedResultUrls).toEqual([]);
+    expect(result.queryLimitation).toBeDefined();
+    expect(result.queryLimitation?.reason).toMatch(/pause_turn/i);
+  });
+
+  it('folds a non-max_tokens incomplete stop_reason (pause_turn) into queryLimitation even when a partial result set survived, never reporting it as clean unqualified "succeeded"', async () => {
+    createMock.mockResolvedValueOnce({
+      content: [
+        {
+          type: 'web_search_tool_result',
+          tool_use_id: 'toolu_7',
+          content: [
+            { type: 'web_search_result', url: 'https://example.com/pause', title: 'Pause', page_age: null },
+          ],
+        },
+      ],
+      stop_reason: 'pause_turn',
+    });
+
+    const result = await searchWebAdapter('partially paused query');
+
+    expect(result.outcome).toBe('succeeded');
+    expect(result.selectedResultUrls).toEqual(['https://example.com/pause']);
+    expect(result.queryLimitation).toBeDefined();
+    expect(result.queryLimitation?.reason).toMatch(/pause_turn/i);
   });
 });

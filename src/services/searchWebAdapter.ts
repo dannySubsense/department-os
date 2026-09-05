@@ -94,12 +94,21 @@ export async function searchWebAdapter(query: string): Promise<SearchWebAdapterR
       block?.type === 'web_search_tool_result',
   );
 
-  // A response capped by MAX_SEARCH_OUTPUT_TOKENS mid-generation (stop_reason: 'max_tokens') can
+  // A response whose `stop_reason` is anything other than a genuinely complete turn
+  // (`end_turn`) or an in-progress tool call the SDK resolves before returning (`tool_use`) can
   // leave a partial, or even zero, set of `web_search_tool_result` blocks — indistinguishable from
-  // a genuinely complete, small result set unless this is checked explicitly. Never report a
-  // capped search as clean, unqualified 'succeeded' (this org's postmortem: a byte/token cap
-  // silently truncating the thing a pipeline exists to read, with no downstream signal).
-  const wasTruncated = response.stop_reason === 'max_tokens';
+  // a genuinely complete, small result set unless this is checked explicitly. This is a whitelist,
+  // not a blacklist of one value: the full `StopReason` union (SDK
+  // `node_modules/@anthropic-ai/sdk/resources/messages/messages.d.ts`) is `'end_turn' |
+  // 'max_tokens' | 'stop_sequence' | 'tool_use' | 'pause_turn' | 'refusal' |
+  // 'model_context_window_exceeded'`. `pause_turn` in particular is the SDK's own
+  // incomplete-turn signal for server tools like `web_search` — a `pause_turn` response with zero
+  // result blocks is a query limitation, not a legitimate zero-results success, for the same
+  // reason `max_tokens` is (this org's postmortem: a byte/token cap silently truncating the thing
+  // a pipeline exists to read, with no downstream signal).
+  const isCompleteStopReason =
+    response.stop_reason === 'end_turn' || response.stop_reason === 'tool_use';
+  const wasTruncated = !isCompleteStopReason;
 
   if (resultBlocks.length === 0) {
     if (wasTruncated) {
@@ -111,7 +120,7 @@ export async function searchWebAdapter(query: string): Promise<SearchWebAdapterR
         queryLimitation: {
           id: '',
           webSearchQueryId: '',
-          reason: `response truncated at the ${MAX_SEARCH_OUTPUT_TOKENS}-token output cap before any web_search_tool_result block could be produced (stop_reason: max_tokens)`,
+          reason: `response ended before any web_search_tool_result block could be produced (stop_reason: ${response.stop_reason})`,
           occurredAt: new Date().toISOString(),
         },
       };
@@ -157,12 +166,12 @@ export async function searchWebAdapter(query: string): Promise<SearchWebAdapterR
   }
 
   if (wasTruncated) {
-    // At least one web_search_tool_result block WAS produced, but the response as a whole was cut
-    // off at the MAX_SEARCH_OUTPUT_TOKENS cap — later blocks (and possibly items within the last
-    // captured block) may be missing. Never let a capped-but-nonempty result set look like a
-    // genuinely complete one.
+    // At least one web_search_tool_result block WAS produced, but the response as a whole did not
+    // end on a complete stop reason (`end_turn`/`tool_use`) — later blocks (and possibly items
+    // within the last captured block) may be missing. Never let a capped-but-nonempty result set
+    // look like a genuinely complete one.
     errorReasons.push(
-      `response truncated at the ${MAX_SEARCH_OUTPUT_TOKENS}-token output cap (stop_reason: max_tokens) — result set may be incomplete`,
+      `response did not end on a complete stop reason (stop_reason: ${response.stop_reason}) — result set may be incomplete`,
     );
   }
 
