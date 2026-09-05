@@ -83,6 +83,7 @@ describe('searchWebAdapter — provider-level failure shapes → outcome: "query
           },
         },
       ],
+      stop_reason: 'end_turn',
     });
 
     const result = await searchWebAdapter('errored query');
@@ -105,6 +106,7 @@ describe('searchWebAdapter — provider-level failure shapes → outcome: "query
           content: { type: 'web_search_tool_result_error', error_code: 'query_too_long' },
         },
       ],
+      stop_reason: 'end_turn',
     });
     await expect(searchWebAdapter('q2')).resolves.toBeDefined();
   });
@@ -131,6 +133,7 @@ describe('searchWebAdapter — provider-level failure shapes → outcome: "query
           ],
         },
       ],
+      stop_reason: 'end_turn',
     });
 
     const result = await searchWebAdapter('null item query');
@@ -154,6 +157,7 @@ describe('searchWebAdapter — provider-level failure shapes → outcome: "query
           ],
         },
       ],
+      stop_reason: 'end_turn',
     });
 
     const result = await searchWebAdapter('missing url query');
@@ -234,5 +238,19 @@ describe('searchWebAdapter — provider-level failure shapes → outcome: "query
     expect(result.selectedResultUrls).toEqual(['https://example.com/pause']);
     expect(result.queryLimitation).toBeDefined();
     expect(result.queryLimitation?.reason).toMatch(/pause_turn/i);
+  });
+
+  it('reports a tool_use stop_reason with zero result blocks as a limitation, not a clean unqualified "succeeded" — this call declares only the server tool web_search, so a tool_use stop_reason here is not a resolved-before-returning success, unlike a forced-client-tool call site', async () => {
+    createMock.mockResolvedValueOnce({
+      content: [],
+      stop_reason: 'tool_use',
+    });
+
+    const result = await searchWebAdapter('tool_use zero-blocks query');
+
+    expect(result.outcome).toBe('query-limited');
+    expect(result.selectedResultUrls).toEqual([]);
+    expect(result.queryLimitation).toBeDefined();
+    expect(result.queryLimitation?.reason).toMatch(/tool_use/i);
   });
 });

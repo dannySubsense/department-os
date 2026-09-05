@@ -94,20 +94,23 @@ export async function searchWebAdapter(query: string): Promise<SearchWebAdapterR
       block?.type === 'web_search_tool_result',
   );
 
-  // A response whose `stop_reason` is anything other than a genuinely complete turn
-  // (`end_turn`) or an in-progress tool call the SDK resolves before returning (`tool_use`) can
-  // leave a partial, or even zero, set of `web_search_tool_result` blocks — indistinguishable from
-  // a genuinely complete, small result set unless this is checked explicitly. This is a whitelist,
-  // not a blacklist of one value: the full `StopReason` union (SDK
-  // `node_modules/@anthropic-ai/sdk/resources/messages/messages.d.ts`) is `'end_turn' |
-  // 'max_tokens' | 'stop_sequence' | 'tool_use' | 'pause_turn' | 'refusal' |
-  // 'model_context_window_exceeded'`. `pause_turn` in particular is the SDK's own
-  // incomplete-turn signal for server tools like `web_search` — a `pause_turn` response with zero
-  // result blocks is a query limitation, not a legitimate zero-results success, for the same
-  // reason `max_tokens` is (this org's postmortem: a byte/token cap silently truncating the thing
-  // a pipeline exists to read, with no downstream signal).
-  const isCompleteStopReason =
-    response.stop_reason === 'end_turn' || response.stop_reason === 'tool_use';
+  // `web_search` is a SERVER tool: the API executes it automatically mid-turn and the model's own
+  // turn continues past it, so a genuinely complete response to a server-tool-only call (this call
+  // declares no client tools) ends with `end_turn`. This is a whitelist, not a blacklist of one
+  // value: the full `StopReason` union (SDK verified against
+  // `node_modules/@anthropic-ai/sdk/resources/messages/messages.d.ts` lines 722-738) is
+  // `'end_turn' | 'max_tokens' | 'stop_sequence' | 'tool_use' | 'pause_turn' | 'refusal' |
+  // 'model_context_window_exceeded'`. The SDK's own doc comment defines `'tool_use'` as "the model
+  // invoked one or more tools" — for a CLIENT tool that is the normal signal that the caller must
+  // now execute the tool, but this call declares only the server tool `web_search`, so a `tool_use`
+  // stop_reason here is not the server-tool-resolved-before-returning case: it indicates the
+  // response ended without the server having completed and returned its normal post-tool turn, so
+  // it is treated as incomplete, the same as `pause_turn`. `pause_turn` is the SDK's own
+  // incomplete-turn signal for long-running server tools like `web_search` — a `pause_turn`
+  // response with zero result blocks is a query limitation, not a legitimate zero-results success,
+  // for the same reason `max_tokens` is (this org's postmortem: a byte/token cap silently
+  // truncating the thing a pipeline exists to read, with no downstream signal).
+  const isCompleteStopReason = response.stop_reason === 'end_turn';
   const wasTruncated = !isCompleteStopReason;
 
   if (resultBlocks.length === 0) {
@@ -167,7 +170,7 @@ export async function searchWebAdapter(query: string): Promise<SearchWebAdapterR
 
   if (wasTruncated) {
     // At least one web_search_tool_result block WAS produced, but the response as a whole did not
-    // end on a complete stop reason (`end_turn`/`tool_use`) — later blocks (and possibly items
+    // end on a complete stop reason (`end_turn`) — later blocks (and possibly items
     // within the last captured block) may be missing. Never let a capped-but-nonempty result set
     // look like a genuinely complete one.
     errorReasons.push(

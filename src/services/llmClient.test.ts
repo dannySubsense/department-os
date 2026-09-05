@@ -160,6 +160,44 @@ describe('callForcedTool (R-4 validate -> repair-once -> hard-fail)', () => {
     expect(message).toMatch(/max_tokens/i);
     expect(message).not.toBe('model response contained no tool_use block');
   });
+
+  it('reports a pause_turn response with no tool_use block by naming the real stop_reason, not a generic message', async () => {
+    createMock.mockResolvedValue({ content: [{ type: 'text', text: 'paused' }], stop_reason: 'pause_turn' });
+
+    let thrown: unknown;
+    try {
+      await callForcedTool({
+        ...baseParams,
+        validate: () => ({ valid: true, value: {} as unknown as { ok: boolean } }),
+      });
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(LlmValidationError);
+    const message = (thrown as InstanceType<typeof LlmValidationError>).message;
+    expect(message).toMatch(/pause_turn/i);
+    expect(message).not.toBe('model response contained no tool_use block');
+  });
+
+  it('reports a refusal response with no tool_use block by naming the real stop_reason, not a generic message', async () => {
+    createMock.mockResolvedValue({ content: [{ type: 'text', text: 'I cannot help with that' }], stop_reason: 'refusal' });
+
+    let thrown: unknown;
+    try {
+      await callForcedTool({
+        ...baseParams,
+        validate: () => ({ valid: true, value: {} as unknown as { ok: boolean } }),
+      });
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(LlmValidationError);
+    const message = (thrown as InstanceType<typeof LlmValidationError>).message;
+    expect(message).toMatch(/refusal/i);
+    expect(message).not.toBe('model response contained no tool_use block');
+  });
 });
 
 describe('callForcedTool — attemptHistory telemetry (Architecture §1.9 points 1/2)', () => {

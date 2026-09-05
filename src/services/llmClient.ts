@@ -146,13 +146,22 @@ export async function callForcedTool<T>(
     );
 
     if (!toolUseBlock) {
+      // This call forces a single client tool via `tool_choice: { type: 'tool', ... }`, so per the
+      // SDK's own doc comment (`node_modules/@anthropic-ai/sdk/resources/messages/messages.d.ts`
+      // lines 722-738), a response containing the forced tool_use block is the normal, complete
+      // success path regardless of stop_reason (handled above, before this branch). Reaching this
+      // branch means no tool_use block was produced at all — every possible `stop_reason` value in
+      // that case (`max_tokens`, `pause_turn`, `refusal`, `stop_sequence`,
+      // `model_context_window_exceeded`, or even `end_turn`/`tool_use` on a malformed response) is
+      // a genuine failure to fulfil the forced tool call, and the real value must be preserved and
+      // reported — never collapsed into a generic message that discards it.
       lastRawOutput = response.content;
       lastError =
         response.stop_reason === 'max_tokens'
           ? `model response was truncated at the ${MAX_OUTPUT_TOKENS}-token output cap before a ` +
             'tool_use block could be produced (stop_reason: max_tokens) — this is NOT a model ' +
             'refusal or schema failure, the response was cut off mid-generation'
-          : 'model response contained no tool_use block';
+          : `model response contained no tool_use block (stop_reason: ${response.stop_reason})`;
       const invalidAttempt: SchemaValidationAttempt = {
         attemptNumber: attempt,
         rawOutput: JSON.stringify(lastRawOutput),
