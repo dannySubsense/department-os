@@ -42,6 +42,18 @@ the current specification, not a history of how it got here.
   this checkpoint (rather than blocking on a `benchmark`-agent validation pass first) is required
   at human approval**, alongside confirmation of the rest of this Resolved Decisions list. Full
   contract: `02-ARCHITECTURE.md` §4.8.
+- **`SearchScopeNotice` is version-scoped, not version-independent.** Ruled 2026-09-05 (Frank
+  spec-gate finding 1, producer decision — not deferred as the prior "cosmetic" class):
+  `SearchScopeNotice` renders the displayed `BriefVersion`'s own producing `GenerationRun`'s
+  `webSearchQueries` only, filtered by `generationRunId` (a lookup against `workspace.generationRuns`
+  already fetched — no new read model), and changes on version navigation, same as
+  `EvidenceProvenanceList`. A prior revision classified it as version-independent
+  (whole-Investigation, from `workspace.generationRuns` unfiltered); that would attribute a later
+  correction run's searches to a Brief version that never saw them — a real misattribution on a
+  screen whose entire purpose is honest provenance, not the same class as `RunHistoryList`'s
+  legitimately-whole-Investigation history or the narrower, genuinely cosmetic fenced-out-run
+  visibility `02-ARCHITECTURE.md` §1.6 discloses for `RunHistoryList` specifically. Full contract:
+  `03-UI-SPEC.md` Research/Provenance Rail row; `01-REQUIREMENTS.md` US-9 AC6.
 - **A producing run with zero consumed-source-ledger rows is not eligible.** `generation_run_consumed_source`
   (migration `012`) has no special-case rule for a `GenerationRun` whose ledger is empty at read
   time — added 2026-09-05 (Frank spec-gate finding F3) to close the gap where an unknown/empty
@@ -212,6 +224,15 @@ the current specification, not a history of how it got here.
 
 ## Genuinely Open
 
+- **US-13's "empty" disqualifier is asymmetric between `type: 'url'` and `type: 'text'` sources —
+  accepted gap, not closed.** `url` sources use `MIN_CONTENT_LENGTH` (disclosed above); `type: 'text'`
+  sources are only excluded when blank/whitespace-only, with no minimum-substance test — a short,
+  low-content text source (e.g. two words) can unlock US-13 eligibility where an equivalently-thin
+  URL cannot. Frank spec-gate finding 3 (2026-09-05): rather than invent a new, unsourced
+  text-length threshold to close this symmetrically, the asymmetry is recorded as an accepted gap
+  for this checkpoint. Closing it later requires either a `benchmark`-agent validation pass or an
+  explicit PROVISIONAL-tag-with-owner for a new constant — not a number picked at a spec-gate
+  correction. Full contract: `02-ARCHITECTURE.md` §4.8/§1.4b.
 - **Human confirmation.** Danny has not yet confirmed, in this session, that the rulings restated
   above faithfully state his actual decisions. Due at human approval.
 - **Fresh gate required.** This specification was materially revised (fencing-token generation
@@ -231,12 +252,3 @@ the current specification, not a history of how it got here.
   `02-ARCHITECTURE.md` §4.8) — they rely on the `id`-based anti-join alone. Acceptable because this
   narrows, rather than removes, an existing guarantee, and only for data that predates this
   correction; not something Forge needs to additionally address.
-- **`SearchScopeNotice`'s version-independence and US-9 AC6 need one more look.**
-  `SearchScopeNotice` (`03-UI-SPEC.md`) sources from `workspace.generationRuns` (whole-Investigation,
-  version-independent) but US-9 AC6 requires it to render the queries actually performed for the
-  Brief under review — when viewing a prior version after a later correction run, the notice would
-  include that later run's queries. This is the same class of gap `02-ARCHITECTURE.md` §1.6 already
-  discloses (deliberately, as a deferred, cosmetic provenance-attribution issue) for a related
-  component; this document does not yet make the same disclosure for `SearchScopeNotice` against
-  US-9 AC6 specifically. Needs an explicit ruling (accept as the same deferred class, or
-  version-scope the component) before or at the fresh Frank gate — flagged here, not yet resolved.

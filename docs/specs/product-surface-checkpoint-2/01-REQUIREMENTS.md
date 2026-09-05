@@ -515,7 +515,11 @@ Acceptance Criteria:
  Existing-Solution Landscape, Gap Hypothesis) when a matching `NegativeFinding` row exists;
  Problem Definition never renders it under any circumstance.
 - [ ] `SearchScopeNotice` renders the queries actually performed and any failed/blocked retrievals,
- regardless of whether any Existing Solution was found.
+ regardless of whether any Existing Solution was found — **specifically, the queries performed by
+ the displayed `BriefVersion`'s own producing `GenerationRun`, never a different run's (corrected
+ 2026-09-05, Frank spec-gate finding 1: viewing a prior version must render that version's own
+ real search scope, not a later correction run's, which this checkpoint's own provenance-honesty
+ standard does not permit as a "cosmetic" exception).**
 - [ ] A fixed, always-visible `CitationScopeNotice` states that citation presence is not
  independent proof of citation correctness.
 - [ ] Runtime identifier, models/tools used, steps, validation attempts, and tool outcomes are

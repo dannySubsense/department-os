@@ -999,16 +999,23 @@ C2-S4/C2-S5's scope).
  legitimate silence observed during a healthy run (time between one `GenerationStep` persisting and
  the next, or between run-start and the first step), and the observed behavior of the
  stale/interrupted warning against that measurement; (3) from that measured distribution, set
- `STALE_THRESHOLD_MS` to the measured legitimate-processing time (a conservative percentile of
- observed step/run latency, not the minimum or the average) plus an explicit safety margin stated
- as a ratio or fixed addition, and set `POLL_INTERVAL_MS` from the same measurement plus expected
- concurrency and endpoint cost — per §4.9's full derivation methodology; (4) record the derived
- values, the measured inputs they were computed from, and the safety-margin arithmetic as code
- comments directly next to `POLL_INTERVAL_MS` and `STALE_THRESHOLD_MS` in their implementation
- file — not in a separate tracking artifact — per Danny's explicit instruction on where
- derived-constant evidence belongs. If measurement later shows either value needs revision, only
- that one constant and its comment change — no other mechanism in this slice depends on its
- specific magnitude.
+ `STALE_THRESHOLD_MS` to a NAMED percentile of observed step/run latency (never the minimum or the
+ average, and never left as "a conservative percentile" — the actual percentile used must be stated
+ explicitly in the code comment) plus an explicit safety margin stated as a ratio or fixed addition,
+ and set `POLL_INTERVAL_MS` from the same measurement plus expected concurrency and endpoint cost —
+ per §4.9's full derivation methodology, including its bounds on the methodology's own free
+ parameters (minimum sample size, the percentile, the margin form, the poll-to-threshold
+ relationship); (4) record the derived values (or, if the measured run count was too thin to
+ support a confident percentile per §4.9/Sequence Rule 11, record the value instead as
+ `PROVISIONAL — unvalidated`, owner Ledger — corrected 2026-09-05, Frank spec-gate finding 2: this
+ slice's own Implementation Notes previously required an unqualified "derived values" outcome with
+ no PROVISIONAL fallback, contradicting this document's own header and Sequence Rule 11), the
+ measured inputs they were computed from (including the actual run count measured), and the
+ safety-margin arithmetic as code comments directly next to `POLL_INTERVAL_MS` and
+ `STALE_THRESHOLD_MS` in their implementation file — not in a separate tracking artifact — per
+ Danny's explicit instruction on where derived-constant evidence belongs. If measurement later
+ shows either value needs revision, only that one constant and its comment change — no other
+ mechanism in this slice depends on its specific magnitude.
 - Eligibility is the single, revised rule in `02-ARCHITECTURE.md` §4.2 step 2 — the client never
  re-derives it; `generationEligible` is always read from the server response.
 - `hasEligibleNewEvidenceSinceCurrentBriefVersion` never calls `assignValidityState` and appends no
@@ -1032,10 +1039,14 @@ C2-S4/C2-S5's scope).
  implementation and reports observed request rate against the workspace endpoint, observed gaps
  between persisted-progress updates, the longest legitimate silence observed during a healthy
  run, and the observed behavior of the stale/interrupted warning against that measurement;
- `POLL_INTERVAL_MS` and `STALE_THRESHOLD_MS` are derived from this evidence, with the
- derivation — the measured inputs and the safety-margin arithmetic — recorded as code comments
- next to the constants in their implementation file (not a separate tracking artifact) before
- this slice's own Done-When can be marked complete.
+ `POLL_INTERVAL_MS` and `STALE_THRESHOLD_MS` are derived from this evidence (or, if the measured
+ run count is too thin to support §4.9's methodology with confidence, recorded as
+ `PROVISIONAL — unvalidated`, owner Ledger — corrected 2026-09-05, Frank spec-gate finding 2, to
+ match this document's own header/Sequence Rule 11 rather than requiring an unqualified "derived"
+ outcome), with the derivation (or PROVISIONAL tag and the reason) — the measured inputs (including
+ the actual run count measured), the named percentile used, and the safety-margin arithmetic —
+ recorded as code comments next to the constants in their implementation file (not a separate
+ tracking artifact) before this slice's own Done-When can be marked complete.
 - [ ] `createGenerationRunForInvestigation`: not-found and ineligible (`blocked`) — ordinary,
  request-level tests through the real function, no seam.
 - [ ] **Two-tier concurrency coverage: (a)** unique-index-level proof.
@@ -1354,8 +1365,9 @@ C2-S4/C2-S5's scope).
  persisted data, and the service-level US-13 mechanism check above is confirmed by its listed
  tests.
 - [ ] The real-run measurement and `POLL_INTERVAL_MS`/`STALE_THRESHOLD_MS` derivation described in
- Implementation Notes and Tests above are complete, with the derived values and their measured
- evidence recorded as code comments next to the constants.
+ Implementation Notes and Tests above are complete, with the derived values (or, on thin
+ measurement, their `PROVISIONAL — unvalidated, owner Ledger` tags — corrected 2026-09-05, Frank
+ spec-gate finding 2) and their measured evidence recorded as code comments next to the constants.
 - [ ] Stop point for Danny's product review: a real generation run can be triggered and its
  genuinely non-blocking start is visible in the browser; the run can be watched honestly,
  retried after failure, and disclosed distinctly if stale/interrupted; **the full Blocked →
@@ -1570,11 +1582,16 @@ five-item demonstration, remain C2-S5's scope).
  version in a lineage of 3+).
 - [ ] **New, required — Region 4 version-scoping split (Sol finding, corrects a contradiction: an
  earlier revision of this document claimed Region 4 does not change on version navigation while
- also scoping `EvidenceProvenanceList` to the displayed version).** Navigating between two real
- `BriefVersion`s of the same Investigation asserts: `EvidenceProvenanceList` DOES change —
- it re-fetches and renders the newly-displayed version's own evidence/provenance content (never
- the previously-displayed version's content persisting after navigation); `SearchScopeNotice`,
- `CitationScopeNotice`, and `RunHistoryList` do NOT change — they continue rendering the same
+ also scoping `EvidenceProvenanceList` to the displayed version; further corrected 2026-09-05,
+ Frank spec-gate finding 1 — `SearchScopeNotice` moves from the version-independent group to the
+ version-scoped group, filtered to the displayed version's own `generationRunId`, since attributing
+ a later correction run's searches to a Brief that never saw them is a real misattribution, not a
+ cosmetic gap).** Navigating between two real `BriefVersion`s of the same Investigation asserts:
+ `EvidenceProvenanceList` and `SearchScopeNotice` DO change — both re-fetch/re-filter and render
+ the newly-displayed version's own evidence/search content (never the previously-displayed
+ version's content persisting after navigation; `SearchScopeNotice` specifically renders only the
+ displayed version's own `generationRunId`'s `webSearchQueries`, not a different run's);
+ `CitationScopeNotice` and `RunHistoryList` do NOT change — they continue rendering the same
  whole-Investigation run/search history regardless of which version is displayed. A single test
  asserting only "Region 4 is unchanged" or only "Region 4 always refetches" is insufficient and
  must be replaced by this split assertion.

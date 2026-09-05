@@ -571,17 +571,20 @@ export async function beginFencedWrite(input: {
   bullets above close — fencing `searchWeb.ts`'s writes prevents a fenced-out run's Landscape
   Research pass from adding NEW source rows a retry's own Extraction step would then read and
   extract evidence from under the retry's own (different) `GenerationRun` attribution, silently
-  crediting the retry with content an abandoned process actually fetched. The one remaining, narrower
-  gap this does NOT close — disclosed, not fixed, Out of Scope — is `web_search_query` rows
-  surfaced in the UI provenance rail (`03-UI-SPEC.md`, Sections table, `webSearchQueries`) remaining
-  visibly attributed to a fenced-out run even though that run's `BriefVersion` was never persisted;
-  scoping the provenance rail to only the producing `GenerationRun` of the current `BriefVersion` is
-  a UI/behavior change beyond this checkpoint's US-3/US-4 scope, deferred as before. That residual
-  gap is now purely cosmetic/attributional (a real search this run's process genuinely performed,
-  correctly timestamped under its own real run id) — it is no longer also a correctness hazard,
-  because fencing now prevents any of these four writes from committing after abandonment, closing
-  the window a stray `source_artifact` row could otherwise open for a subsequent run's Extraction
-  step to silently consume.
+  crediting the retry with content an abandoned process actually fetched. **Narrowed 2026-09-05,
+  Frank spec-gate finding 1: the residual, purely-cosmetic/attributional gap disclosed here applies
+  ONLY to `RunHistoryList` (`03-UI-SPEC.md`'s whole-Investigation, version-independent run/search
+  history) — NOT to `SearchScopeNotice`, which this checkpoint now version-scopes to the displayed
+  `BriefVersion`'s own `generationRunId` (`03-UI-SPEC.md`, Research/Provenance Rail row). A
+  fenced-out run never produces a `BriefVersion`, so its `web_search_query` rows can never be the
+  displayed version's own `generationRunId`'s content — `SearchScopeNotice` correctly never
+  surfaces them. `RunHistoryList` still legitimately shows them (it is the whole-Investigation
+  history by design, including abandoned runs), correctly timestamped under their own real run id —
+  that remaining visibility is what stays "purely cosmetic," not a version-attribution defect,
+  since `RunHistoryList` was never claimed to be scoped to any one `BriefVersion`.** That residual
+  gap is no longer also a correctness hazard, because fencing now prevents any of these four writes
+  from committing after abandonment, closing the window a stray `source_artifact` row could
+  otherwise open for a subsequent run's Extraction step to silently consume.
 
 **Deterministic tests this section requires (04-ROADMAP.md, C2-S2/C2-S3):**
 1. Abandon a run after `extractClaimsAndEvidence`'s own extraction work has completed but before its
@@ -2720,12 +2723,26 @@ duplicate-detection purposes by this query anymore, only the two computed identi
 3. Run the query above. Eligible iff at least one `'submitted'`, resolved, non-consumed,
  non-duplicate-of-consumed source exists for this Investigation.
 
-This satisfies every one of US-13 AC2's four disqualifiers: **unreachable
+This satisfies three of US-13 AC2's four disqualifiers fully, and the fourth
+(**empty**) asymmetrically across source types — disclosed explicitly below rather than claimed as
+fully satisfied (corrected 2026-09-05, Frank spec-gate finding 3: an earlier revision of this
+section claimed "every one of US-13 AC2's four disqualifiers" was satisfied, which overstated the
+`text`-branch coverage): **unreachable
 or unresolved** (`resolution_status = 'content-retrieved'` excludes both, along with every
-non-terminal/failed state); **empty** (`resolution_status = 'content-retrieved'` excludes it PROVIDED
-`resolveSourceArtifact`/`computeSourceResolution` never classifies blank/whitespace-only text as
-`'content-retrieved'` — this is NOT true of today's live `type: 'text'` code path and is fixed by
-§1.4b, a required Forge-slice edit assigned to C2-S2, not an existing guarantee). **Disclosed
+non-terminal/failed state); **empty, for `type: 'url'` sources** (`resolution_status =
+'content-retrieved'` excludes it, gated by `MIN_CONTENT_LENGTH`, disclosed immediately below);
+**empty, for `type: 'text'` sources — narrower coverage, an accepted gap, not a fabricated
+threshold.** `resolveSourceArtifact`/`computeSourceResolution` (§1.4b) excludes only
+blank/whitespace-only `raw` content as `'content-retrieved'` — this is a real, required Forge-slice
+edit assigned to C2-S2, not an existing guarantee, and it closes the literal-blank-string case. It
+does NOT apply any minimum-length or substance test to non-blank text: a two-word pasted text
+source (e.g. `"yes ok"`) resolves `'content-retrieved'` and can unlock US-13 eligibility, the same
+way a below-`MIN_CONTENT_LENGTH` URL cannot. This asymmetry is accepted as a known gap for this
+checkpoint, not closed by inventing a new, unsourced text-length threshold — `01-REQUIREMENTS.md`'s
+"No fabricated numbers" rule forbids picking one with no precedent or measurement behind it. If a
+text-substance threshold is wanted, it should get the same treatment `MIN_CONTENT_LENGTH` itself
+needs (a `benchmark`-agent validation pass, or an explicit PROVISIONAL tag with Danny's acceptance),
+not a number chosen at this spec-gate correction. **Disclosed
 2026-09-05, Frank spec-gate finding F2 — for `type: 'url'` sources specifically, "empty" is decided
 by `resolveSourceArtifact.ts:20`'s `MIN_CONTENT_LENGTH = 200` (`body.trim().length >=
 MIN_CONTENT_LENGTH` gates `'content-retrieved'` vs. `'reachable-no-content'`, `resolveSourceArtifact.ts:115-120`).
