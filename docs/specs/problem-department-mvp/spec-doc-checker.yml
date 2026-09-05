@@ -32,8 +32,9 @@ rules:
         proximity_lines: 5   # matches Section 3's own worked example for this exact literal pair
                               # (the literal/forbidden_near/proximity_lines triple is copied
                               # verbatim from the spec's normative example, which was itself
-                              # modeled on this doc set's real defect — GATE-LOG.md's PASS-2
-                              # entry: 'problem-statement' incorrectly made negatable via the
+                              # modeled on this doc set's real defect — GATE-LOG.md's (retired
+                              # 2026-09-05; history in git) PASS-2 entry: 'problem-statement'
+                              # incorrectly made negatable via the
                               # NegativeFinding mechanism).
 
   required-files:

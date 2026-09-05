@@ -2423,7 +2423,8 @@ above, since that is what the evaluation needs to observe and measure:
       — option (a), `currentVersionId` named explicitly as the one derived-index field permitted to
       update; (4) citation collections retyped `NonEmptyArray<T>` and enforced at runtime through
       the R-4 fail-closed path, not just declared in prose; (5) gate-status line corrected to match
-      `GATE-LOG.md`; (6) Personal Pull wording aligned to NORTH-STAR.md's "may be retained,
+      GATE-LOG.md's then-current record (that file was later retired 2026-09-05; see
+      `docs/development-workflow.md`); (6) Personal Pull wording aligned to NORTH-STAR.md's "may be retained,
       optional" framing.
 - [x] PR-review binding correction (post-commit 370a2c3, this revision): the NegativeFinding
       generalization mistakenly extended to `'problem-statement'` is reverted. `BriefElement` now

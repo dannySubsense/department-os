@@ -139,6 +139,15 @@ duplicates `PROGRESS.md` and drifts from it; a root `NOW.md` did exactly that an
 2026-08-14, having gone stale by claiming a slice "fully complete" after a QC round that a later
 defect disproved, while `PROGRESS.md` recorded the correction. One record, updated in place.
 
+The same reasoning retired `docs/specs/problem-department-mvp/GATE-LOG.md` on 2026-09-05.
+It was a manually-maintained, attempt-by-attempt gate history (SHRINKING/STATIC/THRASHING
+convergence classification, "Orchestrator independent re-derivation: AGREES/DISAGREES") that
+competed with `PROGRESS.md`'s `## Current` section as a second live status record for the same
+sprint, and it directly violated root `CLAUDE.md`'s prohibition on tracking Markdown such as
+"gate logs, snapshots, session narration." Gate attempt history now lives only in git commit
+messages and PR descriptions — there is no replacement tracking file, and none should be
+created.
+
 If an agent instruction file (including an untracked local one such as `CLAUDE.md`) tells you to
 maintain a status file that no tracked document describes, treat that as a defect in the
 instruction and raise it — an artifact committed to the repository whose governing rule is not in
