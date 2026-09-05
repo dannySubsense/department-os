@@ -213,7 +213,13 @@ reimplementation:
   hardened implementation — a fix to the SSRF guard (e.g. a new disallowed-range case) applies to
   both Source Resolver and Landscape Researcher retrieval automatically, rather than requiring the
   same fix to be independently re-applied twice.
-- `MIN_CONTENT_LENGTH` (the paywall/JS-shell content-length heuristic) stays specific to Source
+- `MIN_CONTENT_LENGTH` (a raw-response-body-length threshold — corrected 2026-09-05, Frank
+  spec-gate FAIL: this constant does not detect paywalls or JS-only rendering, since it compares
+  raw HTTP body length before any content extraction, and real paywalled/JS-shell pages typically
+  ship substantial raw HTML regardless of visible content; it functions only as a near-empty/
+  literally-empty response guard, and is unsourced — no mathematical, scientific, or programmatic
+  precedent has been shown for 200 specifically. See `src/services/resolveSourceArtifact.ts`'s own
+  comment for the fuller correction.) stays specific to Source
   Resolver's four-way `SourceResolution.status` and is **not** moved into the shared module as-is;
   the controlled retrieval path below reuses the same heuristic value by importing the constant,
   but maps its outcome onto the three-way `blocked`/`failed`/`retrieved` classification defined
@@ -306,7 +312,7 @@ Concretely, classified by the shared retrieval module's outcome:
 |---|---|---|
 | `blocked` | HTTP `401` or `403` | `"HTTP 403 Forbidden"` |
 | `blocked` | HTTP `451` (legal/regulatory unavailability) | `"HTTP 451 Unavailable For Legal Reasons"` |
-| `blocked` | 2xx response, but body length below the shared `MIN_CONTENT_LENGTH` heuristic (paywall/login-wall/JS-only render — same signal `resolveSourceArtifact.ts` uses for `reachable-no-content`, mapped here onto `blocked` rather than a four-way status, since for search-result retrieval "content withheld" reads as blocked, not merely content-free) | `"Response returned successfully but contained little or no extractable text — likely a paywall, login wall, or JS-only render"` |
+| `blocked` | 2xx response, but body length below the shared `MIN_CONTENT_LENGTH` threshold (a near-empty/literally-empty raw response — corrected 2026-09-05, Frank spec-gate FAIL: this does NOT detect paywalls or JS-only rendering, which typically return substantial raw HTML; same signal `resolveSourceArtifact.ts` uses for `reachable-no-content`, mapped here onto `blocked` rather than a four-way status, since for search-result retrieval "content withheld" reads as blocked, not merely content-free) | `"Response returned successfully but the raw response body was very short (under <MIN_CONTENT_LENGTH> characters) — likely an empty or near-empty page. This check does not detect paywalls, login walls, or JS-rendered pages, which typically return substantial raw HTML regardless of visible content."` |
 | `blocked` | `ssrfGuardedFetch` rejects the destination before any request left the process (`EBLOCKEDHOST` — private/loopback/CGNAT/reserved-range target) | `"Blocked by network policy: disallowed network address"` |
 | `failed` | DNS resolution failure | `"DNS resolution failed for '<host>'"` |
 | `failed` | Connection error/reset, or request timeout (`AbortError`) | `"Request timed out after <FETCH_TIMEOUT_MS>ms"` |

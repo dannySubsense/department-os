@@ -27,10 +27,12 @@ import {
  *  failure mode. Unsourced: no mathematical, scientific, or programmatic precedent has been shown
  *  for 200 specifically. No owner is named — a label is not a substitute for evidence nobody has
  *  reviewed. Reused (imported, not copied) by the Landscape Researcher's controlled retrieval path
- *  (Architecture §1.6), and inherited by Product Surface Checkpoint 2's US-13 evidence-eligibility
- *  mechanism (docs/specs/product-surface-checkpoint-2/02-ARCHITECTURE.md §4.8) — that inheritance
- *  is disclosed there, not built on silently. See
- *  docs/specs/product-surface-checkpoint-2/05-REVIEW.md for the fuller correction history. */
+ *  (Architecture §1.6). Full correction record for this constant: this file's own git history
+ *  (2026-09-05) plus `docs/specs/problem-department-mvp/02-ARCHITECTURE.md`'s `MIN_CONTENT_LENGTH`
+ *  entry and classification table, corrected the same day. A separate, not-yet-merged branch
+ *  (Product Surface Checkpoint 2, PR #8) inherits this constant into a new US-13
+ *  evidence-eligibility mechanism — do not assume that branch's disclosure of this limitation is
+ *  current without checking it directly; branch state is not verifiable from this comment. */
 export const MIN_CONTENT_LENGTH = 200;
 
 interface SourceArtifactRow {
