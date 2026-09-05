@@ -154,14 +154,18 @@ the current specification, not a history of how it got here.
   Pre-migration rows are not backfilled and rely on the `id`-based anti-join alone (explicit,
   documented exemption, not an oversight — `02-ARCHITECTURE.md` §4.8). Corrected 2026-09-05 per
   independent review. Full contract: `02-ARCHITECTURE.md` §4.8.
-- **Region 4 provenance is version-scoped for evidence, version-independent for run/search
-  history — never uniformly either.** `EvidenceProvenanceList` re-fetches and renders the
-  currently-displayed `BriefVersion`'s own evidence/provenance content, changing on version
-  navigation; `SearchScopeNotice`, `CitationScopeNotice`, and `RunHistoryList` render the same
-  whole-Investigation run/search history regardless of which version is displayed. Corrected
-  2026-09-05 per independent review (a prior revision of this document's UI spec described Region 4
-  as uniformly unchanged on navigation, which contradicted `EvidenceProvenanceList`'s own
-  version-scoped binding elsewhere in the same document). Full contract: `03-UI-SPEC.md` Region 4.
+- **Region 4 provenance is version-scoped for evidence and search scope, version-independent for
+  citation notice and run history — never uniformly either.** `EvidenceProvenanceList` AND
+  `SearchScopeNotice` re-fetch/re-filter and render the currently-displayed `BriefVersion`'s own
+  content, changing on version navigation (`SearchScopeNotice` filtered to that version's own
+  `generationRunId` — corrected 2026-09-05, Frank spec-gate finding 1, superseding an intermediate
+  revision of this bullet that still listed `SearchScopeNotice` as version-independent, itself
+  contradicting the ruling this bullet states); `CitationScopeNotice` and `RunHistoryList` render
+  the same whole-Investigation run/search history regardless of which version is displayed.
+  Corrected 2026-09-05 per independent review (a prior revision of this document's UI spec
+  described Region 4 as uniformly unchanged on navigation, which contradicted
+  `EvidenceProvenanceList`'s own version-scoped binding elsewhere in the same document). Full
+  contract: `03-UI-SPEC.md` Region 4.
 - **A Decision against a nonexistent `BriefVersion` returns a typed 404, never a generic 500.**
   `recordDecision` performs a same-transaction existence check (`SELECT ... FOR UPDATE`) as its
   first statement after `BEGIN` and throws `BriefVersionNotFoundError` before any insert if the

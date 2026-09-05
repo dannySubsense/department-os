@@ -701,7 +701,18 @@ Acceptance Criteria:
  - **Unreachable or unresolved** — resolution did not complete to usable retrieved content
  (e.g. still pending, or resolved to an `unreachable`/error outcome);
  - **Empty** — resolved but its content is empty or effectively empty (no usable evidentiary
- content);
+ content). **Enforcement is asymmetric across source types, by explicit accepted decision, not
+ requirement text this checkpoint fully honors (corrected 2026-09-05, Frank spec-gate finding 2):
+ for `type: 'url'` sources, "effectively empty" is decided by the existing `MIN_CONTENT_LENGTH`
+ constant (`resolveSourceArtifact.ts`, already `PROVISIONAL — unvalidated`, owner Ledger) — see
+ `02-ARCHITECTURE.md` §4.8's disclosure and Danny's required acceptance of that inheritance. For
+ `type: 'text'` sources, only a literal blank/whitespace-only check applies (`02-ARCHITECTURE.md`
+ §1.4b) — a short, low-substance but non-blank text source (e.g. two words) is NOT excluded as
+ "effectively empty" and CAN unlock eligibility, unlike an equivalently-thin URL. This asymmetry is
+ an accepted gap for this checkpoint (`05-REVIEW.md` "Genuinely Open"), not a defect to silently
+ tolerate — closing it requires either a `benchmark`-agent validation pass or an explicit
+ PROVISIONAL-tag-with-owner for a new text-substance threshold, never a number invented at a
+ spec-correction pass.**;
  - **A duplicate of an already-consumed source, by canonical identity or by resolved-content
  fingerprint** — a source is disqualified as a duplicate if EITHER (a) its canonical source
  identity (the normalized, redirect-resolved target the source ultimately refers to — not
