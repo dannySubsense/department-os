@@ -148,6 +148,22 @@ sprint, and it directly violated root `CLAUDE.md`'s prohibition on tracking Mark
 messages and PR descriptions — there is no replacement tracking file, and none should be
 created.
 
+A related but distinct ruling (Danny, 2026-09-05) applies to the smaller, tool-level
+`docs/tooling/{tool-name}-GATE-LOG.md` files used by bounded internal tooling ("lite mode",
+`docs/CADENCE.md`): standalone `{tool-name}-GATE-LOG.md` files are retired too, but their content
+is not pushed out to git history alone — it is merged into flat `## Spec Gate` / `## Forge Gate`
+sections directly inside the corresponding `{tool-name}-PROGRESS.md` file, preserving the same
+table shape (Attempt | Date | Verdict | Findings Summary | Snapshot), the same attempt counter
+(1-3), and the same SHRINKING/STATIC/THRASHING convergence-judgment and no-manual-override rules
+the deleted `GATE-LOG.md` format used — just one tracker file per tool/sprint instead of two.
+`docs/tooling/spec-doc-checker-GATE-LOG.md` was the first file retired under this rule; its full
+gate history now lives in `docs/tooling/spec-doc-checker-PROGRESS.md`'s own `## Spec Gate` /
+`## Forge Gate` sections. This mirrors a convention the sibling `agent-rig` homelab repo arrived
+at independently the same day, so this is not an isolated one-off choice for this repository.
+`.gate-snapshots/`-style frozen evidence directories are unaffected by either ruling — they are
+not a competing live-status tracker, they are frozen historical snapshots, and stay exactly as
+they are, wherever they exist.
+
 If an agent instruction file (including an untracked local one such as `CLAUDE.md`) tells you to
 maintain a status file that no tracked document describes, treat that as a defect in the
 instruction and raise it — an artifact committed to the repository whose governing rule is not in

@@ -19,10 +19,11 @@ locked doc's own Acceptance Criteria section (one slice per major
 rule/component, or a single slice if splitting would be artificial,
 orchestrator's judgment stated before work starts) → Frank binding
 forge-gate (same substitution: the locked doc stands in for
-`NORTH-STAR.md`) → human merge approval. `PROGRESS.md` and `GATE-LOG.md`
-live alongside the tool doc (`docs/tooling/{tool-name}-PROGRESS.md`,
-`docs/tooling/{tool-name}-GATE-LOG.md`) rather than in a sprint directory.
-Same binding-gate discipline as the full sequence throughout, no manual
+`NORTH-STAR.md`) → human merge approval. `PROGRESS.md` lives alongside the
+tool doc (`docs/tooling/{tool-name}-PROGRESS.md`) rather than in a sprint
+directory; gate history (attempts, dates, verdicts, findings, convergence
+judgment) lives inside that same file's own `## Spec Gate` / `## Forge
+Gate` sections — there is no separate `GATE-LOG.md` file. Same binding-gate discipline as the full sequence throughout, no manual
 override at either Frank gate. This contract is authoritative here; the
 local `/spec-start --lite` and `/forge-start --lite` commands are one
 implementation of it, not its source. Live precedent:
