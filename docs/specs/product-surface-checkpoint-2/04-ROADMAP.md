@@ -33,7 +33,7 @@ ACs, US-13 AC2, and the Non-Functional Requirement that Forge measure real runs 
 request rate, persisted-update gaps, longest legitimate silence, and observed stale/interrupted-
 warning behavior before `POLL_INTERVAL_MS`/`STALE_THRESHOLD_MS` are derived — see that document for
 the canonical acceptance-criteria enumeration), `02-ARCHITECTURE.md` (component table, migrations
-`009`/`010`/`011`/`012`, the `StatusEvent` schema with `sequence` tiebreak §3.6, the non-blocking
+`009`/`010`/`011`/`012`/`013`, the `StatusEvent` schema with `sequence` tiebreak §3.6, the non-blocking
 Generation Run Connector §4.2/§1.3 including the two-catch split and the `isUniqueViolation` helper,
 the version-numbered Brief route §3.1a/§5.1, the real `AddSourceInline`/Add-Source Connector reusing
 and extending the existing `POST /api/investigations` route §1.4/§3.1b — including the
@@ -169,8 +169,8 @@ already sits at one of the five slice boundaries below:
 | Slice | Depends On | Why |
 |---|---|---|
 | C2-S1 — Fix Node 22 URL resolution | — | Standalone module fix; no new schema, no new route, no new screen |
-| C2-S2 — Investigation Workspace scaffold (identity, sources via the extended `POST /api/investigations` Add-Source Connector, Blocked, nav wiring, full Workspace Read Model shape) | — | Reads existing tables (`getInvestigation`, `sourceArtifacts`, `generation_run`/`generation_step`/`web_search_query`); **new migration `009`, schema only** — §1.1's partial unique index plus §1.6's `fence_token`/`lease_heartbeat_at` columns and stranded-row backfill, moved to this slice because this slice's own Workspace Read Model reads `generation_run.lease_heartbeat_at` (via `computeLivenessState`, §4.9) and that column must exist for this slice's own read query to be real, not stubbed; the FENCING/write-guard LOGIC that reads/writes `fence_token` at write time remains C2-S3's own scope (no `GenerationRun` is created yet in this slice, so there is nothing to fence); the existing `POST /api/investigations` route handler is extended in place here because `AddSourceInline` is first built here |
-| C2-S3 — Generation Run Connector (non-blocking start) + honest in-progress/stale-interrupted/failed panels + evidence-gated eligibility mechanism | C2-S2 (needs the workspace screen, route, and the extended `POST /api/investigations` Add-Source Connector to host the trigger control, progress panel, and the integrated US-5 AC3 demonstration; ALSO now needs C2-S2's migration `009` — `fence_token`/`lease_heartbeat_at` — to exist before this slice's write-guard logic can read/write those columns) | New migration `012` (`generation_run_consumed_source`, §4.8); migration `009` is now C2-S2's own scope (schema only), not this slice's — this slice implements the fencing WRITE-GUARD logic (`recordGenerationStep`/`finalizeGenerationRun`/`runStepWithProvenance`/`abandonGenerationRun`, §1.6) against columns C2-S2 already added; connector and `hasEligibleNewEvidenceSinceCurrentBriefVersion` are otherwise independently testable at the service layer, but every browser demonstration requires C2-S2's screen and real add-source path to exist |
+| C2-S2 — Investigation Workspace scaffold (identity, sources via the extended `POST /api/investigations` Add-Source Connector, Blocked, nav wiring, full Workspace Read Model shape) | — | Reads existing tables (`getInvestigation`, `sourceArtifacts`, `generation_run`/`generation_step`/`web_search_query`); **new migration `009`, schema only** — §1.1's partial unique index plus §1.6's `fence_token`/`lease_heartbeat_at`/`heartbeat_revision` columns and stranded-row backfill, moved to this slice because this slice's own Workspace Read Model reads `generation_run.lease_heartbeat_at` (via `computeLivenessState`, §4.9) and that column must exist for this slice's own read query to be real, not stubbed; the FENCING/write-guard LOGIC that reads/writes `fence_token` at write time remains C2-S3's own scope (no `GenerationRun` is created yet in this slice, so there is nothing to fence); the existing `POST /api/investigations` route handler is extended in place here because `AddSourceInline` is first built here |
+| C2-S3 — Generation Run Connector (non-blocking start) + honest in-progress/stale-interrupted/failed panels + evidence-gated eligibility mechanism | C2-S2 (needs the workspace screen, route, and the extended `POST /api/investigations` Add-Source Connector to host the trigger control, progress panel, and the integrated US-5 AC3 demonstration; ALSO now needs C2-S2's migrations `009` — `fence_token`/`lease_heartbeat_at`/`heartbeat_revision` — and `013` — `canonical_url`/`resolved_content_hash`, §4.8 SOL-MEDIUM-1 fix — to exist before this slice's write-guard logic and eligibility query, respectively, can read/write those columns) | New migration `012` (`generation_run_consumed_source`, §4.8); migrations `009` and `013` are C2-S2's own scope (schema only), not this slice's — this slice implements the fencing WRITE-GUARD logic (`recordGenerationStep`/`finalizeGenerationRun`/`runStepWithProvenance`/`abandonGenerationRun`, `assertFenceOwnership`, §1.6) and the eligibility query's canonical-identity anti-joins (§4.8) against columns C2-S2 already added; connector and `hasEligibleNewEvidenceSinceCurrentBriefVersion` are otherwise independently testable at the service layer, but every browser demonstration requires C2-S2's screen and real add-source path to exist |
 | C2-S4 — Brief Review (read service + panel + provenance rail, rendering the Brief's real fields) + version-numbered Brief navigation + `StatusEvent` schema/read queries with `sequence` tiebreak + evidence-driven correction UI (US-13, UI) | C2-S3 (needs a real, browser-triggered `BriefVersion` to read, and the real eligibility mechanism to gate the correction UI on) | the versioned route resolves `ProblemBrief.currentVersionId` (or a specific `versionNumber`) to a `briefVersionId` before calling `getBriefForReview(briefVersionId)` (`02-ARCHITECTURE.md` §2/§3.3/§4.1 — resolution is the route's job, not the service's); the version-numbered route needs a `BriefVersion` and its own lineage to navigate against |
 | C2-S5 — Decision Recording and History + `assignValidityState` with write-time target validation + `DecisionHistoryBanner` + US-13 closing regression | C2-S4 (needs a rendered `briefVersionId`, and the versioned-route navigation built, to demonstrate US-13's full five-item path against a specific prior version's own URL rather than a raw id) | New migration `010`; `recordDecision` requires an existing `brief_version` row (FK); `assignValidityState`'s dependent-decision reconstruction requires `getDecisionsForBriefVersion`, built in this slice |
 
@@ -202,8 +202,34 @@ research is no longer silently starved.
  `true`, first-choice single-value shape when falsy/omitted; this is the primary fix. The
  existing all-or-nothing `isDisallowedIp` block-and-reject check (fail-closed) is UNCHANGED in
  both branches of this call site.
+- `src/services/ssrfGuardedFetch.ts` — **also, same file, same edit pass (SOL-MEDIUM-1 fix, §4.6a)**:
+ `FetchResult` gains a required `finalUrl: string` field, populated as `startUrl.toString()` at the
+ terminal (non-redirect) resolve point inside `fetchWithGuards` — no new parameter, no new call
+ site, since every redirect hop already re-invokes `fetchWithGuards` with the redirect target as its
+ own `startUrl`. This is required before C2-S2's `computeSourceResolution` split (below) and
+ C2-S3's `searchWeb.ts` canonical-identity write (C2-S3 Files) can derive `canonical_url` from the
+ real post-redirect URL rather than the originally-requested one.
 - `src/services/ssrfGuardedFetch.test.ts` (or equivalent existing test file — confirm exact name
- during Forge) — add the four regression tests specified verbatim in §4.6:
+ during Forge) — add the four regression tests specified verbatim in §4.6, **plus one more (§4.6a,
+ SOL-MEDIUM-1 fix): a redirect-chain fetch returns `FetchResult.finalUrl` equal to the terminal URL, not
+ the originally-requested one.**
+- **Already applied on this branch, verified against live source (2026-09-06):** this file's three
+ constants (`FETCH_TIMEOUT_MS`, `MAX_RESPONSE_BYTES`, `MAX_REDIRECTS`) previously carried the
+ comment text `owner: Ledger` — an agent naming itself as owner is self-certification, not a named
+ human owner, and is disqualified under the global research-data-integrity rule. The literal text
+ `owner: Ledger` is deleted from all three comments, and no owner has been added in its place (not
+ "unassigned," not any other stand-in). No comment carries any `PROVISIONAL` marker text either —
+ each was rewritten to a different comment style entirely ("Unsourced — no mathematical,
+ scientific, or programmatic precedent has been shown for [value] ... a label is not a citation
+ (DDR-0002, ...)"), citing `docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md` directly
+ instead of a "pending Danny's decision" note. **RESOLVED — 2026-09-06:**
+ `docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md` is restored to this branch and its
+ Category B table (rows B3, B4, B5) already classifies all three as infrastructure/operational
+ safety limits, requiring no citation or owner. The numeric values (`FETCH_TIMEOUT_MS = 10_000`,
+ `MAX_RESPONSE_BYTES = 5 * 1024 * 1024`, `MAX_REDIRECTS = 5`) are unchanged — this slice's own work
+ does not re-justify or alter them. `02-ARCHITECTURE.md` §4.6's disposition note carries the settled
+ Category B disposition, including confirmation that `MAX_RESPONSE_BYTES` still hard-rejects rather
+ than truncates (the condition DDR-0002 requires for it to remain Category B).
  1. A real, actually-reachable hostname-based source resolves successfully end-to-end on the
  production code path (not the `allowedTestHosts` bypass) under this repo's live Node version.
  2. A direct unit test on `safeLookup` (not routed through `fetchWithGuards`, not using the
@@ -237,15 +263,23 @@ research is no longer silently starved.
 **Browser Demonstration (required — real, rendered screen, real clicks, real persisted data):**
 - From the existing Checkpoint-1 Problem Department overview (`StartInvestigationForm`, unchanged
  this slice), submit a real `url`-type source pointing at a genuinely reachable host, using the
- actual rendered form and its real submit control. Confirm the source's persisted
- `resolutionStatus` is `content-retrieved`, not `unreachable`, viewed via the actual rendered
- result of the submission — not inferred from an API response alone.
+ actual rendered form and its real submit control. Confirm, via the existing Checkpoint-1
+ confirmation UI, that the submission succeeds and the Investigation lands in the eligible/open
+ state (not Blocked) — the only rendered-result claim this slice's own UI surface can support.
+ **The stronger claim — confirming the source's persisted `resolutionStatus` is specifically
+ `content-retrieved` (not merely "not unreachable") via its own rendered per-source status — has no
+ UI capable of showing it yet at this slice (Checkpoint-1's UI has no per-source status display,
+ and this checkpoint's own Investigation Workspace does not exist until C2-S2). That demonstration
+ is SOL-HIGH-3-relocated to C2-S2 below, the earliest slice whose UI can render an individual source's
+ resolved status; see C2-S2's own Browser Demonstration and Files (new `SourceListPanel`).**
 
 **Done When:**
 - [ ] All tests above pass; Frank forge-gate PASS.
 - [ ] The browser demonstration above is performed and observed against real persisted data.
-- [ ] Stop point for Danny's product review: a real `url` source resolves successfully in the
- existing Checkpoint-1 UI.
+- [ ] Stop point for Danny's product review: a real `url` source resolves successfully and the
+ Investigation is observably not Blocked in the existing Checkpoint-1 UI. (The per-source
+ `resolutionStatus === 'content-retrieved'` rendered-result claim is verified at C2-S2, not here —
+ see above.)
 
 ---
 
@@ -310,13 +344,48 @@ including its full provenance fields, is never under-reported).
  already has multiple `'in-progress'` rows for one Investigation. **Also adds, in the same
  migration file, §1.6's fencing/heartbeat columns**: `ALTER TABLE generation_run ADD COLUMN IF NOT
  EXISTS fence_token INTEGER NOT NULL DEFAULT 1, ADD COLUMN IF NOT EXISTS lease_heartbeat_at
- TIMESTAMPTZ NOT NULL DEFAULT now()`. Moved to THIS slice, schema only — the concurrent-run
- uniqueness index and the fencing/heartbeat columns are additive `generation_run` schema changes
- this slice's own Workspace Read Model needs (`lease_heartbeat_at`, read by `computeLivenessState`,
- §4.9, for every seeded run this slice's tests fixture); the WRITE-GUARD logic that reads/writes
- `fence_token` at write time (`recordGenerationStep`/`finalizeGenerationRun`/`abandonGenerationRun`)
- is C2-S3's own scope — no `GenerationRun` is created by any code path in this slice, so there is
- nothing yet to fence.
+ TIMESTAMPTZ NOT NULL DEFAULT now(), ADD COLUMN IF NOT EXISTS heartbeat_revision INTEGER NOT NULL
+ DEFAULT 0` (SOL-HIGH-1 fix — the monotonic CAS counter the abandon flow gates on, §1.6). Moved to THIS
+ slice, schema only — the concurrent-run uniqueness index and the fencing/heartbeat columns are
+ additive `generation_run` schema changes this slice's own Workspace Read Model needs
+ (`lease_heartbeat_at`, read by `computeLivenessState`, §4.9, for every seeded run this slice's
+ tests fixture); the WRITE-GUARD logic that reads/writes `fence_token`/`heartbeat_revision` at write
+ time (`recordGenerationStep`/`finalizeGenerationRun`/`abandonGenerationRun`) is C2-S3's own scope —
+ no `GenerationRun` is created by any code path in this slice, so there is nothing yet to fence.
+- `src/db/migrations/013_source_artifact_canonical_identity.sql` (new — exact SQL per
+ `02-ARCHITECTURE.md` §4.8, three additive `source_artifact` columns in one `ALTER TABLE`:
+ `canonical_url TEXT` (§4.8 dedup fix), `resolved_content_hash TEXT` (§4.8 dedup fix), and
+ `resolution_revision INTEGER NOT NULL DEFAULT 0` (§1.4a — the real monotonic CAS counter
+ `recheckSourceArtifact` and `resolveSourceArtifact.ts`'s `persistResolution` both increment on
+ every resolution write to a row, closing the identical-millisecond ambiguity a
+ `resolution_resolved_at`-only guard could not); all three columns land together in this one
+ `ALTER TABLE`, matching every prose reference to this migration — plus ONE one-time backfill
+ statement for EXISTING, already-resolved rows, in this same migration file/transaction: a
+ pure-SQL `resolved_content_hash` backfill for every existing `'content-retrieved'` row (no
+ TypeScript dependency, so no reason to defer it).
+ `canonical_url` is NOT backfilled by this migration file (§4.8 —
+ `src/db/migrate.ts` executes every migration as a raw SQL string with no hook for calling
+ TypeScript application code, so a migration file cannot itself invoke `canonicalizeUrl`); every
+ pre-migration row's `canonical_url` is left `NULL` by migration `013` alone. This lives in THIS
+ slice, alongside `009` — this is where `computeSourceResolution`/`resolveSourceArtifact` (below)
+ live and populate these columns going forward.
+- `src/db/scripts/backfill-013-canonical-url.ts` (new, §4.8) — a named,
+ manually-run, one-off script (NOT a migration file, NOT transactional with migration `013`'s own
+ `ALTER TABLE`) that selects every `type = 'url'`, `resolution_status = 'content-retrieved'` row
+ with `canonical_url IS NULL`, calls the real, imported `canonicalizeUrl(raw)` helper on each row's
+ stored `raw` value (no duplicated normalization logic), and persists the result via its own
+ `UPDATE ... WHERE id = $1` — the degraded fallback §4.8 discloses (normalizes the original `raw`
+ value, not the true post-redirect `finalUrl`, since this script performs no network I/O). Forge
+ runs this script manually, once, immediately after migration `013` applies and before any other
+ checkpoint work resumes — this is part of C2-S2's own Done-When, not an optional follow-up. Its own
+ test (`src/db/scripts/backfill-013-canonical-url.test.ts`) asserts it calls the real, imported
+ `canonicalizeUrl` helper and correctly skips rows outside its `type`/`resolution_status`/
+ `canonical_url IS NULL` scope.
+- `src/services/sourceCanonicalization.ts` (new, SOL-MEDIUM-1 fix) — `canonicalizeUrl(url: string):
+ string`, the one shared, pure implementation of `URL` normalization plus tracking-parameter
+ stripping (§4.8) — imported by `computeSourceResolution` (this slice),
+ `backfill-013-canonical-url.ts` (this slice, above), and `searchWeb.ts`'s canonical-identity write
+ (C2-S3) — a single implementation, never duplicated across these three call sites.
 - `src/services/resolveSourceArtifact.ts` — edit, two changes, both required before
  `recheckSourceArtifact.ts` (below) can be correct: (1) **`02-ARCHITECTURE.md` §1.4a's
  compute/persist split** — extract the existing type-branch resolution logic
@@ -325,14 +394,51 @@ including its full provenance fields, is never under-reported).
  `resolveSourceArtifact(sourceArtifactId)` keeps its existing external signature/behavior — fetch
  the row, call `computeSourceResolution`, persist unconditionally via the existing
  `persistResolution`, return the resolution — a pure refactor, zero behavior change for every
- existing caller (`submitSources`/`resolveInvestigationSources`) and their existing tests. (2)
- **`02-ARCHITECTURE.md` §1.4b's blank-text fix** — `computeSourceResolution`'s `type === 'text'`
- branch gains an emptiness check (`artifact.raw.trim().length === 0` → `'reachable-no-content'`,
- matching the `type === 'url'` branch's existing `MIN_CONTENT_LENGTH` semantics) instead of
- unconditionally resolving `'content-retrieved'`. Both edits land together because
+ existing caller (`submitSources`/`resolveInvestigationSources`) and their existing tests, EXCEPT
+ that `persistResolution`'s own `UPDATE` also increments migration `013`'s new
+ `resolution_revision` column by 1 on every call (§1.4a SOL-MEDIUM-2 fix) — additive, unobserved by
+ every existing caller/test, but required so a subsequent `recheckSourceArtifact` call always reads
+ the row's real total revision count regardless of which write path last touched it. (2)
+ **`02-ARCHITECTURE.md` §1.4b's blank-content fix — already applied on this branch, verified
+ against live source (2026-09-06); re-applies PR #11's already-settled fix, lost in this branch's
+ reset — see §1.4b's disclosure note.** `MIN_CONTENT_LENGTH` is deleted from
+ `resolveSourceArtifact.ts` entirely (it was a self-certified, unsourced `PROVISIONAL` constant;
+ not narrowed, not re-tagged) — confirmed: the constant no longer exists at any line in that file.
+ `resolveSourceArtifact.ts`'s own `resolveUrl` check now applies `body.trim().length === 0`
+ (`resolveSourceArtifact.ts:116`); the `computeSourceResolution` split itself (§1.4a) remains this
+ slice's own Forge work, still to be built — the zero-length check is applied today in the current,
+ unsplit function and carries over into the split unchanged once built. This constant had TWO real
+ live consumers, both already fixed: (a) `resolveSourceArtifact.ts`'s own `resolveUrl` logic (the
+ inline check above), and (b) `classifyRetrievalOutcome.ts`
+ (`src/services/classifyRetrievalOutcome.ts`), which no longer imports `MIN_CONTENT_LENGTH` at all
+ — its `'http-response'` 2xx branch applies `bodyLength === 0` → `status: 'blocked'` directly
+ (`classifyRetrievalOutcome.ts:65`), a pure zero-length check on the raw body length already
+ computed by its caller (`searchWeb.ts`'s `retrieveAndClassify`), with `failureReason` restated per
+ §1.4b's corrected wording (no paywall/login-wall/JS-render claim — see §1.4b).
+ `classifyRetrievalOutcome.test.ts` already carries updated tests for this zero-length rule, with
+ zero-vs-nonzero-length fixtures replacing the old `MIN_CONTENT_LENGTH`-threshold ones, and no
+ remaining import of `MIN_CONTENT_LENGTH`. Both consumers' edits, and their tests, land together in
+ this slice because
  `recheckSourceArtifact.ts` (below), built in this same slice, is the split's first caller and
  must call `computeSourceResolution` directly (never `resolveSourceArtifact`) to avoid the
- CAS-defeating double-persist §1.4a documents.
+ CAS-defeating double-persist §1.4a documents. (3) **`02-ARCHITECTURE.md` §4.8's SOL-MEDIUM-1 fix,
+ canonical source identity/fingerprint** — `computeSourceResolution` additionally populates
+ `canonicalUrl` (for `type === 'url'` sources only, derived from `FetchResult.finalUrl` (§4.6a,
+ C2-S1) via the shared `canonicalizeUrl` helper (`src/services/sourceCanonicalization.ts`, above);
+ `null` otherwise) and `resolvedContentHash` (a SHA-256 hex digest of
+ `resolvedContent`, any type, whenever the resolution is `'content-retrieved'`; `null` otherwise)
+ on its returned shape; both `resolveSourceArtifact`'s existing `persistResolution` call and
+ `recheckSourceArtifact`'s own compare-and-set `UPDATE` (below) persist these two additive fields
+ alongside the existing ones — no new write path.
+- `src/services/classifyRetrievalOutcome.ts` — **already edited on this branch, verified against
+ live source (2026-09-06)**, second real consumer of the deleted `MIN_CONTENT_LENGTH` constant
+ (§1.4b, above): its `'http-response'` 2xx branch's check is `bodyLength === 0`
+ (`classifyRetrievalOutcome.ts:65`), with no import of `MIN_CONTENT_LENGTH` from
+ `resolveSourceArtifact.ts` remaining; `failureReason` restated per §1.4b's corrected wording (no
+ paywall/login-wall/JS-render claim).
+- `src/services/classifyRetrievalOutcome.test.ts` — **already edited**, updated fixtures/assertions
+ for the zero-length rule, with the old `MIN_CONTENT_LENGTH`-threshold fixtures and the now-dead
+ import already gone.
 - `src/services/getInvestigationWorkspace.ts` (new) — steps 1, 2, and 6 of §4.4's assembly built for
  real: step 1 `getInvestigation`; step 2 the real `generation_run`/`generation_step`/
  `web_search_query`/`web_search_result`/`query_limitation` join query,
@@ -384,8 +490,10 @@ including its full provenance fields, is never under-reported).
  `02-ARCHITECTURE.md` §1.4a's re-check status-branch rule — calls `computeSourceResolution` (NEVER
  `resolveSourceArtifact`, per §1.4a — calling the persisting function here would clobber this
  call's own CAS guard columns before the guard evaluates) against exactly one `source_artifact`
- row, then persists the computed result itself via the single guarded `UPDATE` §1.4a specifies,
- then reads the Investigation's current persisted `status`. **If,
+ row, then persists the computed result itself via the single guarded `UPDATE` §1.4a specifies —
+ gated on, and incrementing, migration `013`'s `resolution_revision` column (§1.4a SOL-MEDIUM-2 fix),
+ alongside the existing `resolution_status`/`resolution_resolved_at` equality checks — then reads
+ the Investigation's current persisted `status`. **If,
  and only if, `status === 'blocked'`**, it re-reads the full source set to recompute
  `allUnreachable` and, **if `allUnreachable` is false** (at least one source across the whole
  Investigation is now reachable/resolved
@@ -411,6 +519,18 @@ including its full provenance fields, is never under-reported).
  display only; `GenerateButton` itself is built and wired in C2-S3, which owns this file's
  completion).
 - `src/client/components/OutcomeStatusPanel/BlockedSourcesPanel.tsx` (new — renders each unreachable source with its real `failureReason` (US-5 AC2), a real `AddSourceInline` instance for adding another source, and its own per-source "Re-check this source" control calling `recheckSourceArtifact(sourceArtifactId)` (US-5 AC4, `03-UI-SPEC.md` § Interactions, Outcome/Status Panel — Blocked row) and re-fetching the workspace on completion).
+- `src/client/components/SourceListPanel.tsx` (new, SOL-HIGH-3 fix — relocated from C2-S1's own
+ Browser Demonstration, which had no UI capable of rendering it) — a small, always-mounted list
+ rendering each of `investigation.sources`' real `raw`/`type` alongside a human-readable label for
+ its persisted `resolutionStatus` (e.g. "Content retrieved" for `'content-retrieved'`,
+ "Unreachable" for `'unreachable'`, "No content" for `'reachable-no-content'`) — never a raw enum
+ value. Rendered in the Investigation Header region for every workspace state (Open/Eligible,
+ Blocked, and beyond), not gated on any particular `investigation.status`; for the `'blocked'`
+ state this is in addition to, not a replacement for, `BlockedSourcesPanel`'s own richer
+ per-unreachable-source `failureReason`/re-check-control rendering — `SourceListPanel` is the one
+ place EVERY source's own resolved status is visible regardless of outcome state, including a
+ `'content-retrieved'` source in the ordinary Open/Eligible case, which no other component in this
+ checkpoint renders.
 - `src/client/components/AddSourceInline.tsx` (new — its OWN small
  form component, calling `addSourcesToInvestigation(investigationId, artifacts)` (§5.2) — a thin
  wrapper that always supplies `investigationId` to the EXISTING, extended
@@ -595,6 +715,19 @@ including its full provenance fields, is never under-reported).
  split, `resolveSourceArtifact`'s own internal `persistResolution` call would make both calls
  write unconditionally before either CAS guard evaluates, so this test would previously observe
  TWO writes and a `rowCount` outcome that does not correspond to "one real winner."
+- [ ] **New, required — CAS guard identifies a single winner even under an identical-millisecond,
+ identical-status collision (§1.4a SOL-MEDIUM-2 fix, `resolution_revision`)**: two real, concurrently
+ issued `recheckSourceArtifact` calls against the same `'unreachable'` row, both resolving to the
+ SAME `resolution_status` (test-forced to collide within the same `resolution_resolved_at`
+ millisecond — e.g. a frozen/mocked clock shared by both calls, so `resolution_resolved_at` is
+ byte-identical for both and cannot itself distinguish a winner) — the exact case
+ `resolution_resolved_at` alone cannot resolve. Asserts exactly one call's `UPDATE` reports
+ `rowCount === 1` and the other reports `rowCount === 0`, unambiguously, every run (not flaky/
+ order-dependent); re-reading the row directly confirms `resolution_revision` advanced by exactly
+ 1, not 2; asserts the loser's response reflects the row's real current (winner's) state, never a
+ stale value. This is the direct regression test for the gap `02-ARCHITECTURE.md` §1.4a previously
+ documented as unresolved and this roadmap's own prior test (above) did not actually cover, since
+ it relied on natural non-colliding timestamps rather than forcing the collision.
 - [ ] **New, required — blank/whitespace-only text does not resolve `'content-retrieved'`
  (§1.4b, closes the Finding-2 defect).** A `source_artifact` seeded/submitted with `type: 'text'`
  and `raw: '   '` (or any string that trims to zero length) resolves to
@@ -602,6 +735,14 @@ including its full provenance fields, is never under-reported).
  `resolveSourceArtifact` (normal add-source path) and `computeSourceResolution` called directly.
  A paired positive test confirms non-blank `type: 'text'` content still resolves
  `'content-retrieved'` exactly as before (no regression to the ordinary case).
+- [ ] **New, required — canonical identity/fingerprint computed at resolution time (§4.8 SOL-MEDIUM-1
+ fix)**: a `type: 'url'` source resolving through a redirect persists `canonical_url` derived from
+ the FINAL post-redirect URL, normalized (case/scheme/trailing-slash/tracking-params), not the
+ originally-submitted URL; a `type: 'text'` source never gets a `canonical_url` (stays `NULL`); any
+ `'content-retrieved'` source (either type) persists `resolved_content_hash` as a real SHA-256
+ digest of its `resolved_content`; a non-`'content-retrieved'` outcome leaves both columns `NULL`.
+ Exercised via both `resolveSourceArtifact` (normal add-source path) and `recheckSourceArtifact`
+ (re-check path), confirming both persist the same two fields via their own respective writes.
 - [ ] `POST /api/source-artifacts/:id/recheck`: 200 with real read-back
  `{ sourceArtifactId, resolutionStatus, investigationStatus }`; 404 for a nonexistent id; 409
  `RecheckNotEligibleResponseBody` for a source whose persisted `resolution_status` is not
@@ -612,9 +753,20 @@ including its full provenance fields, is never under-reported).
  seeded `'reachable-no-content'` source (its `noContentReason` present and rendered) alongside
  an `'unreachable'` one; assert NO "Re-check this source" control renders for the
  `'reachable-no-content'` row, while the `'unreachable'` row's own control still renders.
+- [ ] **New, required — `SourceListPanel` renders every `resolutionStatus` (SOL-HIGH-3 fix)**: seed an
+ Investigation with one `'content-retrieved'`, one `'unreachable'`, and one
+ `'reachable-no-content'` source; assert `SourceListPanel` renders a distinct, correctly-labeled
+ row for each, including the `'content-retrieved'` row (the case no other component in this
+ checkpoint renders).
 - [ ] Frank forge-gate: PASS.
 
 **Browser Demonstration (required — real, rendered screen, real clicks, real persisted data):**
+- **SOL-HIGH-3 fix, relocated from C2-S1:** from an eligible Open workspace produced by submitting a
+ real, genuinely reachable `url`-type source (C2-S1's fix), confirm on the actual rendered screen
+ that `SourceListPanel` shows that source's row labeled with its real persisted `resolutionStatus`
+ — `content-retrieved` — via the actual rendered result, not inferred from an API response alone.
+ This is the earliest point in the roadmap with UI capable of rendering an individual source's own
+ resolved status; C2-S1's Browser Demonstration only confirms the Investigation is not Blocked.
 - Submit a source set that resolves entirely unreachable (real unreachable hosts, not mocked) via
  `StartInvestigationForm` on the Problem Department overview. Confirm the browser navigates to
  `/departments/problem-department/investigations/{id}` and the Blocked panel shows each source's
@@ -658,7 +810,9 @@ including its full provenance fields, is never under-reported).
  honestly with its full real provenance fields; adding a source never silently overwrites an
  already-resolved sibling source's persisted state, and intentional single-source re-check via
  the explicit "Re-check this source" control works end to end. **US-5 AC3 is NOT claimed
- complete by this slice alone — see C2-S3.**
+ complete by this slice alone — see C2-S3.** `SourceListPanel` renders every source's real
+ `resolutionStatus`, including `'content-retrieved'`, closing the gap C2-S1's own Browser
+ Demonstration could not close on its own (SOL-HIGH-3 fix).
 
 ---
 
@@ -670,10 +824,9 @@ completes — so honest polling can genuinely observe a real in-progress run bef
 generation finishes; a genuinely stalled or interrupted run is detected and disclosed as a distinct
 state, never silently indistinguishable from a healthy one; a Generation-Failed run
 can be retried; the Blocked-recovery path delivered in C2-S2 now actually re-triggers real
-generation (US-8, and — jointly with C2-S2 — the full clickable demonstration of US-5 AC3); and the revised, tightened Generation Eligibility Rule's evidence-gated `'brief-generated'`
-branch (US-13) is built against `hasEligibleNewEvidenceSinceCurrentBriefVersion` (replacing
-the prior draft's bare timestamp comparison with the real
-resolution-status/consumed-evidence check) and independently service-tested against a real
+generation (US-8, and — jointly with C2-S2 — the full clickable demonstration of US-5 AC3); and the tightened Generation Eligibility Rule's evidence-gated `'brief-generated'`
+branch (US-13) is built against `hasEligibleNewEvidenceSinceCurrentBriefVersion` (a real
+resolution-status/consumed-evidence check, not a bare timestamp comparison) and independently service-tested against a real
 `BriefVersion` this slice's own demonstration produces. This slice also owns the real-run
 measurement required before `POLL_INTERVAL_MS`/`STALE_THRESHOLD_MS` are
 derived (`01-REQUIREMENTS.md` Non-Functional Requirements, `02-ARCHITECTURE.md` §4.9) — this is the
@@ -792,10 +945,13 @@ C2-S4/C2-S5's scope).
  `source_artifact.resolution_status` (excludes unreachable/unresolved/empty in one column check)
  and anti-joining against the new `generation_run_consumed_source` table (migration `012`, this
  slice — the real per-run record of exactly which `source_artifact` rows the current
- `BriefVersion`'s producing `GenerationRun` actually read), both by `source_artifact.id` (excludes
- already-reflected-in-the-current-Brief) and by trimmed `raw` content equality against every
- consumed row's own `raw` (excludes duplicate-of-consumed under a newly-submitted, distinctly-`id`d
- row) — no coupling to `submitSources`/`resolveInvestigationSources`; wired into
+ `BriefVersion`'s producing `GenerationRun` actually read), by `source_artifact.id` (excludes
+ already-reflected-in-the-current-Brief), by trimmed `raw` content equality against every consumed
+ row's own `raw` (excludes duplicate-of-consumed under a newly-submitted, distinctly-`id`d row),
+ AND by the `canonical_url`/`resolved_content_hash` columns C2-S2's migration `013` added (§4.8
+ SOL-MEDIUM-1 fix — excludes a redirect/normalization/tracking-parameter variant of an already-consumed
+ URL, and a cross-URL or url/text pair resolving to byte-identical content, neither of which the
+ `trim(raw)` check alone catches) — no coupling to `submitSources`/`resolveInvestigationSources`; wired into
  `InvestigationWorkspaceView.newEvidenceSinceCurrentBriefVersion` and into `generationEligible`'s
  `'brief-generated'` branch;
  (c) wire the real, derived `STALE_THRESHOLD_MS` into `computeLivenessState`'s (defined and
@@ -816,7 +972,9 @@ C2-S4/C2-S5's scope).
  - `recordGenerationStep` and `finalizeGenerationRun` each gain a required `fenceToken: number`
  field on their existing single object parameter (object parameter, not positional — matching
  this file's existing convention). `recordGenerationStep`'s `INSERT` is preceded by a guarded
- `UPDATE generation_run SET lease_heartbeat_at = now() WHERE id = $1 AND fence_token = $2`; a
+ `UPDATE generation_run SET lease_heartbeat_at = now(), heartbeat_revision = heartbeat_revision + 1
+ WHERE id = $1 AND fence_token = $2` (SOL-HIGH-1 fix — the same `UPDATE` also advances
+ `heartbeat_revision`, the abandon flow's CAS counter, migration `009` column, C2-S2); a
  `rowCount === 0` result is a silent no-op (no `GenerationStep` is inserted) — the caller has been
  fenced out. `finalizeGenerationRun`'s `SELECT`-then-`UPDATE` is replaced with a single atomic
  `UPDATE... WHERE id = $1 AND outcome = 'in-progress' AND fence_token = $7 RETURNING
@@ -851,6 +1009,110 @@ C2-S4/C2-S5's scope).
  (extends `Error`, carries `generationRunId`); this new error class is added to both the
  `:681-684` inner catch's and the `:700-707` outer catch's rethrow-without-refinalizing lists
  (§1.6) — mechanism (a), not (b).
+- `src/services/provenanceRecorder.ts` — same file, `recordGenerationStep`'s signature gains an
+ optional `client?: PoolClient` field, matching
+ `finalizeGenerationRun`'s existing optional-client convention exactly — both the abandon flow
+ (below) and `attemptGenerationFailedTransition`'s wrapper (below) call `recordGenerationStep` from
+ inside a caller-owned transaction and need to run on that transaction's own client, which the
+ function's typed signature did not previously accept (`02-ARCHITECTURE.md` §1.6).
+- `src/services/provenanceRecorder.ts` — same file, new export `assertFenceOwnership(client:
+ PoolClient, generationRunId: string, fenceToken: number): Promise<void>` (`02-ARCHITECTURE.md`
+ §1.6, SOL-HIGH-2 fix): `SELECT fence_token, outcome FROM generation_run WHERE id = $1 FOR
+ UPDATE`, throws the new `GenerationRunFencedOutError` (extends `Error`, carries `generationRunId`)
+ when the row is missing, its `fence_token` no longer matches, OR its `outcome` is no longer
+ `'in-progress'` (SOL-HIGH-2 fix — outcome, not id/token alone: a run finalized via
+ `finalizeGenerationRun` without its `fence_token` ever changing must still fail this guard). This
+ closes the retry-consumption race §1.6 documents: without it, a fenced-out or already-terminal
+ run's evidence/claim/search/ledger writes remain readable by a subsequent retry even though they
+ are individually "accretive."
+- `src/services/generateBriefVersion.ts` — same file, further edit (SOL-HIGH-2 fix, §1.6):
+ `attemptGenerationFailedTransition` (`:263-267`) now opens its own short-lived transaction that
+ FIRST issues `SELECT id FROM investigation WHERE id = $1 FOR UPDATE` (lock-order fix —
+ matches Phase 4's own investigation-before-generation_run order,
+ `generateBriefVersion.ts:552` then `:677`, and the abandon flow's corrected order below, so no two
+ transactions in this file ever lock these two tables in opposite orders), THEN calls
+ `assertFenceOwnership` (which locks `generation_run FOR UPDATE`), and performs its `generation_step`
+ write and `transitionInvestigationStatus` call inside that same transaction, committing together — this closes
+ the one write path that was genuinely unfenced, and it is directly observable via
+ `getProblemDepartmentOverview.ts`/`InvestigationPortfolioTable.tsx` (a stale, fenced-out run's
+ late `'generation-failed'` write must never publish over a currently-healthy Investigation).
+ `GenerationRunFencedOutError` is added to the file's `:700-707` outer catch alongside its existing
+ handled classes, mapped to the same silent-stop disposition as `GenerationRunAlreadyFinalizedError`
+ — caught, logged, and treated as "this run has been superseded, stop attempting further writes,"
+ never rethrown to the fire-and-forget caller's own safety net above.
+- `src/web/apiRoutes.ts` — same file, `abandonGenerationRun` edit (SOL-HIGH-2 fix, §1.6 abandon-flow
+ atomicity): steps 4 (fence-token increment), 5 (the abandonment `GenerationStep` write and
+ `finalizeGenerationRun` call), and 6 (the non-correction `transitionInvestigationStatus` call) now
+ execute inside ONE transaction, committing together — not as
+ separate calls with an open commit boundary between them. This closes the interleaving gap where a
+ replacement `GenerationRun` could otherwise be created and even complete
+ between the old run's finalization and the Investigation's status transition, causing a
+ currently-healthy Investigation to be incorrectly marked `'generation-failed'`.
+ **Lock-order fix:** this transaction's FIRST statement is
+ `SELECT id FROM investigation WHERE id = $1 FOR UPDATE`, acquired BEFORE step 4's
+ fence-increment `UPDATE` on `generation_run` — locking `investigation` before `generation_run`, the
+ reverse order would deadlock against Phase 4's own `investigation`-then-`generation_run` order (`generateBriefVersion.ts:552`
+ then `:677`) and of the corrected `attemptGenerationFailedTransition` order above — a real
+ Postgres deadlock (`40P01`) hazard under concurrent contention that this fix closes. Proven by the
+ new two-real-connection test below, not merely argued.
+- `src/services/extractClaimsAndEvidence.ts` — same file, further edit (SOL-HIGH-2 fencing,
+ restructured per SELF-3's transaction-scoping correction, §1.6): the function now accepts
+ `{ generationRunId, fenceToken }`. Live `extractClaimsAndEvidenceForSourceArtifacts` opens ONE
+ transaction and takes its advisory lock BEFORE the LLM call (`client.query('BEGIN')` then
+ `pg_advisory_xact_lock`, both ahead of `callForcedTool`) — adding `assertFenceOwnership` as that
+ same transaction's first statement, as the general rule elsewhere in this checkpoint states, would
+ hold the `generation_run` row lock across the entire LLM call, blocking a concurrent abandon
+ attempt for that duration. This function's own edit is therefore NOT "add `assertFenceOwnership`
+ as the transaction's first statement," and it is also NOT a two-transaction split — that would
+ release the advisory lock at the first transaction's `COMMIT`, before the second transaction's
+ `claim_version` inserts run, reopening the exact same-`version_number` race F-2's advisory lock
+ exists to prevent (the SAME single transaction is what lets the lock cover the whole read-through-
+ insert window, uninterrupted). The fix keeps the existing single transaction and its existing
+ boundaries completely unchanged (`BEGIN` → advisory lock → `getExistingClaimsForInvestigation` →
+ `callForcedTool` → `COMMIT`), inserting exactly one new statement — `assertFenceOwnership(client,
+ generationRunId, fenceToken)` — positioned immediately AFTER `callForcedTool` returns and
+ immediately BEFORE the first `evidence_item`/`claim`/`claim_version` `INSERT`. The
+ `generation_run` row lock this guard acquires is therefore held only from that point through
+ `COMMIT` (milliseconds), never across the LLM call, closing the abandon-blocking problem without
+ touching the advisory lock's acquisition, scope, or release point at all. `extractClaimsAndEvidence`
+ (the wrapper) is unaffected beyond threading the new parameters through.
+ The existing F-2 race regression test (`extractClaimsAndEvidence.mocked.test.ts:406-...`, using the
+ `__setF2RaceDelayForTests` hook) must continue to pass UNMODIFIED under this design: the advisory
+ lock's coverage of the read-through-insert window is unchanged, so two concurrent runs racing on
+ the same existing claim still cannot both compute and insert the same `version_number`.
+- `src/services/extractClaimsAndEvidence.ts` — same file, further edit (SELF-4 fix, §4.8):
+ `extractClaimsAndEvidenceForSourceArtifacts` gains the identical additive return field
+ `extractClaimsAndEvidence` already has, `usableSourceIds: string[]`, populated from its own
+ already-computed `knownSourceIds` (`usableSources.map((s) => s.id)`) — no new computation.
+- `src/services/landscapeResearcher.ts` — edit (SOL-HIGH-2 fencing / SELF-4 ledger union):
+ `extractClaimsAndEvidenceForSourceArtifacts` (`:272`) receives `{ generationRunId, fenceToken }`
+ and applies the identical single-transaction, guard-called-immediately-before-the-final-inserts
+ pattern above (same function body as the primary path) for its own
+ `evidence_item`/`claim`/`claim_version` inserts, independent of the primary
+ `extractClaimsAndEvidence` call above; its return value (including the new `usableSourceIds`
+ field above) is passed back up to `generateBriefVersion.ts` unchanged, for the union fix below.
+- `src/services/sourceCanonicalization.ts` — imported here (defined C2-S2), not re-implemented.
+- `src/services/searchWeb.ts` — edit (SOL-HIGH-2 fencing + SOL-MEDIUM-1 canonical identity): accepts
+ `{ generationRunId, fenceToken }`, threaded from `landscapeResearcher.ts:260`; wraps its four
+ writes (`web_search_query`, `query_limitation`, `source_artifact`, `web_search_result`) in one
+ transaction per search call, calling `assertFenceOwnership` once at the top before any of the four
+ `INSERT`s. **Also, same edit pass (SOL-MEDIUM-1 fix, §4.8):** `retrieveAndClassify`'s
+ `RetrievedClassification` gains a `finalUrl` field (from `fetchWithGuards`'s own `finalUrl`,
+ C2-S1); before its `INSERT INTO source_artifact` (`:247`), computes `canonicalUrl` (via
+ `canonicalizeUrl(finalUrl)`, C2-S2) and `resolvedContentHash` (SHA-256 of `resolvedContent`, same
+ computation `computeSourceResolution` uses) and extends that `INSERT`'s column list with
+ `canonical_url, resolved_content_hash` — closing the third of SOL-MEDIUM-1's three write paths
+ (`resolveSourceArtifact`'s `persistResolution`, `recheckSourceArtifact`'s `UPDATE`, and now this
+ direct insert), each of which previously left landscape-research-origin rows with permanently
+ `NULL` canonical identity.
+- `src/services/generateBriefVersion.ts` — same file, further edit (SOL-HIGH-2/SELF-4): the
+ `generation_run_consumed_source` ledger `INSERT` at `:479` (Phase 3 check 1(c)) is wrapped in its
+ own transaction with `assertFenceOwnership` called first, using the run's own `fenceToken`
+ captured at Phase 1. **Its input is also corrected (SELF-4 fix, §4.8): `consideredSourceArtifactIds`
+ is now the UNION of the primary Extraction's `usableSourceIds` (captured at `:333`) and Landscape
+ Research's own `usableSourceIds` (captured at `:393`, from the edit above) — not the primary set
+ alone; both origins must be ledgered. A source incorporated only through landscape research correctly gets its
+ own ledger row and cannot later be resubmitted as new.**
 - `src/client/screens/InvestigationWorkspaceScreen.tsx` — edit: add polling `useEffect` keyed on
  `workspace.latestGenerationRun?.livenessState === 'active'` (polling at an interval governed by `POLL_INTERVAL_MS` —
  engineering-owned, derived during THIS slice's implementation from real measured generation
@@ -1105,6 +1367,15 @@ C2-S4/C2-S5's scope).
  (trimmed) `raw` duplicates a source already consumed by the current `BriefVersion`'s evidence
  chain, even as a distinct `Source` row; `true` given a real, genuinely new, `content-retrieved`
  source not already consumed — real seeded rows against real tables, not mocked.
+- [ ] **New, required — canonical-identity/fingerprint dedup (§4.8 SOL-MEDIUM-1 fix)**: `false` for a
+ newly-submitted `url` source whose `canonical_url` (post-redirect, normalized) matches an
+ already-consumed source's `canonical_url` even though its raw submitted text differs (e.g. a
+ tracking-parameter or trailing-slash variant, or a redirect to an already-consumed URL); `false`
+ for a newly-submitted source (any type) whose `resolved_content_hash` matches an already-consumed
+ source's hash even though the two are different `type`s or textually different URLs; a paired
+ positive test confirms a genuinely new source with a distinct `canonical_url` and
+ `resolved_content_hash` still registers `true` — real seeded rows, not mocked, exercising the
+ query's `canonical_url`/`resolved_content_hash` anti-joins directly.
 - [ ] **New, required — mid-run over/under-recording guard, ledgered against Extraction's own real
  read set (§4.8), not a `started_at` boundary**: a real source resolved to `content-retrieved`
  with `resolution_resolved_at` AFTER `generateBriefVersion`'s own Extraction step has already
@@ -1168,6 +1439,103 @@ C2-S4/C2-S5's scope).
  second time for this run (no re-finalization, no re-recorded `'generation-failed'` step); and
  assert the run's final persisted `outcome` remains `'failed'` (the abandon's own write), never
  overwritten by the would-have-succeeded pipeline.
+- [ ] **New, required — heartbeat-versus-abandonment race (`02-ARCHITECTURE.md` §1.6 step 3/4,
+ SOL-HIGH-1 fix)**: seed a real run classified `'stale-or-interrupted'` at the moment
+ `abandonGenerationRun`'s step 3 reads it; then, before step 4's guarded `UPDATE` fires, commit a
+ real `recordGenerationStep` call for the same `generationRunId` (renewing `lease_heartbeat_at` AND
+ incrementing `heartbeat_revision` — simulating the run resuming between classification and
+ authorization); assert the abandon call is rejected `409
+ AbandonGenerationRunNotEligibleResponseBody`, and assert `GenerationStep[]` for this run contains
+ NO step with `component: 'Operator abandonment'`. This specifically exercises the
+ `heartbeat_revision` clause added to step 4's guarded `UPDATE` — a fence-token-only guard would
+ not catch this case. **Also required (SOL-HIGH-1 fix regression, precision/collision proof)**: a
+ direct test against a real Postgres connection asserting `heartbeat_revision` never
+ false-positives/false-negatives under ordinary `TIMESTAMPTZ` round-tripping — two immediate-
+ succession reads with no intervening write compare `heartbeat_revision` equal; two immediate-
+ succession real `recordGenerationStep` renewals advance it by exactly 2, never comparing falsely
+ equal — proving the integer counter does not inherit the precision-mismatch failure mode the prior
+ `lease_heartbeat_at`-equality draft had.
+- [ ] **New, required — fenced-out pre-Phase-4 writes never persist (`02-ARCHITECTURE.md` §1.6,
+ SOL-HIGH-2 fix, `assertFenceOwnership`)**: for each of `extractClaimsAndEvidence`,
+ `extractClaimsAndEvidenceForSourceArtifacts`, `searchWeb`'s four writes, and the
+ `generation_run_consumed_source` ledger insert — seed a real in-progress run, abandon it (real
+ `fence_token` increment via `abandonGenerationRun`), then call the write path directly with the
+ run's original, now-stale `fenceToken`; assert `assertFenceOwnership` throws
+ `GenerationRunFencedOutError`, the call's own transaction rolls back, and no row is persisted to
+ any of that path's tables for this run. **Also required (SOL-HIGH-2 fix, outcome check)**: seed a
+ run that reaches a real terminal outcome via legitimate `finalizeGenerationRun` (its `fence_token`
+ never changes), then call any pre-Phase-4 write path with that run's own, still-matching
+ `fenceToken`; assert `assertFenceOwnership` still throws `GenerationRunFencedOutError` (the
+ `outcome !== 'in-progress'` branch, distinct from a token mismatch) and no row persists.
+- [ ] **New, required — concurrent abandon does not block on an in-flight extraction LLM call
+ (`02-ARCHITECTURE.md` §1.6, SELF-3 transaction-scoping fix)**: using a test double/fake for
+ `callForcedTool` that blocks on a controllable gate (never a real network wait), start a real
+ `extractClaimsAndEvidenceForSourceArtifacts` call for a seeded in-progress run and let it reach
+ the gated LLM call — the single transaction is open and the advisory lock is held at this point,
+ but `assertFenceOwnership` has not yet run (it is called only after the LLM call returns, per the
+ corrected design), so the `generation_run` row itself is NOT locked; from a second connection,
+ concurrently call `abandonGenerationRun` for the same run and assert it completes (its own
+ `fence_token`/`heartbeat_revision`-guarded `UPDATE` succeeds and the run finalizes `'failed'`)
+ WHILE the gated LLM call is still held open (the gate has not yet been released) — proving
+ structurally, via the corrected guard-placement itself, that the abandon path never contends with
+ the still-blocked extraction call's `generation_run` row, not via any timing assertion; only then
+ release the gate and assert the now-fenced-out extraction call's own `assertFenceOwnership` call
+ (running immediately before its `INSERT`s, inside the same single transaction) throws
+ `GenerationRunFencedOutError` and the transaction rolls back, persisting no
+ `evidence_item`/`claim`/`claim_version` rows. This is the regression test for the undisclosed hang
+ the original, guard-called-at-`BEGIN` draft would have caused; it remains valid under the
+ corrected single-transaction design because the guard's row lock is acquired only in the narrow
+ post-LLM-call window, never spanning the LLM call itself, exactly as it was under the (incorrect)
+ two-transaction draft this fixes — the difference is that the guard now runs as a later statement
+ in the SAME transaction rather than as the first statement of a second one.
+- [ ] **New, required — `attemptGenerationFailedTransition` fencing, in BOTH read models
+ (`02-ARCHITECTURE.md` §1.6, SOL-HIGH-2 fix)**: seed an in-progress run, abandon it, start and let a
+ real replacement run succeed to `'brief-generated'`, then invoke
+ `attemptGenerationFailedTransition` directly with the original run's stale `fenceToken`; assert it
+ throws/no-ops, `investigation.status` is unchanged, `getInvestigationWorkspace` never reports
+ `'generation-failed'` for this Investigation, AND `getProblemDepartmentOverview`'s own
+ `investigations[]` row independently reports the real `'brief-generated'` status — proven against
+ both read models, not merely one and inferred for the other.
+- [ ] **New, required — abandon-flow atomicity closes the replacement-run interleaving gap
+ (`02-ARCHITECTURE.md` §1.6, SOL-HIGH-2 fix)**: using a test-only transaction-boundary hook (not a real
+ network race), pause `abandonGenerationRun`'s steps 4-6 transaction after step 4's fence-increment
+ `UPDATE` but before commit; from a second connection, attempt to create a new `GenerationRun` for
+ the same Investigation and assert it cannot succeed until the paused transaction commits; once it
+ commits, assert the run's `'failed'` finalization and the Investigation's `'generation-failed'`
+ transition are both visible atomically — no read observes one without the other.
+- [ ] **New, required — lock order does not deadlock, real two-connection contention
+ (`02-ARCHITECTURE.md` §1.6/§3.1c)**: using two real, separate
+ database connections (no mocks, no hooks), hold `investigation FOR UPDATE` open on connection A
+ while driving the abandon flow's transaction on connection B against the same
+ Investigation/GenerationRun pair up to its own `investigation FOR UPDATE` acquisition (which must
+ block, not deadlock); then let connection A proceed to lock `generation_run FOR UPDATE` and
+ commit; assert connection B's transaction then completes and commits with no `40P01`
+ (`deadlock_detected`) error. Repeat with `attemptGenerationFailedTransition` on connection B in
+ place of the abandon flow. Both directions must lock `investigation` before `generation_run`,
+ matching Phase 4; this test proves no ordering inversion exists against a real Postgres instance,
+ not merely by inspection of the corrected text above.
+- [ ] **New, required — landscape ledger union (`02-ARCHITECTURE.md` §4.8, SELF-4 fix)**: run a
+ real generation that performs landscape research and incorporates ≥1 landscape-research-origin
+ source; assert that source has its own `generation_run_consumed_source` row
+ (`origin = 'landscape-research'`); then submit that exact URL as a new operator-submitted source
+ and assert `hasEligibleNewEvidenceSinceCurrentBriefVersion` correctly excludes it (by `raw`,
+ `canonical_url`, or `resolved_content_hash`) — proving a landscape-incorporated source cannot be
+ resubmitted as new.
+- [ ] **New, required — pre-migration null-identity backfill (`02-ARCHITECTURE.md` §4.8, SOL-MEDIUM-1
+ fix)**: seed a `source_artifact` row with `canonical_url`/`resolved_content_hash` both `NULL`
+ (simulating a pre-`013` row) and consume it via a real ledger entry; run migration `013`'s `resolved_content_hash` backfill statement and then
+ `backfill-013-canonical-url.ts`'s `canonical_url` backfill against it; assert a byte-identical or hash-identical resubmission is now correctly excluded
+ (`resolved_content_hash` backfill, no degraded case); assert a same-canonical-URL-different-
+ tracking-parameter resubmission is also correctly excluded (`canonical_url` backfill's
+ non-degraded case); and assert/document the disclosed degraded-case limitation for a
+ pre-migration row whose original `raw` was itself a redirect (its backfilled `canonical_url`
+ reflects the original, not final, URL) — proving the boundary is exactly what §4.8 discloses, not
+ wider.
+- [ ] **New, required — retry-consumption race closed end to end (`02-ARCHITECTURE.md` §1.6,
+ SOL-HIGH-2)**: seed a run, abandon it, attempt all three fenced-out write groups above using the
+ stale `fenceToken`, then run a real retry generation for the same Investigation; assert the
+ retry's resulting `BriefVersion` reflects none of the fenced-out run's attempted evidence, claims,
+ sources, or ledger rows — proves the race is closed, not merely that individual writes reject.
 - [ ] `getInvestigationWorkspace`: `generationRuns`/`latestGenerationRun`/`generationEligible`
  correctly reflect a real in-progress, succeeded, and failed run each; a `'generation-failed'`
  Investigation reports `generationEligible: true`; a `'brief-generated'` Investigation's
@@ -1569,11 +1937,13 @@ scopes).
 - `src/types/domain.ts` — **NO edit needed: `Decision`,
  `ReconsiderationCondition`, and `ReconsiderationConditionType` are already defined by C2-S2
  (moved there because C2-S2's own `WorkspaceDecisionSummary` needs `ReconsiderationConditionType`
- to exist first — a real forward-dependency sequencing bug the prior draft did not catch). This
+ to exist first — a real forward-dependency sequencing requirement). This
  slice's own work is the SERVICE logic (`recordDecision`, `getDecisionsForBriefVersion`) and the
  migration below that operate on those already-defined types — not their definition.**
 - `src/services/recordDecision.ts` (new) — exact contract per §4.3, including
- `WatchRequiresConditionError` and the whitespace-only-condition trim rule.
+ `WatchRequiresConditionError` and the whitespace-only-condition trim rule, AND (SOL-MEDIUM-5 fix)
+ `BriefVersionNotFoundError` — a same-transaction existence check on `briefVersionId`, performed
+ BEFORE any Watch-condition validation, throwing with zero writes on a miss.
 - `src/services/getDecisionsForBriefVersion.ts` (new) — exact contract per §4.5, **returning
  `DecisionWithResolvedConditions[]` — every reconsideration condition resolved to its
  real `type`/`otherTypeLabel`/`description`, never a bare `ReconsiderationCondition` id**, one
@@ -1581,7 +1951,8 @@ scopes).
 - `src/web/apiRoutes.ts` — new route: `POST /api/brief-versions/:briefVersionId/decisions` (exact
  contract per §3.1a — deliberately not nested under `/investigations/:id`; request body
  `SubmitDecisionRequestBody`; 201 response body is the persisted `Decision` verbatim; 400
- `invalid-request`, 404 `brief-version-not-found`, 422 `watch-requires-condition`).
+ `invalid-request`, 404 `brief-version-not-found` (SOL-MEDIUM-5 fix — catches
+ `BriefVersionNotFoundError` and maps it 1:1), 422 `watch-requires-condition`).
 - `src/services/getInvestigationWorkspace.ts` — edit: add step 4 of §4.4 — real
  `getDecisionsForBriefVersion` union across all `briefs`, **populating `decisionLineage` (Finding
  6 — was `decisions`; the whole-Investigation chronological view, `decidedAt` ASC, each entry
@@ -1621,10 +1992,27 @@ scopes).
 - `src/client/screens/InvestigationWorkspaceScreen.tsx` — edit: render region 5 once ≥1
  `BriefVersion` exists; wire `decisionSubmission` state (§5.2); decision controls act on whichever
  version (current or prior, reached via C2-S4's versioned route) is currently on screen.
+ **SOL-MEDIUM-4 fix (Sol cold-review) — this file owns the two-refetch mechanism `03-UI-SPEC.md`
+ §"SOL-MEDIUM-4 fix — exact refetch mechanism" already specifies in full: on the `201` response from
+ `submitDecision`, `InvestigationWorkspaceScreen`'s own `onSubmitted` handler issues BOTH a real
+ `GET.../workspace` refetch (updates `decisionLineage`) AND a real
+ `GET.../brief-versions/by-version/:versionNumber` refetch for the exact `versionNumber` currently
+ on screen (updates `priorDecisions`), synchronously from the same handler, before either list
+ re-renders — never a client-side optimistic append of the new `Decision` to either in-memory list,
+ and never gated behind a navigation or reload. This is this slice's own file responsibility, named
+ explicitly here rather than left implicit in "wire `decisionSubmission` state" above (SOL finding:
+ both lists must re-fetch independent of a subsequent reload).**
 
 **Implementation Notes:**
 - Watch requires ≥1 non-whitespace reconsideration condition, enforced both client-side and
- server-side — validation runs before the insert transaction opens.
+ server-side. **SELF-2 — server-side ordering, stated once, matching
+ `02-ARCHITECTURE.md` §4.3 exactly: `recordDecision` opens its transaction FIRST, checks
+ `briefVersionId` existence inside that transaction (404 on miss, zero writes), THEN validates the
+ Watch ≥1-condition rule inside that SAME open transaction (422 on miss, zero writes), THEN inserts
+ and commits — Watch validation runs inside the already-open transaction, never before it opens.**
+ Malformed request-body shape (missing/invalid `decision` field, an
+ unrecognized `reconsiderationConditions[i].type`) remains a distinct, route-level 400 check before
+ `recordDecision` is ever called, entirely outside any transaction.
 - No `decidedBy`/actor field anywhere; UI copy uses "Your decision" only.
 - No Reopen control, button, or route exists anywhere in the rendered workspace after a Reject.
 - Multiple Decisions may exist per `briefVersionId`; history renders all of them, `decidedAt` ASC.
@@ -1643,6 +2031,15 @@ scopes).
 - [ ] `recordDecision`: persists Approve/Reject/Watch correctly; rejects zero-condition and
  whitespace-only-condition Watch attempts with no row written to either table (transaction
  rollback verified); never accepts a `decidedBy`-shaped input.
+- [ ] **New, required — nonexistent `briefVersionId` (SOL-MEDIUM-5 fix, §4.3)**: `recordDecision` called
+ with a `briefVersionId` that does not resolve to any `brief_version` row throws
+ `BriefVersionNotFoundError` with zero writes to either `decision` or `reconsideration_condition`
+ (asserted at the service level, direct DB read). A paired route-level test asserts `POST
+ /api/brief-versions/:briefVersionId/decisions` against the same nonexistent id responds `404
+ SubmitDecisionVersionNotFoundResponseBody`. A third test supplies BOTH a nonexistent
+ `briefVersionId` AND a zero-condition Watch in the same request, asserting the response is `404`
+ (existence checked first), never `422` — proving the ordering §4.3 specifies, not merely that
+ both errors exist independently.
 - [ ] `getDecisionsForBriefVersion`: returns `decidedAt` ASC; correctly aggregates resolved
  reconsideration-condition content (type/otherTypeLabel/description) without N+1 queries;
  **never returns a bare `ReconsiderationCondition` id in place of resolved content (Finding
@@ -1684,6 +2081,20 @@ scopes).
  version-reference navigation affordances (browser-demonstrated, not merely a unit assertion that a
  `<Link>` element exists) — this component no longer renders the
  `assignedState`/`isSuperseded` notice.
+- [ ] **New, required (SOL-MEDIUM-4 fix, Sol cold-review) — both refetches happen immediately after the
+ `201`, WITHOUT navigation or reload.** A client/browser test that: submits a real Decision via
+ `DecisionForm`'s real submit control against a real, persisted `BriefVersion`; intercepts/observes
+ the real network calls the client actually makes; asserts that BOTH a `GET.../workspace` call AND
+ a `GET.../brief-versions/by-version/:versionNumber` call for the on-screen version are made
+ immediately following the `201` response — before any navigation, reload, or subsequent user
+ action — and that `DecisionHistoryBanner`'s `priorDecisions` list and `decisionLineage` list both
+ render the new `Decision` only once their own respective GET response has returned (never before,
+ never via a client-side optimistic append that could show the decision before either real GET
+ completes). This is a stronger, distinct assertion from the existing reload-stability tests
+ elsewhere in this document, which only prove both lists are correct AFTER a reload — this test
+ proves they are correct WITHOUT one, closing the Sol cold-review finding that Forge could
+ otherwise satisfy every existing test in this document by fabricating or appending the entry
+ client-side and only truing it up on the next reload.
 - [ ] **New, required — `InvestigationIdentityHeader` binds its compact notice to the DISPLAYED
  version, not the current one**: given an Investigation
  with a superseded prior `BriefVersion` whose real, seeded `assignedState` is non-`'valid'`

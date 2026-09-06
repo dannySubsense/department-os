@@ -931,9 +931,36 @@ Disposition column above, not carried forward from either prior count.)
  produced zero extracted evidence, and deliberately NOT a second, independent `getInvestigation`
  read bounded by a timestamp comparison, which would leave a narrower timing gap open (§4.8) —
  followed by one standalone `INSERT INTO generation_run_consumed_source` per id in that set at
- `:479`, independent of any `GenerationStep` write. All six exception CATEGORIES are
- error-finalization/observability/audit-ledger plumbing, not pipeline logic — no phase's own order,
- inputs, or output changes in any case.
+ `:479`, independent of any `GenerationStep` write; and (7) **SELF-1 fix (self-discovered during a
+ correction pass, NOT a Sol cold-review finding) — the
+ fence-ownership/status-transaction correction (`02-ARCHITECTURE.md` §1.6, this checkpoint's own
+ SOL-HIGH-1/SOL-HIGH-2/SOL-MEDIUM-1 corrections)**: `02-ARCHITECTURE.md`'s corrected §1.6 requires wrapping
+ four existing internal write calls with `assertFenceOwnership`. `searchWeb`, the consumed-source
+ ledger `INSERT` (category (6) above), and `attemptGenerationFailedTransition`'s
+ `Investigation.status` write each get the guard as the first statement of a NEW, short-lived
+ transaction opened around that call's own writes — none of these span an LLM call. `extractClaimsAndEvidence` and
+ `landscapeResearcher`'s own `extractClaimsAndEvidenceForSourceArtifacts` call are the exception:
+ their LLM call requires the guard to be placed inside their EXISTING single transaction, called
+ after the LLM call returns and immediately before the first `INSERT`, not as that transaction's
+ first statement and not in a new, separately-opened transaction (`02-ARCHITECTURE.md` §1.6's
+ SELF-4 correction). It also requires `extractClaimsAndEvidenceForSourceArtifacts` and
+ `searchWeb` to each surface one additional additive field on their existing return types
+ (`usableSourceIds`, matching category (6)'s already-permitted field on `extractClaimsAndEvidence`;
+ `canonicalUrl`/`resolvedContentHash` computation on `searchWeb`'s own `source_artifact` insert,
+ matching `computeSourceResolution`'s already-in-scope §1.4a/§4.8 fields) and to compute/persist
+ canonical-identity fields on writes they already make. It also requires (cold Frank review
+ finding, this pass) `recordGenerationStep`'s own typed signature, in
+ `src/services/provenanceRecorder.ts`, to gain an optional `client?: PoolClient` field, matching the
+ same optional-client convention `finalizeGenerationRun` already has — both the abandon flow (§1.6
+ step 5) and `attemptGenerationFailedTransition`'s wrapper (this same category) call
+ `recordGenerationStep` from inside a caller-owned transaction and must run on that transaction's
+ own client, which the function's own signature did not previously accept. This permitted category is scoped EXACTLY
+ to that transactional/fencing wrapper, that one additive optional parameter, and those two additive return/persistence fields on the four
+ named call paths — it licenses no change to any phase's own order, any LLM prompt, or any
+ extraction/analysis/recommendation OUTPUT content; a fence-check failing still means "this run's
+ write is discarded," never "this run's write is computed differently." All seven exception
+ CATEGORIES are error-finalization/observability/audit-ledger/write-authorization plumbing, not
+ pipeline logic — no phase's own order, inputs, or output changes in any case.
 - **No fabricated numeric constants** — every predetermined number needs a citable precedent, an
  explicit PROVISIONAL-tag-with-named-owner, or deletion. This applies to the poll interval and the
  stale/interrupted threshold exactly as it applies to every other constant: neither is asserted as
@@ -999,7 +1026,7 @@ Disposition column above, not carried forward from either prior count.)
 - Assumes: `generateBriefVersion`, `submitSources`, and `transitionInvestigationStatus` remain
  correct and unmodified in their internal contracts except where this document's US-7/US-8 fixes
  require touching `ssrfGuardedFetch.ts` specifically (US-7), and except for `generateBriefVersion`'s
- own six named, additive exceptions above (the `onRunCreated` hook, the
+ own seven named, additive exceptions above (the `onRunCreated` hook, the
  `InvalidSupersedeTargetError` catch's added `recordGenerationStep` call, the
  `GenerationRunAlreadyFinalizedError` catch added at its eight finalization sites (`generateBriefVersion.ts:298,313,324,585,663,677,695,713`), the `GenerationRunLostFinalizationRaceError`
  class's addition to the `:681-684` inner catch's and `:700-707` outer catch's rethrow-without-
@@ -1008,10 +1035,16 @@ Disposition column above, not carried forward from either prior count.)
  by the eight-site figure above; named here as their own, fourth exception), the `fenceToken`
  threading across all eleven real `recordGenerationStep`-bearing progress-write call sites
  including inside `runStepWithProvenance` itself (§1.6, exception category (5) above,
- `src/services/provenanceRecorder.ts` also edited for this), and the `usableSourceIds`-derived
+ `src/services/provenanceRecorder.ts` also edited for this), the `usableSourceIds`-derived
  `consideredSourceArtifactIds`/`generation_run_consumed_source` ledger `INSERT` at `:479` (§4.8,
- exception category (6) above) — these are real, already-justified edits this document's own Out
- of Scope section now names, not a contradiction of this Assumes clause). `resolveInvestigationSources` is another real,
+ exception category (6) above), and the SELF-1 fence-ownership/status-transaction correction
+ (exception category (7) above — the guard-checked transactional wrapper around
+ `extractClaimsAndEvidence`, `landscapeResearcher`'s `extractClaimsAndEvidenceForSourceArtifacts`
+ call, `searchWeb`, the consumed-source ledger insert, and `attemptGenerationFailedTransition`'s
+ status write, plus the two additive return/persistence fields it requires on
+ `extractClaimsAndEvidenceForSourceArtifacts` and `searchWeb`) — these are real, already-justified
+ edits this document's own Out of Scope section now names, not a contradiction of this Assumes
+ clause). `resolveInvestigationSources` is another real,
  already-justified exception to this Assumes clause (`02-ARCHITECTURE.md` §1.4) — modified to skip already-resolved `source_artifact` rows rather than
  re-fetch every source on every call, a no-op for every call site except the Add-Source Connector's
  second-and-later calls against an Investigation with prior resolved sources — if downstream

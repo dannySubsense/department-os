@@ -11,10 +11,26 @@ import type { SchemaValidationAttempt } from '../types/domain.js';
  *  free-text drifts off-schema). */
 export const MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-5-20250929';
 
-/** R-4 (Danny, binding, Architecture §3/§4): at most one repair attempt, i.e. at most two total
- *  generation attempts per call (original + one repair). Configuration, not hardcoded per call
- *  site. */
+/** At most one repair attempt, i.e. at most two total generation attempts per call (original +
+ *  one repair). Configuration, not hardcoded per call site.
+ *
+ *  Ruled an engineering default, 2026-09-06 (DDR-0002 closure addendum) — no further sourcing
+ *  needed. A measurement attempt on 2026-09-05 found this pipeline's own schema-validation
+ *  attempt history empty (0 generation_run, 0 generation_step, 0 recorded attempts — a corpus
+ *  never written to, not a search that failed; artifact:
+ *  `docs/specs/problem-department-mvp/llm-constants-measurement.md`, query
+ *  `scripts/query-llm-attempt-history.sql`), which is what prompted the composer's ruling that one
+ *  retry before failing closed is a plain engineering choice rather than something requiring a
+ *  citation. */
 const MAX_REPAIR_ATTEMPTS = 1;
+
+/** Ruled an engineering default, 2026-09-06 (DDR-0002 closure addendum) — no further sourcing
+ *  needed. The same empty-corpus measurement above applies (no output-token distribution exists
+ *  to compare against 8192). The truncation this cap could previously cause is no longer silent —
+ *  see the `response.stop_reason === 'max_tokens'` check in `callForcedTool` below, which reports
+ *  this cap as truncation whenever it is hit, whether or not a (possibly incomplete) `tool_use`
+ *  block is present in the same response. */
+const MAX_OUTPUT_TOKENS = 8192;
 
 let cachedClient: Anthropic | null = null;
 
@@ -103,7 +119,7 @@ export async function callForcedTool<T>(
     const startedAt = new Date().toISOString();
     const response = await anthropic.messages.create({
       model: MODEL,
-      max_tokens: 8192,
+      max_tokens: MAX_OUTPUT_TOKENS,
       system: params.systemPrompt,
       messages: [{ role: 'user', content: userContent }],
       tools: [
@@ -124,9 +140,62 @@ export async function callForcedTool<T>(
       (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use',
     );
 
+    if (response.stop_reason === 'max_tokens') {
+      // The response was truncated at the token cap. This is checked BEFORE (and independent of)
+      // whether a `tool_use` block is present: a forced tool call can be cut off mid-generation
+      // either before any tool_use block is produced at all, or WHILE a tool_use block is being
+      // generated — in the latter case `toolUseBlock` is truthy but its `input` is partial/
+      // malformed JSON, which would otherwise be handed straight to `validate`, fail schema
+      // validation for a reason that has nothing to do with the model's actual output quality, and
+      // burn the one repair attempt while reporting a generic schema-validation error that hides
+      // the real cause (truncation). Reported as truncation in both cases.
+      lastRawOutput = toolUseBlock ? toolUseBlock.input : response.content;
+      lastError =
+        `model response was truncated at the ${MAX_OUTPUT_TOKENS}-token output cap` +
+        (toolUseBlock
+          ? ' while a tool_use block was still being generated (stop_reason: max_tokens) — the ' +
+            'tool call input is partial/malformed as a result'
+          : ' before a tool_use block could be produced (stop_reason: max_tokens)') +
+        ' — this is NOT a model refusal or schema failure, the response was cut off mid-generation';
+      const invalidAttempt: SchemaValidationAttempt = {
+        attemptNumber: attempt,
+        rawOutput: JSON.stringify(lastRawOutput),
+        valid: false,
+        validationError: lastError,
+        startedAt,
+        completedAt,
+        modelIdentifier: MODEL,
+        tokenUsage,
+      };
+      attemptHistory.push(invalidAttempt);
+      recordToolInvocation({
+        toolName: params.toolName,
+        startedAt,
+        completedAt,
+        modelIdentifier: MODEL,
+        attemptNumber: attempt,
+        rawOutput: lastRawOutput,
+        valid: false,
+        validationError: lastError,
+        tokenUsage,
+        callId,
+      });
+      continue;
+    }
+
     if (!toolUseBlock) {
+      // This call forces a single client tool via `tool_choice: { type: 'tool', ... }`, so per the
+      // SDK's own doc comment (`node_modules/@anthropic-ai/sdk/resources/messages/messages.d.ts`
+      // lines 722-738), a response containing the forced tool_use block is the normal, complete
+      // success path regardless of stop_reason. The `max_tokens` case is handled above, before this
+      // branch, independent of tool_use-block presence. Reaching this branch means no tool_use
+      // block was produced at all AND the response was not truncated at the token cap — every
+      // remaining possible `stop_reason` value (`pause_turn`, `refusal`, `stop_sequence`,
+      // `model_context_window_exceeded`, or even `end_turn`/`tool_use` on a malformed response) is
+      // a genuine failure to fulfil the forced tool call, and the real value must be preserved and
+      // reported — never collapsed into a generic message that discards it.
       lastRawOutput = response.content;
-      lastError = 'model response contained no tool_use block';
+      lastError = `model response contained no tool_use block (stop_reason: ${response.stop_reason})`;
       const invalidAttempt: SchemaValidationAttempt = {
         attemptNumber: attempt,
         rawOutput: JSON.stringify(lastRawOutput),

@@ -23,4 +23,18 @@ Each decision is a numbered markdown file: `DDR-NNNN-short-title.md`, using what
 
 ## Current decisions
 
-None yet. The first anticipated decision is the agent runtime selection, to be made through the practical vertical-slice evaluation described in [../architecture.md](../architecture.md) and [../milestones/problem-department-mvp.md](../milestones/problem-department-mvp.md).
+- **[DDR-0001-problem-department-runtime.md](DDR-0001-problem-department-runtime.md)** — Problem
+  Department MVP: Runtime & Storage Evaluation and Adoption. **Status: ACCEPTED.** Scoped to this
+  milestone's own implementation (Slice 1), not a permanent Department OS runtime/storage
+  selection — explicitly revisable by a future DDR as other modules bring their own requirements.
+- **[DDR-0002-constant-integrity-no-fourth-option.md](DDR-0002-constant-integrity-no-fourth-option.md)**
+  — Constant Integrity: No Fourth Option for Unsourced Numeric Constants. **Status: ACCEPTED.**
+  Danny confirmed both the rule and its Category B split directly, in this session
+  (2026-09-06, PR #12 recovery on `recovery/checkpoint-2-from-bfe41c4`), in response to being asked
+  explicitly whether he accepted DDR-0002's rule and the Category B classification of the five
+  infrastructure/operational-safety constants — his words: "I already said yes, bring it back."
+  The code-side dispositions the DDR describes (§ Interim disposition) are now APPLIED to live
+  `src/` on this branch, verified live: B3-B5 (`FETCH_TIMEOUT_MS`, `MAX_RESPONSE_BYTES`,
+  `MAX_REDIRECTS`) and A1 (`MIN_CONTENT_LENGTH`, deleted) — see that section's own disclosure note
+  for the exact verification detail. A2/A3 remain measured-but-unresolved, no owner, per the same
+  section.

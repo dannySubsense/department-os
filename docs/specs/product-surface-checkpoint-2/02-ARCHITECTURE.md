@@ -23,12 +23,12 @@ generation gap), and the wiring that makes all of the above reachable end-to-end
 This revision (2026-08-22 material scope correction) additionally designs the Slice 12
 validity/invalidation service and browser-visible decision history (US-12) and the scoped,
 evidence-driven resubmission correction path (US-13) — both restored to this checkpoint's scope by
-Danny's ruling on the two Open Questions the prior draft deferred. Both are additive to the design
+Danny's ruling on the two Open Questions US-12/US-13 raised. Both are additive to the design
 below, not a rewrite of it: §1.1/§1.2's reconciliation, §3.1-3.5's schemas, §4.2-4.6's contracts,
 and §5's SPA design are unchanged except where a new §-suffix subsection below explicitly extends
 them (§3.6, §4.2's revised Generation Eligibility Rule, §4.7, §4.8, and §5.3's added component
-rows). A prior draft's "§5.3.7" citation named a subsection that does not exist; §3.6
-(`StatusEvent`) is the only new top-level §3 schema subsection this revision adds.
+rows). §3.6 (`StatusEvent`) is the only new top-level §3 schema subsection this revision adds; no
+"§5.3.7" subsection exists in this document.
 
 It does not select a new runtime, storage technology, or web framework — this sprint extends the
 already-adopted stack (`problem-department-mvp/02-ARCHITECTURE.md` §Scope Discipline; Express +
@@ -60,8 +60,7 @@ Checkpoint-1 test files whose assertions this necessarily invalidates —
 corrected behavior (04-ROADMAP.md C2-S2).
 
 This checkpoint touches exactly these Checkpoint-1 files — all already established and
-justified elsewhere in this document; nothing new is introduced by this correction, it only
-enumerates accurately:
+justified elsewhere in this document; this enumeration introduces nothing new:
 
 1. `src/client/components/InvestigationPortfolioTable.tsx` — per-row navigation retarget (above).
 2. `src/client/screens/MissionControlScreen.tsx`'s inline `RecentInvestigationsList` — per-row
@@ -241,9 +240,21 @@ structurally separate mechanism:
  // resolveSourceArtifact.ts — computation only, never persists. Extracted from the body of
  // resolveSourceArtifact (today's lines ~40-69, before its persistResolution call) — same
  // type-branch logic (text / url / unsupported), zero behavior change.
+ // SOL-MEDIUM-1 fix — the return type below now carries the two canonical-identity fields §4.8's
+ // SOL-MEDIUM-1 mechanism requires (`canonicalUrl`, `resolvedContentHash`), computed inline in the
+ // same function body immediately after the type-branch resolution logic that already runs here
+ // (§4.8 below states exactly where and how each is derived, from the same guarded fetch this
+ // function already performs — no second network call, no new call site). This function's typed
+ // signature below is the single source of truth §4.8's mechanism is implemented against; §4.8
+ // states exactly where and how each field is derived.
  export async function computeSourceResolution(
    artifact: { id: string; type: string; raw: string },
- ): Promise<{ resolution: SourceResolution; resolvedContent: string | null }>;
+ ): Promise<{
+   resolution: SourceResolution;
+   resolvedContent: string | null;
+   canonicalUrl: string | null; // §4.8 SOL-MEDIUM-1 — url-type, content-retrieved only; null otherwise
+   resolvedContentHash: string | null; // §4.8 SOL-MEDIUM-1 — any type, content-retrieved only; null otherwise
+ }>;
 
  // resolveSourceArtifact.ts — UNCHANGED external signature/behavior for every existing caller
  // (submitSources/resolveInvestigationSources, and every existing test). Now implemented as:
@@ -256,7 +267,8 @@ structurally separate mechanism:
  so no write happens as a side effect of computing the new resolution; the only write this call
  performs is its own single, guarded `UPDATE` below.
 - **Atomic write (compare-and-set)**: two concurrent recheck requests against the same source must
- never race and have one silently overwrite the other's newly-resolved row. The real,
+ never race and have one silently overwrite the other's newly-resolved row, AND `rowCount === 1`
+ must reliably identify the single winning writer — not merely avoid lost updates. The real,
  already-live `source_artifact` schema (`001_initial_schema.sql`, `003_source_artifact_resolved_
  content.sql`) has no `updated_at` column and no `resolution_detail`/`resolution_content` columns —
  the persisted resolution columns are `resolution_status`, `resolution_resolved_at`,
@@ -264,43 +276,65 @@ structurally separate mechanism:
  (`resolveSourceArtifact.ts`'s own `persistResolution`, confirmed against live code). Of these,
  `resolution_resolved_at` is written on every resolution — success, `unreachable`, and
  `reachable-no-content` alike (`resolveSourceArtifact.ts:154-168`) — and changes on every resolution
- write, making it a real, already-existing compare-and-set guard; no new column is added. It is
- `new Date().toISOString()` (millisecond resolution, sourced from `resolveSourceArtifact.ts`'s own
- write, not invented here) — not a monotonic or collision-free token: two concurrent rechecks that
- resolve to the same `resolution_status` inside the same millisecond produce an identical guard
- tuple, so both `UPDATE`s below could match.
+ write, but it is `new Date().toISOString()` (millisecond resolution) — not a monotonic or
+ collision-free token: two concurrent rechecks that resolve to the same `resolution_status` inside
+ the same millisecond produce an identical guard tuple, so both `UPDATE`s below could match, and
+ `rowCount === 1` alone cannot then say which call's write is "the" winner.
+
+ **SOL-MEDIUM-2 fix — a real monotonic revision column closes this.** A new additive column,
+ `source_artifact.resolution_revision INTEGER NOT NULL DEFAULT 0` (added in the same migration `013`
+ SOL-MEDIUM-1's `canonical_url`/`resolved_content_hash` columns land in, C2-S2's own scope — one
+ `ALTER TABLE source_artifact` statement covering all three additive columns), incremented by
+ exactly 1 on every write to this row's resolution columns, by BOTH `recheckSourceArtifact`'s own
+ guarded `UPDATE` below and `resolveSourceArtifact.ts`'s existing unconditional `persistResolution`
+ write (so the counter is a true count of every resolution write this row has ever received,
+ regardless of which of the two write paths made it — a recheck reading the row's current
+ `resolution_revision` always sees the real total, never a count scoped to one write path). Unlike
+ `resolution_resolved_at`, this counter cannot collide: Postgres serializes concurrent `UPDATE`s
+ against the same row, so two concurrent writers reading `resolution_revision = N` and both
+ attempting `SET resolution_revision = N + 1 WHERE ... AND resolution_revision = N` can never both
+ succeed — the first to commit advances the row to `N + 1`, and the second's `WHERE` clause no
+ longer matches, `rowCount === 0`, unambiguously.
+
  `recheckSourceArtifact`: (1) reads the row (`id, type, raw, resolution_status,
- resolution_resolved_at`) once — this single read serves both the eligibility guard above and the
- CAS token below, not two separate reads; (2) calls `computeSourceResolution` against that row's
- `{ id, type, raw }` — a pure computation, nothing persisted by this call; (3) persists the
- computed result itself with a conditional `UPDATE` gated on the `resolution_status`/
- `resolution_resolved_at` values read at step 1:
+ resolution_resolved_at, resolution_revision`) once — this single read serves the eligibility guard
+ above and the CAS gate below, not two separate reads; (2) calls `computeSourceResolution` against
+ that row's `{ id, type, raw }` — a pure computation, nothing persisted by this call; (3) persists
+ the computed result itself with a conditional `UPDATE` gated on the `resolution_revision` value
+ read at step 1 (the `resolution_status`/`resolution_resolved_at` equality checks are retained
+ alongside it, unchanged, as an additional guard against any writer that does not itself go through
+ this revision counter — belt-and-suspenders, not a replacement):
  ```sql
  UPDATE source_artifact
  SET resolution_status = $2,
  resolution_resolved_at = $3,
  resolution_failure_reason = $4,
  resolution_no_content_reason = $5,
- resolved_content = $6
- WHERE id = $1 AND resolution_status = $7 AND resolution_resolved_at = $8
- RETURNING resolution_status, resolution_resolved_at;
+ resolved_content = $6,
+ canonical_url = $7, -- SOL-MEDIUM-1 fix: computeSourceResolution's own returned field (§4.8 SOL-MEDIUM-1)
+ resolved_content_hash = $8, -- SOL-MEDIUM-1 fix: same (§4.8 SOL-MEDIUM-1) — this is the recheck path's
+ -- own persistence of the two canonical-identity fields; it is
+ -- not a second write path, since this UPDATE was already the
+ -- only write recheckSourceArtifact performs
+ resolution_revision = resolution_revision + 1
+ WHERE id = $1 AND resolution_status = $9 AND resolution_resolved_at = $10
+ AND resolution_revision = $11
+ RETURNING resolution_status, resolution_resolved_at, resolution_revision;
  ```
- (`$7`/`$8` are the `resolution_status`/`resolution_resolved_at` read at step 1 — the same fields
- the eligibility guard above already read, reused, not re-read a second time.) Because
- `computeSourceResolution` never writes, this is now genuinely the ONLY write `recheckSourceArtifact`
- performs against this row, so the guard evaluates against the real pre-call state, not a state
- this same call already overwrote. What this guard actually guarantees: no lost update — a losing
- writer never overwrites a winner's already-persisted row with a stale result. What it does NOT
- guarantee: that `rowCount === 1` reliably identifies which specific concurrent call's write
- landed — in the identical-millisecond, identical-status case, both concurrent `UPDATE`s can each
- see `rowCount === 1` against their own request, because `computeSourceResolution` is
- deterministic for the same input and both calls write byte-identical values; no data is lost in
- that case, but which call's write is recorded as "the one that landed" is not determinable from
- `rowCount` alone. `rowCount === 0` means another recheck (or any other writer of this row) already
- changed it — to a DIFFERENT `resolution_status`/`resolution_resolved_at` pair — between this
- call's read and its write; the loser performs no further write and returns the row's real current
- (freshly re-read) state rather than overwriting it — the winner's newly-resolved row is never
- silently clobbered with a different value.
+ (`$9`/`$10`/`$11` are the `resolution_status`/`resolution_resolved_at`/`resolution_revision` values
+ read at step 1 — the same fields the eligibility guard above already read, reused, not re-read a
+ second time.) Because `computeSourceResolution` never writes, this is now genuinely the ONLY write
+ `recheckSourceArtifact` performs against this row, so the guard evaluates against the real pre-call
+ state, not a state this same call already overwrote. **What this guard now guarantees, in full**:
+ `rowCount === 1` reliably and unambiguously identifies the single winning writer — even in the
+ identical-millisecond, identical-resolved-status case that defeated the `resolution_resolved_at`-
+ only guard, because `resolution_revision` cannot collide between two genuinely concurrent writers
+ (Postgres's own row-level `UPDATE` serialization is what makes this true, not application-level
+ logic). `rowCount === 0` means another writer of this row (a concurrent recheck, or a resolution
+ write via any other path) already advanced `resolution_revision` past the value this call read;
+ the loser performs no further write and returns the row's real current (freshly re-read) state
+ rather than overwriting it — the winner's newly-resolved row is never silently clobbered, and the
+ loser can now say, correctly and unconditionally, "the other call won."
 - **Status recovery**: after a winning write, if the Investigation's current status is `'blocked'`,
  re-read its full source set and recompute `allUnreachable` (true only when every source is
  `'unreachable'`); if now false, call `transitionInvestigationStatus(investigationId, 'open',...)`,
@@ -321,25 +355,55 @@ interface RecheckNotEligibleResponseBody {
 }
 ```
 
-No new table, no new column. `source_artifact.resolution_status`/`resolution_resolved_at`/
+No new table. `source_artifact.resolution_status`/`resolution_resolved_at`/
 `resolution_failure_reason`/`resolution_no_content_reason`/`resolved_content` are the existing,
-already-live persisted columns this action writes through, scoped to one row.
+already-live persisted columns this action writes through, scoped to one row, joined by the one new
+additive column this checkpoint adds, `resolution_revision` (SOL-MEDIUM-2 fix, migration `013`, same
+migration §4.8's SOL-MEDIUM-1 fix uses for its own two additive columns).
 
-### 1.4b Source Resolver — blank/whitespace-only text must not resolve `'content-retrieved'`
+### 1.4b Source Resolver — blank/whitespace-only text AND URL content must not resolve `'content-retrieved'`
 
-Live `resolveSourceArtifact.ts:55-57` resolves every `type === 'text'` `source_artifact` to
-`'content-retrieved'` with `resolvedContent = artifact.raw` unconditionally — there is no emptiness
-check on this branch (unlike the `type === 'url'` branch, which already applies
-`MIN_CONTENT_LENGTH` via `reachable-no-content`, `resolveSourceArtifact.ts:117-128`). The only
-existing server-side validation of submitted text is `src/web/apiRoutes.ts:55` (`raw: a.raw.trim()`,
-a normalization, not a rejection) and `src/web/apiRoutes.ts:45` (rejects only a wholly EMPTY
-`artifacts` array, not a whitespace-only individual `raw` string) — so a source submitted with
-`raw: '   '` (or any string that trims to zero length) is accepted, resolves `'content-retrieved'`,
-and — per §4.8's eligibility query, which excludes solely on `resolution_status` — can unlock US-13
-resubmission eligibility on its own, violating AC2's "Empty" disqualifier.
+**Disclosure — re-applying a previously-made fix.** This exact correction (delete
+`MIN_CONTENT_LENGTH`, make both branches use an identical zero-length trim check) was already
+ruled on and applied once before, in PR #11, following a cold Frank spec-gate HALT on this same
+constant in PR #8. PR #11 was later closed unmerged during an unrelated trust-integrity incident,
+and this recovery branch was rebuilt from a tree that predates that fix — so the constant, and its
+self-certified `PROVISIONAL — owner: Ledger` tag, came back with no disclosure that it was
+unsourced. This is not a newly-discovered issue; it is Danny's already-settled ruling, re-applied.
+The rule that an agent naming itself as a `PROVISIONAL` tag's owner is self-certification and never
+valid is Danny's direct ruling on this exact constant (the `MIN_CONTENT_LENGTH` PROVISIONAL-tag
+issue and its resolution, 2026-09-05). This rule is now tracked from a file in this branch:
+`docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md` has been restored to this branch's
+`docs/decisions/`, and its Category A table, row A1, records this exact deletion as the DDR's own
+independent disposition for `MIN_CONTENT_LENGTH` — "MEASURED — resolved via branch (c), redesign;
+constant deleted," with the same finding this document reaches below (no raw-body-length threshold
+separates content-bearing from content-empty responses; check reduced to a zero-length trim test).
+This document's fix and DDR-0002's row A1 are matching records, drawing on the same underlying
+measurement evidence, of the same resolution — see
+`docs/specs/problem-department-mvp/min-content-length-measurement.md`. `PROVISIONAL` is not a
+fourth option when no real citation or human acceptance exists —
+the only correct move is deletion, replacing the mechanism with a check that needs no magic number
+at all.
 
-**Required fix**: `computeSourceResolution`'s (§1.4a) `type === 'text'` branch gains the same
-emptiness check the `url` branch already has:
+**Already applied on this branch, verified against live source (2026-09-06).** Live
+`resolveSourceArtifact.ts` no longer contains `MIN_CONTENT_LENGTH` at any line — it was deleted.
+The `type === 'text'` branch (`resolveSourceArtifact.ts:55-57` in the pre-fix tree this section
+originally described) and the `type === 'url'` branch both now apply the identical
+`body.trim().length === 0` check (`resolveSourceArtifact.ts:116`); the constant's second real live
+consumer, `classifyRetrievalOutcome.ts`, no longer imports or references `MIN_CONTENT_LENGTH`
+either — its `'http-response'` 2xx branch applies `bodyLength === 0` directly
+(`classifyRetrievalOutcome.ts:65`). The only existing server-side validation of submitted text is
+`src/web/apiRoutes.ts:55` (`raw: a.raw.trim()`, a normalization, not a rejection) and
+`src/web/apiRoutes.ts:45` (rejects only a wholly EMPTY `artifacts` array, not a whitespace-only
+individual `raw` string) — so a source submitted with `raw: '   '` (or any string that trims to
+zero length) is still accepted at the API layer, but the fix below closes the gap at resolution
+time.
+
+**Fix already applied** — `MIN_CONTENT_LENGTH` is deleted from `resolveSourceArtifact.ts` entirely
+(not narrowed, not re-tagged `PROVISIONAL` under a different owner), and both the `type === 'text'`
+AND `type === 'url'` branches of `resolveSourceArtifact.ts`'s resolution logic (§1.4a's
+`computeSourceResolution` split is itself still Forge work — see below) carry the SAME
+zero-measurement check, matching this shape:
 
 ```typescript
 if (artifact.type === 'text') {
@@ -354,17 +418,69 @@ if (artifact.type === 'text') {
     resolution = { status: 'content-retrieved', resolvedAt: new Date().toISOString() };
     resolvedContent = artifact.raw;
   }
+} else if (artifact.type === 'url') {
+  // ...existing fetch/guard logic unchanged up to and including a successful 2xx response...
+  if (body.trim().length === 0) {
+    resolution = {
+      status: 'reachable-no-content',
+      resolvedAt: new Date().toISOString(),
+      noContentReason:
+        'Response returned successfully but the raw response body was empty or whitespace-only. ' +
+        'This check does not detect paywalls, login walls, or JS-rendered pages — measured ' +
+        'JS-rendered pages typically return substantial raw HTML regardless of visible content, ' +
+        'but paywall/login-wall behavior was not measured — that judgment belongs to downstream ' +
+        'content extraction, not this fetch-layer check.',
+    };
+    resolvedContent = null;
+  } else {
+    resolution = { status: 'content-retrieved', resolvedAt: new Date().toISOString() };
+    resolvedContent = body;
+  }
 }
 ```
 
-`reachable-no-content` (not `unreachable`) is the correct terminal state here — matching the `url`
-branch's existing "successfully retrieved, but with nothing usable" semantics for the same reason:
-the artifact was clearly present (submitted or reachable) but carried no extractable content. This
-is Forge work assigned to `04-ROADMAP.md` C2-S2 (`src/services/resolveSourceArtifact.ts`,
-edited), alongside §1.4a's `computeSourceResolution`/`resolveSourceArtifact` split — both are edits
-to the same function's own body, and C2-S2 is where `recheckSourceArtifact.ts` (the split's own
-first caller) is built, so the split cannot be deferred past that slice. §4.8's eligibility query
-(built later, C2-S3) then depends on a resolver that has already carried this fix since C2-S2.
+**Measured, not asserted — and the paywall half of the wording is a disclaimer, not a measured
+claim.** This wording is not a rewording of the deleted constant's rationale — it is the corrected
+replacement for a claim that was itself measured and found false, but the measurement's coverage is
+uneven across what the reason text mentions and this document does not overstate it. PR #11's
+`min-content-length-measurement.md` (historical record, `archive/pr-11-190f469-2026-09-05` branch)
+measured `MIN_CONTENT_LENGTH = 200` against an 18-URL labelled sample and found no raw-body-length
+threshold — including 200 — separates content-bearing from content-empty 2xx pages. The sample
+contained a real, reproducible 2xx JS-shell response (vercel.com) supporting the JS-render half of
+the claim, but zero real 2xx paywall responses — the one paywall-adjacent site tested (e.g.
+Crunchbase) returned 403, not 2xx, so it never reached this check at all. The "likely a paywall,
+login wall, or JS-only render" claim this replaces was retracted because the raw-length heuristic
+itself was shown unable to do the job on the evidence available (11 sampled 2xx responses, every
+threshold in [1, 558] classifying them identically) — not because paywall behavior specifically was
+measured and found to typically return substantial raw HTML. The reason text this check now
+produces should read, and is intended to read, as **"this check does not detect paywalls"** — a
+disclaimer about this check's own limits — not as an established, measured claim about how paywalls
+behave; this document does not assert the latter. `classifyRetrievalOutcome.ts`'s own
+`'http-response'` 2xx branch gets the identical replacement: `bodyLength === 0` → `'blocked'`, with
+`failureReason` restated using the same corrected, disclaiming wording above (substituting
+"blocked" for "reachable-no-content" as the status name, per that file's own status vocabulary) —
+never the removed paywall/login-wall/JS-render claim.
+
+Both branches now use the identical `trim().length === 0` check — a literal zero-length test, not
+an arbitrary threshold, so there is no number here to source or own. This deliberately narrows what
+the `url` branch's `reachable-no-content` classification catches (a response with SOME short but
+non-empty text — e.g. a 40-character JS-shell stub — now resolves `'content-retrieved'` where the
+deleted 200-character heuristic would have called it empty); that narrowing is the correct
+trade-off, since the alternative was an unsourced, self-certified number masquerading as a
+validated heuristic. If false positives/negatives from genuinely-empty-but-non-zero-length pages
+are observed in real use, that becomes a new, separately-sourced or separately-owned decision at
+that time — not a reason to keep the old number now. `reachable-no-content` (not `unreachable`)
+remains the correct terminal state for both branches: the artifact was clearly present (submitted
+or reachable) but carried no extractable content. **The constant deletion and its zero-length
+check are already applied on this branch, in both real consumers** — `src/services/resolveSourceArtifact.ts`
+(`MIN_CONTENT_LENGTH` deleted, its own inline `resolveUrl` check now `body.trim().length === 0`)
+AND `src/services/classifyRetrievalOutcome.ts` (its own `bodyLength === 0` check, no
+`MIN_CONTENT_LENGTH` import) — verified against live source. **Still Forge work assigned to
+`04-ROADMAP.md` C2-S2**: §1.4a's `computeSourceResolution`/`resolveSourceArtifact` split, which
+this fix's own logic will move into once built — C2-S2 is where `recheckSourceArtifact.ts` (the
+split's own first caller) is built, so the split cannot be deferred past that slice. §4.8's
+eligibility query (built later, C2-S3) then depends on a resolver that has already carried this fix
+since before C2-S2 began.
 
 ### 1.5 US-13 eligibility
 
@@ -389,17 +505,197 @@ fenced directly, via the guarded `UPDATE ... WHERE fence_token = $n` below.
 
 **Full write-path enumeration.** `generateBriefVersion`'s pipeline writes to many tables across its
 run (the exact count is not asserted here as load-bearing — see the enumeration below for what is
-actually enumerated). Only two are fenced directly; the rest fall into two other categories —
-protected indirectly via Phase 4's transaction, or genuinely unfenced but disclosed as not a
-correctness hazard. `§1.6`'s
-"writes become inert once fenced" claim (below) describes the fenced and transaction-protected paths
-only — it does NOT hold for the landscape-research writes in the last bullet, which is called out
-explicitly as the one disclosed exception.
+actually enumerated). These fall into three categories: fenced directly via the guarded
+`generation_run`/`generation_step` `UPDATE`s; fenced via a new guard-checked transaction wrapping
+every other pre-Phase-4 write path (below); and protected indirectly via Phase 4's own transaction
+rollback. **SOL-HIGH-2 (write-path fencing completeness).** `attemptGenerationFailedTransition`'s
+`Investigation.status` write is NOT exempted on "idempotency" grounds: `getProblemDepartmentOverview.ts:60-95`
+reads `investigation.status` directly for the portfolio view, and
+`InvestigationPortfolioTable.tsx:33-36,87-89` filters/renders it — a stale, fenced-out writer's
+late `'generation-failed'` transition is directly observable there even though the Investigation's
+real, current `GenerationRun` has since succeeded. There is no exception in this enumeration: EVERY
+write path below — including this one — is fenced, either directly by a `fence_token`/`outcome`
+check or by running inside the same guard-checked transaction as one. `§1.6`'s "writes become inert
+once fenced" claim holds without exception.
+
+**Why the prior "accretive, so harmless" reasoning was wrong.** `generateBriefVersion` (Phase 1,
+before any per-run write happens) reads Investigation-wide evidence and ALL `claim_version` rows —
+not scoped to the calling run — to assemble its working set. A write that lands in `evidence_item`/
+`claim`/`claim_version` after a run has been fenced out is not inert merely because the row itself
+is additive and self-consistent: it is still readable, and read, by the very next run that retries
+generation for this Investigation. The same is true of `source_artifact`/`web_search_result` rows
+(read via the source list) and the `generation_run_consumed_source` ledger (read by §4.8's
+eligibility query). A fenced-out run's stray writes to any of these tables can therefore be
+incorporated into a subsequent retry's `BriefVersion` even though the run that produced them was
+never allowed to persist its own `BriefVersion` — a real data-integrity race, not a display nuance.
+The fix below closes it by making every one of these writes check fence ownership, atomically,
+immediately before it commits.
+
+**New guard mechanism — `assertFenceOwnership`.** A single new helper, alongside
+`recordGenerationStep`/`finalizeGenerationRun` in `src/services/provenanceRecorder.ts`:
+
+```typescript
+async function assertFenceOwnership(
+  client: PoolClient,
+  generationRunId: string,
+  fenceToken: number,
+): Promise<void> {
+  const { rows } = await client.query(
+    `SELECT fence_token, outcome FROM generation_run WHERE id = $1 FOR UPDATE`,
+    [generationRunId],
+  );
+  if (rows.length === 0 || rows[0].fence_token !== fenceToken || rows[0].outcome !== 'in-progress') {
+    throw new GenerationRunFencedOutError(generationRunId);
+  }
+}
+```
+
+**SOL-HIGH-2 — outcome, not id/token alone.** Checking `fence_token` alone is sufficient to detect a
+*superseding* writer (an abandon that incremented the token) but not a run that reached a
+*terminal* outcome (`'succeeded'`/`'failed'`) through
+`finalizeGenerationRun` without its own `fence_token` ever changing — `finalizeGenerationRun`'s
+guarded `UPDATE` (below) does not touch `fence_token`, only `outcome`. Without the `outcome =
+'in-progress'` check, a write that raced past `finalizeGenerationRun`'s own finalization (e.g. a
+slow, already-fenced-in but stale caller reaching this guard after its own run was legitimately
+finalized `'failed'` by the abandon flow, but before its own next write attempt) could still pass
+this check purely on token equality and mutate state after its run is already terminal. Checking
+`outcome = 'in-progress'` here — the SAME row, same `FOR UPDATE` lock, same query — closes this
+without a second query or a second lock acquisition.
+
+Most pre-Phase-4 write paths below (the `generation_run_consumed_source` ledger `INSERT`, Landscape
+Research's four `searchWeb` writes, and `attemptGenerationFailedTransition`'s status-transition
+write — none of which span an LLM call) open their own new short-lived transaction, call
+`assertFenceOwnership` as its FIRST statement (taking a row lock on `generation_run.id`), perform
+their writes, then commit. **The exception is `extractClaimsAndEvidence`/
+`extractClaimsAndEvidenceForSourceArtifacts`**, whose LLM call requires `assertFenceOwnership` to be
+placed inside their EXISTING single transaction, after the LLM call returns, immediately before the
+first `INSERT` — not as that transaction's first statement, and not in a new, separately-opened
+transaction (see the SELF-3 bullet below for why). The `FOR UPDATE` row lock is what removes the
+check-then-act race in every case: if an
+`abandonGenerationRun` call (§1.6 above, step 4's `UPDATE ... WHERE ... fence_token = $2 AND
+heartbeat_revision = $3`) is concurrently trying to increment this same row's `fence_token`, one of
+the two transactions blocks until the other commits — there is no window in which
+`assertFenceOwnership` can read a since-superseded token or a since-terminalized outcome and still
+have its subsequent writes commit. If the guard throws, the caller's transaction rolls back (nothing
+it wrote persists) and the caller treats this identically to the existing "fenced out, no-op"
+disposition — no error surfaces to the operator, since it just means a fenced-out or already-
+terminal run's late write was correctly discarded.
 
 - **Fenced directly** — `generation_run` and `generation_step` writes
   (`recordGenerationStep`/`finalizeGenerationRun`, guarded `UPDATE ... WHERE fence_token = $n`,
   below). A fenced-out pipeline's calls to either no-op or throw; these writes genuinely become inert
   once fenced.
+- **Fenced via `assertFenceOwnership`, called INSIDE the existing single transaction, positioned
+  immediately BEFORE the final `INSERT`s — NOT as that transaction's first statement, and NOT in a
+  second, separately-opened transaction (SELF-3).** Live
+  `extractClaimsAndEvidenceForSourceArtifacts` (`extractClaimsAndEvidence.ts:436-...`, and its
+  `extractClaimsAndEvidence` wrapper, called at `generateBriefVersion.ts:338`) opens ONE transaction
+  and takes an advisory lock (`pg_advisory_xact_lock`, F-2 fix) as close to the top of the function
+  as `BEGIN` itself, THEN calls the LLM (`callForcedTool`) while that same transaction — and the
+  advisory lock it holds — is still open, before any `INSERT`. Naively adding `assertFenceOwnership`
+  as this same transaction's first statement, as the general rule above states, would hold the
+  `generation_run` row's `FOR UPDATE` lock for the entire duration of the LLM call — directly
+  conflicting with the abandon route's own step-4 fence-increment `UPDATE`, which needs that same
+  row lock: a concurrent abandon attempt would then BLOCK (hang) for the full LLM call's duration
+  instead of promptly succeeding or returning `409`. This transaction is not short-lived in the way
+  most pre-Phase-4 write paths above are — its duration spans the LLM call.
+
+  Splitting the function into TWO
+  transactions — the advisory lock plus LLM call in one, `assertFenceOwnership` plus the final
+  `INSERT`s in a second, opened only after the LLM call returns. **That split is wrong and is not
+  what this document specifies:** F-2's advisory lock is released the instant the FIRST transaction
+  commits — before the second transaction's `claim_version` inserts ever run — so it would no
+  longer cover the read-of-`latestVersionNumber`-through-insert-of-`N+1` window it exists to
+  serialize. Two concurrent runs could once again both read the same existing claim's
+  `latestVersionNumber = N` (one in each transaction's own first phase) and both attempt to insert
+  `version_number = N + 1` in their own separate second transactions, racing on the
+  `UNIQUE(claim_id, version_number)` constraint — reopening the exact race F-2 already closed.
+
+  **The correct fix — keep the single existing transaction; call the guard late inside it, not
+  early and not in a second transaction.** `BEGIN` → advisory lock
+  (`pg_advisory_xact_lock`) → existing-claims read (`getExistingClaimsForInvestigation`) → the LLM
+  call (`callForcedTool`) → `assertFenceOwnership(client, generationRunId, fenceToken)` →
+  every `EvidenceItem`/`Claim`/`ClaimVersion`/`ClaimVersionEvidence` `INSERT` this function
+  performs → `COMMIT` — exactly the transaction boundaries live code has today, with
+  `assertFenceOwnership` inserted as one new statement, positioned immediately after the LLM call
+  returns and immediately before the first `INSERT`, not at `BEGIN`. This closes the original
+  abandon-blocking problem: the `generation_run` row's `FOR UPDATE` lock is now acquired only in the
+  brief window between the LLM call returning and `COMMIT` (the time it takes to run the guard
+  query plus the batch of inserts — milliseconds, not the LLM call's own duration), so a concurrent
+  abandon attempt is never blocked by a still-in-flight LLM call. And because the advisory lock's
+  own coverage is completely unchanged from live code today — it still spans the entire
+  existing-claims-read-through-final-insert window, inside one uninterrupted transaction — F-2's
+  invariant is preserved with zero regression: it is genuinely true, under this design, that "the
+  advisory lock continues to serialize concurrent extraction attempts against the same
+  Investigation, exactly as it does today; no new contention is introduced by this fix," since
+  nothing about the advisory lock's acquisition, scope, or release point changes at all —
+  `assertFenceOwnership`'s `generation_run` row lock is a second, independent lock added inside the
+  same transaction, not a replacement for or restructuring of the advisory lock. Under this design,
+  `extractClaimsAndEvidence.mocked.test.ts`'s existing F-2 regression test (`:406-...`, using the
+  `__setF2RaceDelayForTests` hook to force two concurrent calls to race on the same existing claim's
+  version read) must continue to pass UNMODIFIED: the test's own assertions (no
+  `generationFailed`/thrown error from either concurrent call, both calls' `claimVersions` resolve
+  under the same pre-existing `claimId`, and every persisted `claim_version.version_number` for that
+  claim is distinct — `{1, 2, 3}`, never a collision) depend only on the advisory lock continuing to
+  cover the read-through-insert window across two genuinely concurrent transactions, which this
+  design preserves unchanged; inserting `assertFenceOwnership` as one additional statement between
+  the LLM call and the first `INSERT` does not touch the lock's acquisition point, the existing-
+  claims read, the version-number computation, or the insert ordering the test depends on. Applies
+  identically to both real call sites: the primary `extractClaimsAndEvidence` path
+  (`generateBriefVersion.ts:338`) and Landscape Research's own second extraction pass
+  (`extractClaimsAndEvidenceForSourceArtifacts`, called at `landscapeResearcher.ts:272`, itself
+  reached from `generateBriefVersion.ts:393`) — both share the same function body today and must be
+  restructured together, not one fixed and the other left inconsistent.
+- **Fenced via `assertFenceOwnership`, in its own guard-checked transaction** — the
+  `generation_run_consumed_source` ledger `INSERT` (§4.8, `generateBriefVersion.ts:479`): the same
+  guard, immediately before the `INSERT`, in the same short-lived transaction. A fenced-out run's
+  ledger row is no longer written at all, rather than being written-but-provably-unread; this is a
+  strictly stronger guarantee than the prior "unread by construction" argument, and removes the
+  dependency on §4.8's eligibility query continuing to scope by `generation_run_id` correctly
+  forever.
+- **Fenced via `assertFenceOwnership`, in one shared guard-checked transaction** — Landscape
+  Research's four writes, via `searchWeb.ts` (called from `generateBriefVersion.ts:393-399` via
+  `landscapeResearcher.ts:260`) — `web_search_query` (`searchWeb.ts:160,217`), `query_limitation`
+  (`searchWeb.ts:167,234`), `source_artifact` (`searchWeb.ts:247`), and `web_search_result`
+  (`searchWeb.ts:266`). `searchWeb` already receives `generationRunId` from
+  `landscapeResearcher.ts:260` in live code today; it is extended to also accept `fenceToken` — the
+  only genuinely new parameter — threaded through from the same call site, and opens one transaction covering all four
+  writes for a given search call, calling `assertFenceOwnership` once at the top of that
+  transaction before any of the four `INSERT`s. `web_search_query` rows are surfaced directly in
+  the UI provenance rail (`03-UI-SPEC.md`, Sections table, Source column citing
+  `workspace.generationRuns[].webSearchQueries`); a fenced-out run's searches are now never
+  written at all, so there is nothing stray left to either display or be consumed by a retry. Rows
+  that DID commit before fencing occurred remain exactly as honest as before (the searches genuinely
+  happened, under that run's real id, before it was fenced out).
+- **Fenced via `assertFenceOwnership`, in the SAME transaction as the `generation_step`/
+  `generation_run` writes it accompanies (SOL-HIGH-2 correction)** —
+  `attemptGenerationFailedTransition`'s `transitionInvestigationStatus` write
+  (`generateBriefVersion.ts:263-267`). This write is NOT acceptably left unfenced on "idempotency"
+  grounds: it is independently observable, and in the WRONG direction (stale-published-as-failed,
+  not merely redundant): `getProblemDepartmentOverview.ts:60-95` reads `investigation.status`
+  directly for the portfolio view, and `InvestigationPortfolioTable.tsx:33-36,87-89` filters and
+  renders it. A
+  fenced-out run's `attemptGenerationFailedTransition` call — reached, for example, after a
+  concurrent abandon has already incremented the row's `fence_token` and a healthy replacement run
+  has since started and even succeeded — must not be allowed to publish `'generation-failed'` over a
+  currently-healthy Investigation. The fix: `attemptGenerationFailedTransition` now opens its own
+  short-lived transaction that FIRST issues `SELECT id FROM investigation WHERE id = $1 FOR UPDATE`
+  (lock-order fix, for consistency with §1.6's abandon-flow fix and Phase 4's own order —
+  `generateBriefVersion.ts:552` — even though this call touches only one Investigation and one
+  GenerationRun and Frank's specific finding was about the abandon flow, the same
+  investigation-then-generation_run order is applied here so no two transactions in this file ever
+  lock these two tables in opposite orders), THEN calls `assertFenceOwnership(client,
+  generationRunId, fenceToken)` (the same helper and `FOR UPDATE` row-lock discipline as every other
+  pre-Phase-4 write path above — no second implementation), and only then performs the
+  `generation_step` write (recording the failure reason) and the `transitionInvestigationStatus`
+  call, both inside that same transaction, committing together. If the guard throws, the whole
+  transaction rolls back — neither
+  the `GenerationStep` nor the status transition is written, and the caller treats this identically
+  to every other fenced-out write's disposition: a silent, correctly-discarded no-op. `outcome`-
+  discrimination is by construction here too, since `assertFenceOwnership` itself now checks
+  `outcome = 'in-progress'` (above) as well as `fence_token` — a run that has already reached a
+  terminal outcome by any path cannot reach this write either. This closes the one path in this
+  enumeration that remained capable of mutating Investigation-visible state after being fenced out.
 - **Protected indirectly, via transaction rollback, not a fence check of its own** — Phase 4's four
   remaining writes: `INSERT INTO problem_brief` (`generateBriefVersion.ts:606`),
   `persistBriefVersion` (`:612` — writes `brief_version` plus, per candidate, the
@@ -413,72 +709,20 @@ explicitly as the one disclosed exception.
   transaction is
   rolled back (§1.6 above), so none of these four commits either. They are correctly protected, just
   not by a fence-token check of their own — the transaction boundary is the protection mechanism.
-- **Evidence and claim writes** (`extractClaimsAndEvidence`, called at `generateBriefVersion.ts:338`)
-  — this call happens before Phase 4's transaction begins (`pool.connect()` at `:549`, `BEGIN` at
-  `:551`) and outside any fence-token check. `evidence_item` rows are Investigation-scoped and
-  strictly accretive (a fenced-out pipeline writing stray `EvidenceItem` rows does not corrupt or
-  overwrite anything a live pipeline depends on), so the absence of fencing there is not a
-  correctness hazard today.
-- **Landscape Research's own second evidence/claim write path**
-  (`extractClaimsAndEvidenceForSourceArtifacts`, called at `landscapeResearcher.ts:272`, itself
-  reached from `generateBriefVersion.ts:393`) — a second, independent set of `evidence_item`/
-  `claim`/`claim_version` writes, distinct from the primary `extractClaimsAndEvidence` call above.
-  Same posture, same reasoning: this call also runs before Phase 4's transaction begins and outside
-  any fence-token check, and its rows are the same `evidence_item`/`claim`/`claim_version` shapes —
-  Investigation-scoped and strictly accretive, so a fenced-out pipeline writing stray rows through
-  this path does not corrupt or overwrite anything a live pipeline depends on. The absence of
-  fencing here is not a correctness hazard today, for the identical reason given for the primary
-  path.
-- **The `generation_run_consumed_source` ledger INSERT** (§4.8, `generateBriefVersion.ts:479`) —
-  also written before Phase 4's transaction and outside any fence-token check. These ledger rows are
-  read only relative to the specific `GenerationRun` that produced the Investigation's current
-  `BriefVersion` (§4.8's eligibility query is scoped by `generation_run_id = $2`, that run's own id);
-  a fenced-out run's ledger rows are never the producing run for any `BriefVersion` (a fenced-out
-  run's Phase 4 write is exactly what the fence is designed to block), so they are never read by the
-  eligibility query and their presence or absence has no observable effect. Not fencing this write is
-  therefore not a correctness hazard today.
-- **`attemptGenerationFailedTransition`'s `transitionInvestigationStatus` write**
-  (`generateBriefVersion.ts:263-267`) — this is a guarded UPDATE in its own right (it only succeeds
-  against `ALLOWED_PRIOR_STATUSES['generation-failed']`, deliberately excluding e.g. `'blocked'`,
-  G-13) and runs outside any transaction, outside Phase 4, and outside any fence-token check. A
-  fenced-out run reaching this path can still transition the Investigation to `'generation-failed'`
-  if the row's prior status still allows it. This is acceptable because the write is idempotent in
-  effect (the Investigation was already failing; a fenced-out run's own late failure-transition
-  reports the same terminal outcome a live run would have reported) and because §4.2's eligibility
-  rule and §4.8's ledger evaluate `ProblemBrief`/evidence-consumption state, never `status` alone —
-  a stray `'generation-failed'` write from a fenced-out run does not unlock or block anything the
-  fencing mechanism exists to protect. Not fencing this write is therefore not a correctness hazard
-  today.
-- **Landscape Research's four writes, via `searchWeb.ts`** (called from
-  `generateBriefVersion.ts:393-399` via `landscapeResearcher.ts:260`) — `web_search_query`
-  (`searchWeb.ts:160,217`), `query_limitation` (`searchWeb.ts:167,234`), `source_artifact`
-  (`searchWeb.ts:247`), and `web_search_result` (`searchWeb.ts:266`). All four run before Phase 4's
-  transaction and outside any fence-token check, same posture as the two bullets above — and the same
-  accretive-facts reasoning applies: each row is a real record of a search call this run actually
-  made, not a mutable claim about the Investigation's current state, so a fenced-out run's rows do
-  not corrupt or overwrite anything a later, live run depends on. **The one place this differs from
-  the two bullets above**: `web_search_query` rows ARE surfaced directly in the UI provenance rail
-  (`03-UI-SPEC.md`, Sections table, Source column citing `workspace.generationRuns[].webSearchQueries`), so —
-  unlike the ledger and status-transition writes, whose effects are invisible once their producing run
-  is fenced out — a fenced-out run's landscape-research writes remain visibly attributed to that run
-  in the workspace UI even though its `BriefVersion` was never persisted. This is a disclosed,
-  accepted gap, not a claimed absence of one: the rows are honest (the searches genuinely happened,
-  under that run's real id), so displaying them is not itself dishonest — but §1.6's blanket "writes
-  become inert once fenced" framing does not describe this path, and this document corrects that
-  framing rather than silently continuing to claim it. Closing the gap (scoping the provenance rail to
-  only the producing `GenerationRun` of the current `BriefVersion`, or fencing these four additional
-  write paths) is deferred, Out of Scope for this checkpoint — either fix is a UI/behavior change
-  beyond this checkpoint's US-3/US-4 scope.
 
 **Schema** (`generation_run`, migration `009`, added alongside §1.1's index):
 
 ```sql
 ALTER TABLE generation_run
  ADD COLUMN IF NOT EXISTS fence_token INTEGER NOT NULL DEFAULT 1,
- ADD COLUMN IF NOT EXISTS lease_heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ ADD COLUMN IF NOT EXISTS lease_heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ ADD COLUMN IF NOT EXISTS heartbeat_revision INTEGER NOT NULL DEFAULT 0;
 ```
 
-`fence_token` starts at `1` for every new run. `createGenerationRun`'s `INSERT` (existing call
+`heartbeat_revision` (SOL-HIGH-1 fix, below) is the abandon flow's collision-free CAS token — a
+monotonic counter, distinct from `fence_token` (which authorizes ownership) and from
+`lease_heartbeat_at` (which remains the display-facing liveness signal `computeLivenessState`,
+§4.9, reads). `fence_token` starts at `1` for every new run. `createGenerationRun`'s `INSERT` (existing call
 site, `src/services/provenanceRecorder.ts:62-74`, unchanged input parameters) is extended with
 `RETURNING fence_token`, and the `GenerationRun` domain type (`src/types/domain.ts`) gains a
 `fenceToken: number` field, populated from that returned value — this is the only way the pipeline
@@ -499,6 +743,7 @@ function recordGenerationStep(input: {
   generationRunId: string;
   step: GenerationStep;
   fenceToken: number;
+  client?: PoolClient;
 }): Promise<void>;
 
 function finalizeGenerationRun(input: {
@@ -509,6 +754,18 @@ function finalizeGenerationRun(input: {
   client?: PoolClient;
 }): Promise<GenerationRun>;
 ```
+
+**Signature fix: `recordGenerationStep` gains the same
+optional `client?: PoolClient` parameter `finalizeGenerationRun` already carries above, with the
+identical convention and semantics — runs on the given client, inside the caller's own transaction,
+when supplied; opens its own connection via `pool` otherwise.** §1.6's abandon flow (step 5) and the
+SOL-HIGH-2 `attemptGenerationFailedTransition` wrapper both call `recordGenerationStep({ ...,
+fenceToken, client })` from inside a caller-owned transaction, exactly as they already call
+`finalizeGenerationRun({ ..., client })`. Live code
+(`src/services/provenanceRecorder.ts:95-98`) does not carry a `client` field on
+`recordGenerationStep`'s typed signature; this document specifies adding one, so those calls pass a
+parameter the function's own typed signature accepts. This is a mechanical signature addition
+matching an established convention already used one function below, not a new mechanism.
 
 `recordGenerationStep` has only THREE direct call sites in `generateBriefVersion.ts` (`:272`,
 `:573`, `:649`). The other SEVEN progress-writes that file makes — one per Slice 4-7 component
@@ -557,9 +814,10 @@ them.
 Each performs its write as a single guarded statement:
 
 ```sql
--- recordGenerationStep: renews the heartbeat and inserts the step in one transaction, only if the
+-- recordGenerationStep: renews the heartbeat (and, SOL-HIGH-1 fix, the monotonic heartbeat_revision
+-- CAS counter the abandon flow gates on) and inserts the step in one transaction, only if the
 -- caller's token still matches.
-UPDATE generation_run SET lease_heartbeat_at = now()
+UPDATE generation_run SET lease_heartbeat_at = now(), heartbeat_revision = heartbeat_revision + 1
  WHERE id = $1 AND fence_token = $2
 RETURNING id;
 -- rowCount === 0: this pipeline has been fenced out (§1.6 below). No GenerationStep is inserted;
@@ -608,6 +866,28 @@ and **mechanism (b)**, the graceful-no-op catch block:
   are already on, extended by this one new error class rather than given a new catch block of its
   own.
 
+**`GenerationRunFencedOutError`'s own disposition (SOL-HIGH-2).** This error is threaded through
+this file's actual catch/finalization structure, given the same explicit treatment as the two
+mechanisms above, not merely asserted in prose as "no error surfaces to the operator." Every one of
+`assertFenceOwnership`'s call sites (evidence/claim writes, Landscape
+Research's second evidence/claim path, the consumed-source ledger insert, `searchWeb`'s four writes,
+and `attemptGenerationFailedTransition`'s now-fenced status write, all above) is reached from inside
+`generateBriefVersion`'s own `try` blocks, so a thrown `GenerationRunFencedOutError` unwinds into
+that file's existing catch structure exactly like any other typed error it already handles — it is
+added to the SAME mechanism-(b) graceful-no-op disposition as `GenerationRunAlreadyFinalizedError`
+above, at every one of these call sites: caught, logged, and treated as "this run has been
+superseded, stop attempting further writes on its behalf" — never rethrown as an unhandled failure,
+and never triggering a second `finalizeGenerationRun` call for this run (that call would itself now
+fail `assertFenceOwnership`'s own guard, so attempting it would be redundant, not merely harmless).
+Concretely: the pipeline's outer catch (`generateBriefVersion.ts`'s `:700-707` outer catch,
+referenced above) gains `GenerationRunFencedOutError` alongside its existing handled classes, mapped
+to the same silent-stop disposition — the pipeline function returns/exits without attempting
+`attemptGenerationFailedTransition` a second time (which would itself no-op per the fix above) and
+without rethrowing to whatever invoked `generateBriefVersion` (the fire-and-forget caller's own
+safety net, `05-REVIEW.md`, already expects a terminal outcome to be read from the persisted row,
+never inferred from this call's promise resolution). This is a required Forge-slice edit to the
+file's real catch structure, not a description of already-shipped behavior.
+
 **Abandon flow** (`abandonGenerationRun(investigationId, generationRunId)`, new route `POST
 /api/investigations/:id/generation-runs/:runId/abandon`):
 
@@ -615,45 +895,118 @@ and **mechanism (b)**, the graceful-no-op catch block:
  Investigation → `404 AbandonGenerationRunNotFoundResponseBody` (§3.1c).
 2. `outcome !== 'in-progress'` → `409 AbandonGenerationRunNotEligibleResponseBody` (§3.1c), with
  `currentOutcome` set to the run's real, just-read outcome and `livenessState: 'terminal'`.
-3. Compute `{ livenessState, lastProgressAt }` from `lease_heartbeat_at` (the same
- `computeLivenessState` function §4.9 defines for display, no second implementation). If
- `'active'` → `409 AbandonGenerationRunNotEligibleResponseBody`, `currentOutcome: 'in-progress'`,
+3. Compute `{ livenessState, lastProgressAt }` from `lease_heartbeat_at`, read in the SAME query as
+ step 2 — i.e. the single row read that classifies liveness also captures the exact
+ `fence_token` and `heartbeat_revision` values this abandon request will gate on at step 4
+ (`fenceTokenAtRead`, `heartbeatRevisionAtRead`). Uses the same `computeLivenessState` function
+ §4.9 defines for display (that function itself still reads `lease_heartbeat_at`'s elapsed time for
+ the display-facing staleness arithmetic — `heartbeat_revision` is an authorization token, not a
+ replacement liveness signal; see below). If `'active'` → `409
+ AbandonGenerationRunNotEligibleResponseBody`, `currentOutcome: 'in-progress'`,
  `livenessState: 'active'` — this is the guard that prevents abandoning a run that is merely
  slow.
-4. **Authorization — increment the fence token, atomically, gated on the token this request read at
- step 3:**
+
+ **SOL-HIGH-1 fix — a monotonic `heartbeat_revision` column replaces `lease_heartbeat_at` equality as
+ the abandon CAS token.** Gating step 4's `UPDATE` on
+ `lease_heartbeat_at = $3`, an exact `TIMESTAMPTZ` equality check, is not a reliable
+ collision-free token, for the same reason this document already disqualifies
+ `resolution_resolved_at`-only equality for `recheckSourceArtifact`'s CAS guard (§1.4a SOL-MEDIUM-2):
+ Postgres's `TIMESTAMPTZ` can carry microsecond precision that a normal Node
+ `Date`/node-postgres parameter round-trip does not preserve bit-for-bit, so a value this call
+ reads back from the database and later binds as a query parameter can fail to compare equal to
+ itself with NO concurrent writer at all — a false-negative that would make abandonment reject
+ forever. The inverse failure is also real: two distinct heartbeat renewals landing in the same
+ timestamp resolution would compare equal, a false-positive that would let this guard miss a
+ genuine renewal. Both failure directions defeat the very race this mechanism exists to close.
+
+ The fix: a new additive column, `generation_run.heartbeat_revision INTEGER NOT NULL DEFAULT 0`
+ (same migration `009` as `fence_token`/`lease_heartbeat_at`, §1.6 schema below), incremented by
+ exactly 1, in the SAME guarded `UPDATE` that renews `lease_heartbeat_at`, on every real
+ `recordGenerationStep` call (i.e. every one of the file's eleven real progress-write call sites,
+ the same set `lease_heartbeat_at` renewal already covers — no new call site, no new threading;
+ `recordGenerationStep`'s existing guarded `UPDATE`, below, gains `heartbeat_revision =
+ heartbeat_revision + 1` alongside its existing `lease_heartbeat_at = now()`). Integer equality has
+ no precision-mismatch problem: Postgres serializes concurrent `UPDATE`s against the same row, so
+ two values of `heartbeat_revision` read at different times can never spuriously compare equal
+ unless no write happened between the reads, and a genuine renewal always changes the integer by
+ exactly 1. `lease_heartbeat_at` itself is retained, unchanged, as the display-facing elapsed-time
+ signal `computeLivenessState` (§4.9) reads — it is a liveness signal, not an authorization token,
+ and this fix does not conflate the two; `heartbeat_revision` exists solely so the abandon flow has
+ a collision-free integer to gate on, never presented to an operator and never read by
+ `computeLivenessState`.
+
+4. **Authorization — increment the fence token, atomically, gated on BOTH the fence token AND the
+ exact `heartbeat_revision` value read at step 3.**
+
+ **Lock-order fix: this step's transaction acquires
+ `investigation FOR UPDATE` FIRST, before the fence-increment `UPDATE` below, matching Phase 4's
+ own lock order exactly** (`generateBriefVersion.ts:552` locks `investigation FOR UPDATE` before
+ later locking `generation_run` via `finalizeGenerationRun`, `:677`, on the same client). Opening
+ this step's transaction with the fence-increment `UPDATE` below instead — locking
+ `generation_run` first, and only locking `investigation` afterward at step 5's
+ `transitionInvestigationStatus(..., client)` call — would take the same two row locks Phase 4 takes
+ in the opposite order: a textbook Postgres deadlock (`40P01`) under real concurrent contention —
+ exactly the abandon-vs-live-pipeline race this fencing design exists to make safe. The fix:
+ ```sql
+ -- First statement of this transaction, unconditionally, before the fence-increment UPDATE below —
+ -- matches Phase 4's investigation-before-generation_run lock order.
+ SELECT id FROM investigation WHERE id = $1 FOR UPDATE;
+ ```
+ THEN, on the same client, in the same transaction:
  ```sql
  UPDATE generation_run SET fence_token = fence_token + 1
- WHERE id = $1 AND outcome = 'in-progress' AND fence_token = $2
+ WHERE id = $1 AND outcome = 'in-progress' AND fence_token = $2 AND heartbeat_revision = $3
  RETURNING fence_token;
  ```
- `rowCount === 0` means another writer (a concurrent abandon, or the pipeline's own legitimate
- finalization) already changed this row since step 3's read → `409
- AbandonGenerationRunNotEligibleResponseBody`, re-reading the run's real current `outcome`/
- `livenessState` and reporting them (never the values read at step 2/3, which are now stale).
- `rowCount === 1` is the moment abandonment takes effect: the
+ (`$2` = `fenceTokenAtRead`, `$3` = `heartbeatRevisionAtRead`, both captured at step 3.)
+ `rowCount === 0` means the row changed since step 3's read — either the fence token moved (a
+ concurrent abandon, or the pipeline's own legitimate finalization) OR the heartbeat revision moved
+ (a legitimate `recordGenerationStep` call renewed it between the classification read and this
+ UPDATE, meaning the run resumed after being classified stale). Both causes are handled
+ identically: this is never distinguished by cause, only by effect — re-read the run's real current
+ `outcome`/`livenessState` and report `409 AbandonGenerationRunNotEligibleResponseBody` (never the
+ values read at step 2/3, which are now stale). A heartbeat-revision mismatch here is exactly the
+ race this fix closes: without the `heartbeat_revision` guard, a legitimate renewal between steps 3
+ and 4 would not be caught by the `fence_token`-only check, and abandonment would fence out a run
+ that had just resumed — this is what makes `rowCount === 1` a real "still classified stale at the
+ instant of authorization" guarantee rather than a stale read carried forward, one that cannot
+ false-positive or false-negative on ordinary Postgres/Node round-tripping (unlike a
+ timestamp-equality check). `rowCount === 1` is the moment abandonment takes effect: the
  original pipeline's captured token is now stale, so every subsequent `recordGenerationStep`/
  `finalizeGenerationRun` call it makes will fail its own guarded `UPDATE` (above) and no-op or be
  rejected — its writes become inert without the process needing to be killed.
-5. With the new token, call `recordGenerationStep({ generationRunId, step: { component: 'Operator
+5. **SOL-HIGH-2 — steps 5-7 below execute inside the SAME transaction opened by step 4's
+ fence-increment `UPDATE`, committing together, not as separate calls after that `UPDATE`
+ commits.** Finalizing the run (step 5) and transitioning Investigation status (step
+ 6) as two calls with an open commit boundary between them would let a replacement run start in that
+ gap (once step 5's `finalizeGenerationRun` clears §1.1's concurrency guard by moving `outcome` off
+ `'in-progress'`) and even complete before step 6's `transitionInvestigationStatus` call executes,
+ which would then incorrectly mark a currently-healthy, `'brief-generated'` Investigation
+ `'generation-failed'`. Making steps 4-6 one transaction closes this: the concurrency guard is not
+ actually cleared for any other writer to observe until this transaction commits, so a replacement
+ run cannot be created, and cannot finish, in a window that no longer exists. Within this one
+ transaction, using the client already holding step 4's row lock:
+ - With the new token, call `recordGenerationStep({ generationRunId, step: { component: 'Operator
  abandonment', outcome: 'failed', error: <states no progress was recorded since `lastProgressAt`>,
- ... }, fenceToken: <new token> })` to write one honest `GenerationStep`, then
+ ... }, fenceToken: <new token>, client })` to write one honest `GenerationStep`, then
  `finalizeGenerationRun({ generationRunId, outcome: 'failed', briefVersionId: null, fenceToken:
- <new token> })`. Both calls pass the newly-incremented token, not the token read at step 3 —
- the token this abandon call itself just wrote is the only one still valid against this row.
-6. If not a correction (`investigation.problemBriefId === null` at read time — the same
+ <new token>, client })`. Both calls pass the newly-incremented token, not the token read at step
+ 3 — the token this abandon call itself just wrote is the only one still valid against this row.
+ - If not a correction (`investigation.problemBriefId === null` at read time — the same
  discriminant `generateBriefVersion` itself uses for this decision, provably equal for every run
  this system creates), attempt `transitionInvestigationStatus(investigationId,
- 'generation-failed',...)`, checking its returned boolean; a benign no-op is not an error. If it
- is a correction, skip this call — the Investigation stays `'brief-generated'`, eligible again
- only through §4.8.
-7. Respond `200 AbandonGenerationRunResponseBody` (`{ generationRunId, outcome: 'failed' }`, §3.1c).
+ 'generation-failed', ..., client)`, checking its returned boolean; a benign no-op is not an
+ error. If it is a correction, skip this call — the Investigation stays `'brief-generated'`,
+ eligible again only through §4.8.
+ - Commit.
+6. Respond `200 AbandonGenerationRunResponseBody` (`{ generationRunId, outcome: 'failed' }`, §3.1c).
  This describes the run's terminal state only; the next `GET.../workspace` poll is the source of
  truth for `investigation.status`.
 
-Abandonment does not itself start a new run — it clears the concurrency guard (§1.1) and, for a
-non-correction run, transitions the Investigation to `'generation-failed'`; the operator explicitly
-triggers retry via `GenerateButton`/`POST.../generation-runs`.
+Abandonment does not itself start a new run — it clears the concurrency guard (§1.1), atomically and
+only at the moment its own transaction commits (SOL-HIGH-2 correction above), and, for a non-correction
+run, transitions the Investigation to `'generation-failed'` in that same commit; the operator
+explicitly triggers retry via `GenerateButton`/`POST.../generation-runs`.
 
 `GenerationProgressPanel` (the only component that mounts "Abandon and retry") renders exclusively
 when `workspace.briefs.length === 0` (no `BriefVersion` exists yet) or the displayed
@@ -679,6 +1032,77 @@ never exposes "Abandon and retry" to a prior-version view.
  reached its real terminal outcome via the legitimate pipeline: asserts `409` with the run's real
  outcome, and asserts no `GenerationStep` with `component: 'Operator abandonment'` exists for that
  run.
+8. Heartbeat-versus-abandonment race: seed a run classified `'stale-or-interrupted'` at step 3,
+ then — between that classification read and step 4's guarded `UPDATE` — commit a real
+ `recordGenerationStep` call that renews `lease_heartbeat_at`/increments `heartbeat_revision` for
+ the same `generationRunId` (simulating a run that resumes after being read as stale but before
+ abandonment is authorized). Asserts the abandon request is rejected `409
+ AbandonGenerationRunNotEligibleResponseBody` and that no `GenerationStep` with `component:
+ 'Operator abandonment'` is ever written for that run — the fence-token-only guard alone would
+ miss this case; this test specifically exercises the `heartbeat_revision` clause added to step 4's
+ `UPDATE`. **New, required (SOL-HIGH-1 fix regression)**: a forced same-timestamp/precision test proving
+ the chosen mechanism does not false-positive or false-negative under realistic Postgres/Node
+ `TIMESTAMPTZ` round-tripping — seed a run, read its row twice in immediate succession with no
+ write between the reads, and assert the two reads' `heartbeat_revision` values compare equal
+ (ordinary no-write case, proving no false-negative); separately, perform two real, distinct
+ `recordGenerationStep` renewals in immediate succession (fast enough that a naive
+ millisecond-resolution timestamp comparison could plausibly collide) and assert
+ `heartbeat_revision` strictly increased by exactly 2, never comparing falsely equal to its
+ pre-renewal value (proving no false-positive) — both assertions against a real Postgres
+ connection, not a mocked clock.
+9. Fenced-out `extractClaimsAndEvidence`/`extractClaimsAndEvidenceForSourceArtifacts` writes never
+ persist: seed an in-progress run, abandon it (incrementing its `fence_token`), then call
+ `extractClaimsAndEvidence`/`extractClaimsAndEvidenceForSourceArtifacts` directly with the run's
+ original (now-stale) `fenceToken`; assert the call throws/no-ops per `assertFenceOwnership`'s
+ contract and that no `evidence_item`/`claim`/`claim_version` row exists for this run afterward.
+10. Fenced-out `searchWeb` writes never persist: same abandon-then-call pattern against `searchWeb`
+ with the run's stale `fenceToken`; assert none of `web_search_query`/`query_limitation`/
+ `source_artifact`/`web_search_result` gains a row for this run.
+11. Fenced-out `generation_run_consumed_source` ledger insert never persists: same pattern against
+ the ledger-insert call site; assert no ledger row exists for this run afterward.
+12. Retry-consumption race, end to end: seed a run, abandon it, then — using the run's stale
+ `fenceToken` — attempt each of the three write paths above (evidence/claims, `searchWeb`, ledger
+ insert); then run a real retry generation for the same Investigation and assert its resulting
+ `BriefVersion` incorporates none of the stray writes (none of the fenced-out run's evidence,
+ claims, sources, or ledger rows are read or reflected) — the exact race SOL-HIGH-2 identified, proven
+ closed rather than merely argued closed.
+13. **New, required (SOL-HIGH-2 fix regression) — fenced-out `attemptGenerationFailedTransition` never
+ publishes stale status, in EITHER read model.** Seed an in-progress run, abandon it (incrementing
+ its `fence_token`), then invoke `attemptGenerationFailedTransition` directly with the run's
+ original (now-stale) `fenceToken` and `generationRunId`; assert it throws/no-ops per
+ `assertFenceOwnership`'s contract, that `investigation.status` is unchanged by this call, and —
+ separately — start and let succeed a real replacement `GenerationRun` for the same Investigation
+ (reaching `'brief-generated'`) before the stale call is attempted. Assert BOTH: (a)
+ `getInvestigationWorkspace`'s own read never reports `'generation-failed'` for this Investigation
+ at any point after the replacement run's success, and (b) `getProblemDepartmentOverview`'s
+ `investigations[]` row for this Investigation independently reports the real, current
+ `'brief-generated'` status, never `'generation-failed'` — a stale run must never appear as
+ `generation-failed` in either read model, proven against both, not asserted for one and inferred
+ for the other.
+14. **New, required (SOL-HIGH-2 fix regression) — abandon-flow atomicity closes the replacement-run
+ interleaving gap.** Seed a genuinely stale, non-correction, in-progress run; drive
+ `abandonGenerationRun` up to (but not past) the commit of its steps 4-6 transaction (via a test
+ hook/transaction-boundary instrumentation, not a real network race), and from a second, concurrent
+ connection attempt to create a new `GenerationRun` for the same Investigation. Assert the second
+ attempt cannot succeed until the abandon transaction commits (§1.1's concurrency guard is not
+ observable as cleared mid-transaction), and that once the abandon transaction does commit, the
+ Investigation's status transition to `'generation-failed'` and the run's finalization to `'failed'`
+ are both visible atomically — there is no read, at any isolation point, that observes one without
+ the other, and no interleaved replacement run can be created and completed inside that gap.
+15. **Required — the corrected lock order does not
+ deadlock under real concurrent contention.** Using two real, separate database connections (not
+ mocks, not hooks): from connection A, `BEGIN` and lock `investigation FOR UPDATE` for a seeded
+ Investigation/GenerationRun pair, then — while still holding that lock, before committing — from
+ connection B, drive the abandon flow's transaction against the same pair up to and including its
+ own `investigation FOR UPDATE` acquisition (which blocks on connection A's lock, as expected,
+ rather than deadlocking); then have connection A proceed to acquire `generation_run FOR UPDATE`
+ (matching Phase 4's own within-transaction order) and commit; assert connection B's transaction
+ then proceeds and commits with no `40P01` (`deadlock_detected`) error at any point. Run the
+ mirror case — connection A holding `investigation` while `attemptGenerationFailedTransition`
+ (SOL-HIGH-2 wrapper) is driven from connection B — with the same assertion. Both directions
+ acquire `investigation` before `generation_run`, so no ordering inversion exists for Postgres to
+ deadlock on; this test proves that against a real database rather than arguing it from the text
+ above.
 
 ---
 
@@ -771,8 +1195,8 @@ interface GenerationRunNotFoundResponseBody {
 // synchronously observe one of these three outcomes. They are surfaced exclusively via the next
 // GET.../workspace poll's latestGenerationRun.outcome === 'failed' plus that run's real recorded
 // GenerationStep.error text (§4.2 step 7) — the same honest-progress mechanism as every other
-// terminal outcome. A prior draft of this document defined a GenerationRunFailedResponseBody here;
-// that type is withdrawn as a contradiction of the non-blocking design (US-3, §4.2).
+// terminal outcome. No GenerationRunFailedResponseBody type exists here — such a type would
+// contradict the non-blocking design (US-3, §4.2).
 ```
 
 ### 3.1a `GET.../brief-versions/by-version/:versionNumber` and `POST.../decisions` request/response
@@ -1041,6 +1465,20 @@ interface AbandonGenerationRunNotFoundResponseBody {
 }
 ```
 
+**Deadlock disposition.** No new error response is added for
+a Postgres deadlock (`40P01`). §1.6 step 4's lock-order fix makes the abandon flow acquire
+`investigation FOR UPDATE` before `generation_run FOR UPDATE`, in that order, on every path that
+touches both rows — matching Phase 4 (`generateBriefVersion.ts:552`, then `:677`) and the
+SOL-HIGH-2 `attemptGenerationFailedTransition` wrapper exactly. With every transaction in this file
+that locks both rows taking them in the same order, Postgres's deadlock detector has no cycle to
+find: a second transaction contending for `investigation` simply blocks until the first commits,
+then proceeds — it does not deadlock, because it never holds `generation_run` while waiting on
+`investigation`. This is proved, not merely argued, by §1.6 Tests item 15 (two real, separate
+connections, correct order, asserts no `40P01`). If a future edit ever introduces a THIRD lock
+ordering path that could deadlock against these two, it must be caught by re-running that test
+against the new path before merge — this disposition holds only as long as every code path
+touching both rows preserves this order.
+
 ### 3.2 `GET.../workspace` response (Workspace Read Model)
 
 The defining constraint (US-4, Anti-Patterns): every field is a projection of a persisted row or a
@@ -1278,9 +1716,9 @@ function getBriefForReview(briefVersionId: string): Promise<GetBriefForReviewRes
 // negativeFindings, uncertainty, recommendation, personalPullNotes, priorDecisions.
 ```
 
-**No narrowing (revised, 2026-08-22 material scope correction)**: the prior draft of this
-document deferred `assignedState`/`isSuperseded` to a documented fallback because
-`StatusEvent`/`assignValidityState` were out of scope. Per Danny's 2026-08-22 ruling, US-12 restores
+**No narrowing (2026-08-22 material scope correction)**: `assignedState`/`isSuperseded` are not
+deferred to a documented fallback on the grounds that `StatusEvent`/`assignValidityState` are out of
+scope. Per Danny's 2026-08-22 ruling, US-12 restores
 Slice 12's full contract to this checkpoint, so `getBriefForReview`'s `assignedState` fields (both
 the top-level `BriefVersion` one and each `claimVersions[i].assignedState`) resolve through the real
 `getAssignedState` query (§4.7) against actual `StatusEvent` rows (§3.6) — not a hardcoded
@@ -1288,8 +1726,8 @@ the top-level `BriefVersion` one and each `claimVersions[i].assignedState`) reso
 of Scope), every `StatusEvent` row this sprint's own surface can produce is `[]` until Forge's own
 test harness or a future sprint appends one directly — so `getAssignedState`'s documented
 `'valid'`-when-no-`StatusEvent`-exists fallback (`problem-department-mvp/02-ARCHITECTURE.md` §4,
-Query 1) is still the value every field resolves to in practice today. The distinction from the
-prior draft is real: this is the query's own honest fallback behavior against an empty table, not a
+Query 1) is still the value every field resolves to in practice today. This is the query's own
+honest fallback behavior against an empty table, not a
 short-circuit that skips the query — `getBriefForReview` calls `getAssignedState` unconditionally
 for every `BriefVersion`/`ClaimVersion` it resolves, so the moment any `StatusEvent` row exists
 (from a future in-scope invalidation trigger, or from `assignValidityState` invoked directly in a
@@ -1412,22 +1850,24 @@ END $$;
 ```
 
 Migration numbering: `008_reconcile_brief_versioning_constraints.sql` is the highest existing
-migration (confirmed via `ls src/db/migrations/`); `009`-`012` are the four numbers this revision
+migration (confirmed via `ls src/db/migrations/`); `009`-`013` are the five numbers this revision
 assigns, named here rather than left to Forge to guess, matching this doc set's existing practice
 of naming exact migration files in architecture (§1.6 of the MVP architecture did the same for
-`005`). Per `04-ROADMAP.md`, the four files are CREATED in this order across slices: `009` in
-C2-S2, `012` (§4.8's `generation_run_consumed_source` table) in C2-S3, `011` (§3.6) in C2-S4, and
-`010` in C2-S5 — i.e. the migration FILES are not created in ascending numeric order (`012` and
-`011` exist on disk before `010` does). This is safe: `src/db/migrate.ts`'s runner tracks applied
-migrations per-filename in a `schema_migrations` table (`filename TEXT PRIMARY KEY`), applying
-whichever files in `migrations/` are not yet in that table, sorted lexically by filename at run
-time — it is not a numeric high-water-mark that assumes contiguous, in-order file creation. A
-database that has only `009` and `012` on disk applies exactly those two in `009`, `012` order;
-when `011` and `010` are added later by their own slices, the next run applies them in `010`, `011`
-lexical order and both are recorded independently. No migration's SQL depends on a lower-numbered
-file already existing (each is a self-contained `CREATE`/`ALTER` against tables already present as
-of `008`), so out-of-numeric-order creation introduces no ordering hazard given this runner's real
-tracking mechanism.
+`005`). Per `04-ROADMAP.md`, the five files are CREATED in this order across slices: `009` and
+`013` (`013_source_artifact_canonical_identity.sql`, §1.4a/§1.4b/§4.8's canonical-identity/dedup
+columns) both in C2-S2, `012` (§4.8's `generation_run_consumed_source` table) in C2-S3, `011`
+(§3.6) in C2-S4, and `010` in C2-S5 — i.e. the migration FILES are not created in ascending numeric
+order (`013`, `012`, and `011` exist on disk before `010` does). This is safe: `src/db/migrate.ts`
+(read directly) sorts `readdirSync(MIGRATIONS_DIR)` lexically (`.sort()`) and runs whichever
+filenames are not yet recorded in the `schema_migrations` table (`filename TEXT PRIMARY KEY`) — it
+is not a numeric high-water-mark that assumes contiguous, in-order file creation, and it applies
+files strictly in lexical filename order regardless of the order in which they were authored. A
+database that has only `009` and `013` on disk applies exactly those two in `009`, `013` order;
+when `012`, `011`, and `010` are added later by their own slices, the next run applies them in
+`010`, `011`, `012` lexical order and each is recorded independently. No migration's SQL depends on
+a lower-numbered file already existing (each is a self-contained `CREATE`/`ALTER` against tables
+already present as of `008`), so out-of-numeric-order creation introduces no ordering hazard given
+this runner's real, verified sort-and-apply-unrecorded-by-filename mechanism.
 
 ### 3.6 `StatusEvent` (new persisted type — US-12)
 
@@ -1571,7 +2011,10 @@ apiRoutes.get(
 apiRoutes.post(
  '/api/brief-versions/:briefVersionId/decisions',
  async (req, res) => { /* body-shape validation (400) before any service call, then
- recordDecision({ briefVersionId: req.params.briefVersionId,...req.body }) (§4.3) */ });
+ recordDecision({ briefVersionId: req.params.briefVersionId,...req.body }) (§4.3) —
+ catches BriefVersionNotFoundError (SOL-MEDIUM-5 fix, §4.3) and maps it 1:1 to
+ 404 SubmitDecisionVersionNotFoundResponseBody; catches WatchRequiresConditionError
+ and maps it 1:1 to 422 SubmitDecisionWatchRequiresConditionResponseBody */ });
 ```
 
 ### 4.2 Generation Run Connector — orchestration
@@ -1600,9 +2043,8 @@ async function createGenerationRunForInvestigation(investigationId: string): Pro
 // same honest-progress mechanism US-4 already specifies for every other terminal outcome. This is
 // not a loss of information: every one of those three error classes already causes
 // generateBriefVersion to finalize a real, terminal, failed GenerationRun/GenerationStep before
-// rethrowing (confirmed, §1.3) — the workspace read model was always the correct place to observe
-// a terminal outcome that happens after the response is sent; the prior draft's design just never
-// let the response return early enough for that to matter.
+// rethrowing (confirmed, §1.3) — the workspace read model is the correct place to observe
+// a terminal outcome that happens after the response is sent.
 ```
 
 Steps (each numbered step maps directly to one US-3 acceptance criterion):
@@ -1645,8 +2087,8 @@ Steps (each numbered step maps directly to one US-3 acceptance criterion):
  > `'open'` or `'generation-failed'`) are, in fact, structurally UNREACHABLE in live code (§5.4's
  > totality proof: once any `BriefVersion` exists, `investigation.status` is always either
  > `'brief-generated'` or transiently in-progress — never `'open'`/`'generation-failed'` with a
- > `ProblemBrief` on record). A prior draft's concern that a correction attempt could itself fail
- > and leave status `'generation-failed'` while `problemBriefId` is still set was false:
+ > `ProblemBrief` on record). A correction attempt cannot itself fail
+ > and leave status `'generation-failed'` while `problemBriefId` is still set:
  > `attemptGenerationFailedTransition` (`generateBriefVersion.ts:263-267`) never even attempts the
  > `'generation-failed'` transition for a correction, so a failed correction always leaves status
  > at `'brief-generated'`, never `'generation-failed'`. This bullet's `'open'`/`'generation-failed'`
@@ -1654,10 +2096,9 @@ Steps (each numbered step maps directly to one US-3 acceptance criterion):
  > takes for its own unreachable `Generation-Failed` case), not because live code exercises it —
  > only the `'brief-generated'` case is live.
 
- This revises the prior draft's blanket "`'brief-generated'` is never eligible" rule, which
- reflected US-13 being out of scope at the time. The evidence-gated branch above is the only
- change; the `'open'`/`'generation-failed'` branches, and the concurrent-run guard, are unchanged
- from the prior draft.
+ The Generation Eligibility Rule above does NOT treat `'brief-generated'` as blanket-ineligible —
+ US-13 restores the evidence-gated correction branch. The `'open'`/`'generation-failed'` branches,
+ and the concurrent-run guard, apply exactly as stated above regardless of that branch.
 
  **422 vs. 409 — which status the ordinary concurrent-click case actually returns.** Because
  the concurrent-run guard ("no `GenerationRun` currently `in-progress`") is evaluated HERE, at step
@@ -1699,9 +2140,8 @@ Steps (each numbered step maps directly to one US-3 acceptance criterion):
  this Investigation via the existing `getInvestigation` result's `problemBriefId`; if a
  `ProblemBrief` exists, pass its `currentVersionId` as `supersedesVersionId` (a correction); if
  none exists, omit it (an initial generation). The client never supplies this flag — there is no
- field for it in `CreateGenerationRunRequestBody` (§3.1). **Revised, 2026-08-22**: the prior draft
- stated this branch was unreachable through this connector because `'brief-generated'` was never
- eligible; US-13 restores exactly this path — a `'brief-generated'` Investigation with new
+ field for it in `CreateGenerationRunRequestBody` (§3.1). This branch is reachable through this
+ connector: a `'brief-generated'` Investigation with new
  evidence (step 2's revised rule) reaches this step with a `ProblemBrief` already existing, so
  `supersedesVersionId` is set to its `currentVersionId` and this is now the live US-13 correction
  path, not dead code. It is also still reachable, defensively, for the `'open'`/`'generation-failed'`
@@ -1799,9 +2239,8 @@ Steps (each numbered step maps directly to one US-3 acceptance criterion):
  ```
  The orchestration function's `'conflict'` outcome (declared with this exact shape already, above)
  carries this distinction directly: `{ outcome: 'conflict'; existingGenerationRunId: string;
- stillInProgress: boolean }` — the signature at the top of §4.2 and this call site now agree
- verbatim (2026-08-24 correction — the prior draft declared the two-field shape at the top and
- only mentioned the third field here, never restating the signature correctly).
+ stillInProgress: boolean }` — the signature at the top of §4.2 and this call site agree
+ verbatim.
  `GenerationRunConflictResponseBody` (§3.1) gains a matching `stillInProgress: boolean` field —
  `true` for the ordinary case (a genuinely still-in-progress conflicting run), `false` for the
  race case (the conflicting run has already finished by the time of the lookup); the response
@@ -1809,9 +2248,9 @@ Steps (each numbered step maps directly to one US-3 acceptance criterion):
  operator can simply retry, rather than implying an in-progress run the client would then poll
  against forever (that run is already terminal — a poll against it via the normal workspace read
  model will show its real, already-terminal outcome immediately).
- The concurrent-generation guard is still `createGenerationRun`'s own `INSERT`, backed by §1.1's
- partial unique index — unchanged from the prior draft. What changes is WHEN the route learns the
- outcome: as soon as `onRunCreated` fires (i.e. the instant the INSERT commits), not after the
+ The concurrent-generation guard is `createGenerationRun`'s own `INSERT`, backed by §1.1's
+ partial unique index. The route learns the
+ outcome as soon as `onRunCreated` fires (i.e. the instant the INSERT commits), not after the
  full pipeline resolves.
 5b. **After `runCreated` resolves, the route returns to the client — it does not `await pipeline`.**
  `pipeline` (the full `generateBriefVersion` call) keeps running in the same Node process,
@@ -1952,17 +2391,44 @@ function recordDecision(input: {
  description: string;
  }>;
 }): Promise<Decision>;
-// Rejects (throws a typed WatchRequiresConditionError) if decision === 'Watch' and
-// reconsiderationConditions is empty/absent, OR every supplied condition's `description` is
-// whitespace-only after trim (01-REQUIREMENTS.md Edge Cases — "Watch submitted with a condition
-// field present but whitespace-only"). No Decision or ReconsiderationCondition row is persisted on
-// rejection — enforced by performing the validation BEFORE opening the insert transaction, and by
-// the transaction covering both tables (§3.5).
+// SELF-2 fix — ONE order, stated once, consistently, everywhere this document
+// and 04-ROADMAP.md describe this function: (1) route-level body-shape validation (malformed JSON,
+// wrong field types) happens BEFORE this function is ever called, as a distinct 400 case, entirely
+// outside any transaction — this is unchanged and never conflated with the two steps below. (2)
+// `recordDecision` OPENS its transaction first. (3) Inside that open transaction, it performs a
+// same-transaction existence check on `briefVersionId` (`SELECT 1 FROM brief_version WHERE id = $1
+// FOR UPDATE`, or the equivalent SELECT-for-existence the transaction's own client issues) BEFORE
+// evaluating decision/reconsiderationConditions at all. A miss throws the new, typed
+// `BriefVersionNotFoundError` (below), the transaction is rolled back, and ZERO writes occur. (4)
+// Only once existence passes does it evaluate the Watch ≥1-condition rule (still inside the SAME
+// open transaction, not before opening it) — a decision === 'Watch' with reconsiderationConditions
+// empty/absent, or every supplied condition's `description` whitespace-only after trim
+// (01-REQUIREMENTS.md Edge Cases — "Watch submitted with a condition field present but
+// whitespace-only"), rolls back this same transaction and throws `WatchRequiresConditionError`,
+// again with ZERO writes. (5) Only once both checks pass does it perform the Decision/
+// ReconsiderationCondition inserts and commit. This ordering matters for exactly one reason: a
+// request carrying BOTH a nonexistent briefVersionId AND a zero-condition Watch must report 404,
+// not 422 — the resource not existing is the more fundamental defect, and reporting it first avoids
+// a misleading "fix your Watch conditions" message for a request that could never have succeeded
+// regardless. There is exactly one stated order (existence check, then the Watch ≥1-condition
+// rule, both inside the same open transaction) — Watch validation never happens before opening the
+// insert transaction — and it matches §3.5's schema comment and every reference to this function
+// in `04-ROADMAP.md`.
+// No Decision or ReconsiderationCondition row is persisted on either rejection — enforced by both
+// checks running inside the one transaction covering both tables (§3.5), never by validating
+// before that transaction opens.
 // No decidedBy parameter (§1.2). Never mutates or reassigns an existing Decision's briefVersionId.
 // Does not reject a second Decision on the same briefVersionId (matches problem-department-mvp §4's
 // documented multi-Decision-per-version behavior, unchanged).
 
 export class WatchRequiresConditionError extends Error {}
+export class BriefVersionNotFoundError extends Error {} // SOL-MEDIUM-5 fix — carries briefVersionId;
+ // the route (§3.1a) maps this 1:1 to the
+ // existing `404
+ // SubmitDecisionVersionNotFoundResponseBody`
+ // (§3.1a), the same response shape already
+ // pinned there — no new response type needed,
+ // only the mechanism that actually throws it.
 ```
 
 ### 4.4 `getInvestigationWorkspace`
@@ -2058,7 +2524,7 @@ function getDecisionsForBriefVersion(briefVersionId: string): Promise<DecisionWi
 
 ### 4.6 `ssrfGuardedFetch.ts` fix (US-7)
 
-Re-read `src/services/ssrfGuardedFetch.ts` in full this pass (not only the DNS branch). `safeLookup`
+`src/services/ssrfGuardedFetch.ts` in full (not only the DNS branch): `safeLookup`
 has **three** call sites for its `callback` parameter, all inside the same function:
 
 1. `allowedTestHosts` bypass (`:135-138`) — forwards `(hostname, options, callback)` unchanged to
@@ -2130,12 +2596,11 @@ addresses and proceed with the rest" behavior in the live code, and implementing
 this guard from fail-closed to fail-open; it must not be built. No change to `isDisallowedIp`,
 `decodeMappedIpv4Hex`, `inIpv4Cidr`, `ipv4ToInt`, or any constant.
 
-**IP-literal exemption claim — withdrawn as an assertion (G2).** The prior draft of this section
-asserted "Node 22 skips the custom `lookup` for literal-IP hosts," citing only this file's own
-comment (`ssrfGuardedFetch.ts:199-202`) as if it were an external confirmation — it is not; it is
-this codebase's own prior reasoning about itself, unverified against Node's actual documented or
-observed behavior. That assertion is removed. What **is** verified this pass, and is kept: `url`-
-type sources with **hostnames** (not IP literals) fail to resolve correctly under Node 22's
+**IP-literal exemption claim — not asserted (G2).** This document does not claim "Node 22 skips the
+custom `lookup` for literal-IP hosts" — this file's own comment (`ssrfGuardedFetch.ts:199-202`) is
+this codebase's own reasoning about itself, not an external confirmation, and is not treated as
+verification of Node's actual documented or observed behavior. What **is** verified, and is kept:
+`url`-type sources with **hostnames** (not IP literals) fail to resolve correctly under Node 22's
 `autoSelectFamily` + `{ all: true }` custom-`lookup` contract, because the DNS-resolution branch's
 callback shape does not match what that contract requires (confirmed by direct inspection of the
 branch's callback invocation vs. Node's documented `{ all: true }` custom-`lookup` shape).
@@ -2173,7 +2638,7 @@ IP-literal `startUrl`) before writing any test that depends on a skip/no-skip as
  block-check branch. This is the one edited code path with no asserting test before this fix; it
  must exercise call-site disposition 2 directly, not the bypass branch (disposition 1), which is
  unchanged and does not contain the new arm.
-3. A regression case (unchanged from the prior draft) asserting that a hostname resolving to a
+3. A regression case asserting that a hostname resolving to a
  mixed allowed/disallowed address set is still rejected in full with `EBLOCKEDHOST` under
  `{ all: true }` — proves the block semantics were not weakened by the shape fix.
 4. A regression case asserting `safeLookup` invoked with `options.all` falsy (a direct unit call,
@@ -2183,6 +2648,94 @@ IP-literal `startUrl`) before writing any test that depends on a skip/no-skip as
 
 None of these four require the skip/no-skip claim to be true or false — all four assert observed,
 reproducible behavior under the real code path.
+
+**Disposition — the three constants in this file — already applied on this branch, verified
+against live source (2026-09-06).** `ssrfGuardedFetch.ts:12-40` carries `FETCH_TIMEOUT_MS`
+(`10_000`), `MAX_RESPONSE_BYTES` (`5 * 1024 * 1024`), and `MAX_REDIRECTS` (`5`). These no longer
+carry `PROVISIONAL — unvalidated; owner: Ledger` text, or any `PROVISIONAL` marker text at all —
+each was rewritten to a different comment style entirely: "Unsourced — no mathematical, scientific,
+or programmatic precedent has been shown for [value] ... This value must not be treated as
+accepted: it has no named owner because nobody has reviewed real evidence for it, and 'PROVISIONAL,
+owner: [name]' is not a substitute for that evidence — a label is not a citation (DDR-0002, ...)."
+Per the global research-data-integrity rule, an agent naming itself as owner is self-certification,
+not a named human owner, and is disqualified regardless of the tag's formatting — the same defect
+class `MIN_CONTENT_LENGTH` had, and `owner: unassigned` is not a valid substitute either (it still
+leaves an unsourced number live with no accountable exit).
+
+**RESOLVED — 2026-09-06.** `docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md` has
+been restored to this branch's `docs/decisions/`, and its Category B table (rows B3, B4, B5)
+already classifies these exact three constants as "infrastructure / operational safety limits":
+`FETCH_TIMEOUT_MS` (connection timeout), `MAX_RESPONSE_BYTES` (response size cap), `MAX_REDIRECTS`
+(redirect hop cap). Per that disposition, all three bound resource consumption and failure blast
+radius rather than gate evidence or correctness quality, so — unlike `MIN_CONTENT_LENGTH` — they do
+**not** require a citable source or a genuinely-reviewed named owner under DDR-0002's branch (a)/(b).
+
+**Edit already applied (C2-S1, this file):** the literal text `owner: Ledger` is deleted from all
+three constants' comments, and no owner has been added in its place — not a human name, not
+"unassigned." No comment on this branch carries `PROVISIONAL` marker text of any kind any longer —
+each comment cites `docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md` directly
+(Category B, rows B3/B4/B5) as the settled disposition, via the "Unsourced — ..." wording quoted
+above. The numeric values (`10_000`, `5 * 1024 * 1024`, `5`) are unchanged by this edit.
+
+**Revisit trigger, per DDR-0002:** observed real operational incidents (timeouts firing on
+legitimate slow sources, the size cap truncating legitimate long-form sources, the redirect cap
+breaking legitimate chains) — not a scheduled calibration or measurement dispatch. DDR-0002 also
+flags a scope limit specific to `MAX_RESPONSE_BYTES`: it stays Category B only while it remains a
+hard reject rather than a silent truncation. Confirmed live in this branch:
+`src/services/ssrfGuardedFetch.ts:270-278` throws `Response exceeded maximum size of
+${MAX_RESPONSE_BYTES} bytes` and aborts the fetch — it does not truncate and return partial content
+— so the Category B classification holds. If that behavior is ever changed to a silent truncation,
+`MAX_RESPONSE_BYTES` returns to Category A and requires a real measurement, per DDR-0002's own
+stated scope limit.
+
+### 4.6a `FetchResult` gains `finalUrl` (SOL-MEDIUM-1 fix — required for §4.8's canonical identity)
+
+§4.8's `canonical_url` mechanism requires the FINAL, post-redirect URL — the URL a source's content
+was actually retrieved from, after every redirect hop `fetchWithGuards` follows, not the URL
+originally submitted. Live `src/services/ssrfGuardedFetch.ts:183-187`'s `FetchResult` interface
+today is `{ statusCode: number; statusMessage: string; body: string }` — no URL field of any kind.
+`computeSourceResolution` derives `canonical_url` from the same fetch call — no second network
+call — which requires `FetchResult` to carry a URL; this section specifies that field.
+
+**Fix — `FetchResult` gains a required `finalUrl: string` field, populated at the one point
+`fetchWithGuards` actually knows it: the terminal, non-redirect branch of its own recursive
+resolution.**
+
+```typescript
+export interface FetchResult {
+  statusCode: number;
+  statusMessage: string;
+  body: string;
+  finalUrl: string; // SOL-MEDIUM-1 fix — the post-redirect URL this response was actually retrieved
+                     // from; `startUrl.toString()` at the exact call frame that resolves (not
+                     // recurses), since `fetchWithGuards` already re-invokes itself with the
+                     // redirect target as `startUrl` at every hop (`fetchWithGuards.ts`'s existing
+                     // `fetchWithGuards(nextUrl, redirectsLeft - 1).then(resolve, reject)` call) —
+                     // the terminal frame's own `startUrl` IS the final URL by construction, no
+                     // new state, no new parameter threading across hops.
+}
+```
+
+The one edit this requires: the existing `resolve(...)` call inside the terminal (non-redirect,
+`res.on('end', ...)`) branch of `fetchWithGuards` (today constructing `{ statusCode, statusMessage,
+body }`) now also includes `finalUrl: startUrl.toString()` — `startUrl` at that exact point in the
+function is already the final, fully-resolved URL, since every redirect hop re-invokes
+`fetchWithGuards` with the redirect target as ITS `startUrl` rather than mutating a shared variable.
+No new parameter, no new call site, no change to the redirect-following logic itself.
+
+Both existing callers of `fetchWithGuards` — `resolveSourceArtifact.ts`/`computeSourceResolution`
+(§1.4a) and `searchWeb.ts`'s `retrieveAndClassify` (§4.8's searchWeb write-path fix, below) — gain
+access to `finalUrl` for free from this one additive field; neither needs its own redirect-following
+logic or a second fetch. `computeSourceResolution`'s `canonical_url` derivation (§4.8) now reads
+`fetchResult.finalUrl` (not the originally-submitted `raw` URL) before applying `URL` normalization
+and tracking-parameter stripping — this is the "final, post-redirect URL" §4.8 already specified in
+prose, now backed by an actual field to read it from.
+
+**Regression coverage (required, this fix):** a test asserting that fetching a URL which redirects
+(via the SSRF-guarded module's own existing redirect-following, mocked or against a real
+test-controlled redirect chain) returns a `FetchResult.finalUrl` equal to the terminal URL, not the
+originally-requested one — proving the field is populated from the actual terminal frame, not
+echoed back from the caller's original input.
 
 ### 4.7 Validity/Invalidation Service (US-12)
 
@@ -2333,7 +2886,7 @@ consumed, leaving it "not yet consumed" forever — including immediately after 
 successful generation with no new source ever added, since a first run's own content-retrieved
 sources producing zero evidence would satisfy every clause of the eligibility anti-join below.
 Writing the ledger from the earlier `startSnapshot` (`:330`, before Extraction runs) is separately
-wrong for the reason a prior draft of this section already identified: `getEvidenceForInvestigation`
+wrong: `getEvidenceForInvestigation`
 reads from `evidence_item` (`getEvidenceForInvestigation.ts:22-27`), which is EMPTY for a first-ever
 run, so `startSnapshot` alone is always empty on that run regardless of the fix below.
 
@@ -2350,7 +2903,7 @@ the Add-Source connector and resolved to `'content-retrieved'` WHILE this run is
 (after `:333`/`:393` but before `:479`) would, under a plain resolution-status filter at `:479` alone,
 be recorded as consumed even though Extraction's own read at `:333` never saw it — permanently
 disqualifying that genuinely-new source from ever unlocking US-13 eligibility. Bounding the `:479`
-read by the run's own `started_at` timestamp (the prior draft's approach) avoids that
+read by the run's own `started_at` timestamp avoids that
 false-disqualification, but at the cost of a narrower, opposite gap: a source that resolves to
 `'content-retrieved'` in the window `(started_at, :333]` — after the run starts but before
 Extraction's own internal read executes — IS actually read and reflected in the current
@@ -2370,42 +2923,248 @@ discarded), and `generateBriefVersion.ts` captures that returned set directly in
 second, independent `getInvestigation` call bounded by `started_at`:
 
 ```typescript
-// generateBriefVersion.ts, immediately after Extraction (`:333`) resolves — replaces the
-// independent getInvestigation + startedAt-bound re-read a prior draft used, with the exact set
-// Extraction itself already read, eliminating both the false-disqualification risk (a source
+// generateBriefVersion.ts, immediately after Extraction (`:333`) resolves — captures the exact set
+// Extraction itself already read (not an independent getInvestigation + startedAt-bound re-read),
+// eliminating both the false-disqualification risk (a source
 // resolved mid-run, before Extraction's own read, is correctly included) and the false-eligibility
 // gap (a source resolved after Extraction's own read, even if before `:479`, is correctly excluded,
 // since Extraction never saw it).
-const consideredSourceArtifactIds = extraction.usableSourceIds;
+const primaryUsableSourceIds = extraction.usableSourceIds;
 ```
 
+**SELF-4 fix — landscape research's own read set is unioned in, not silently dropped.**
+`consideredSourceArtifactIds` is not written from `extraction.usableSourceIds` alone: primary
+Extraction runs at
+`:333`, BEFORE Landscape Research's own `extractClaimsAndEvidenceForSourceArtifacts` call
+(`landscapeResearcher.ts:272`, reached from `generateBriefVersion.ts:393`) has even executed, so
+`extraction.usableSourceIds` at that point cannot possibly contain any landscape-research-origin id.
+A source incorporated only through landscape research would therefore have no ledger row if the
+primary set alone were used, and could later be resubmitted (verbatim, by an operator who happened
+to already know its URL) and falsely register as new evidence — the fix below closes this.
+
+**Fix.** `extractClaimsAndEvidenceForSourceArtifacts` (`extractClaimsAndEvidence.ts:410-...`) gains
+the identical additive return field `extractClaimsAndEvidence` already has —
+`usableSourceIds: string[]`, populated from its own already-computed `knownSourceIds`
+(`extractClaimsAndEvidence.ts`'s internal `usableSources.map((s) => s.id)`, the literal set of
+`source_artifact` ids THIS call actually extracted from, scoped to the ids
+`landscapeResearcher.ts:272` passed in as its own `sourceArtifactIds` parameter — no new
+computation, the array already exists internally, only surfaced rather than discarded, same pattern
+as the primary function's own fix above). `generateBriefVersion.ts` captures this second set
+immediately after Landscape Research's own call resolves (`:393`, alongside its existing handling of
+that call's result) and unions it with the primary set captured above, immediately before the ledger
+write at `:479` — the write is unmoved (still the same standalone `INSERT`, still at `:479`, still
+after every extraction pass the run performs has completed), only its input is now the union:
+
+```typescript
+// generateBriefVersion.ts, immediately before the ledger INSERT at :479 — union of both
+// extraction passes' own real read sets, computed after both have executed (Landscape Research's
+// own call at :393 has already resolved by this point in every code path, whether or not it
+// actually performed any research this run).
+const consideredSourceArtifactIds = Array.from(
+  new Set([...primaryUsableSourceIds, ...(landscapeResult?.usableSourceIds ?? [])]),
+);
+```
+
+(`landscapeResult?.usableSourceIds` is `undefined`/absent whenever Landscape Research does not run
+or produces no extractable sources this run — the union then degrades to exactly the primary set,
+unchanged from before this fix, so this is purely additive.)
+
 The ledger write remains a standalone `INSERT` at `:479` (Phase 3 check 1(c), independent of any
-`GenerationStep` write), one row per id in `consideredSourceArtifactIds`, NOT
-`universeSourceArtifactIds`. Because this now reflects Extraction's own real read set rather than an
-inferred boundary, a `'content-retrieved'` source that yields zero extracted evidence is still
-recorded consumed (Extraction reads over the Investigation's ENTIRE content-retrieved source set,
-`extractClaimsAndEvidence.ts:390-398`, so `usableSourceIds` includes it regardless of whether it
-produced any `EvidenceItem`) — closing the zero-evidence gap identified above without reopening the
-mid-run gap, and without leaving the narrower Extraction-read-boundary gap a `startedAt` comparison
-alone could not close. The ledger records BOTH `origin: 'submitted'` and `origin: 'landscape-research'`
-rows alike (no origin filter at write time); the eligibility query below already restricts to
-`sa.origin = 'submitted'` at READ time, so recording `'landscape-research'` rows here too is harmless
-(they can never satisfy the query's own `origin` filter) and keeps the ledger a simple, complete,
-origin-agnostic fact about what this run's Extraction step actually read, rather than duplicating
-origin-filtering logic in two places. This is a real fact about what this run's own code path
-actually read — not an inference from timing, from `started_at`, or from evidence survival — and it
-requires no timestamp comparison at all, since `usableSourceIds` is Extraction's own real read set at
-the moment it read it.
+`GenerationStep` write), one row per id in this UNIONED `consideredSourceArtifactIds`, NOT
+`universeSourceArtifactIds`. Because this now reflects the union of BOTH extraction passes' own real
+read sets rather than an inferred boundary or a primary-only set, a `'content-retrieved'` source that
+yields zero extracted evidence is still recorded consumed (both extraction functions read over their
+respective ENTIRE scoped content-retrieved source sets, `extractClaimsAndEvidence.ts:390-398`/
+`:410-419`, so `usableSourceIds` includes a source regardless of whether it produced any
+`EvidenceItem`) — closing the zero-evidence gap identified above without reopening the mid-run gap,
+and without leaving the narrower Extraction-read-boundary gap a `startedAt` comparison alone could
+not close, AND without leaving landscape-research-consumed sources permanently outside the ledger.
+The ledger records BOTH `origin: 'submitted'` and `origin: 'landscape-research'` rows alike (no
+origin filter at write time, and now genuinely both are actually present in the unioned set, not
+just theoretically eligible to be); the eligibility query below already restricts to `sa.origin =
+'submitted'` at READ time, so recording `'landscape-research'` rows here too is harmless (they can
+never satisfy the query's own `origin` filter) and keeps the ledger a simple, complete,
+origin-agnostic fact about what this run's two extraction steps actually read, rather than
+duplicating origin-filtering logic in two places. This is a real fact about what this run's own code
+paths actually read — not an inference from timing, from `started_at`, or from evidence survival —
+and it requires no timestamp comparison at all, since both `usableSourceIds` sets are each
+extraction function's own real read set at the moment it read it.
 
 
-**Eligibility query** — an anti-join against the current `BriefVersion`'s producing run, by both
-`id` (an already-consumed row, resubmitted unchanged) and by exact trimmed `raw` content (a NEW
+**SOL-MEDIUM-1 fix — canonical source identity and resolved-content fingerprint, not exact-string
+equality alone.** The `trim(raw)` anti-join below catches only a byte-for-byte-identical
+resubmission of the same raw input. It does not catch: (a) the same URL submitted with a different
+scheme/trailing-slash/query-tracking-parameter/case-of-host, (b) a URL that redirects to a location
+already consumed under a different original URL, or (c) the same underlying document reached
+through two textually different URLs (e.g. a canonical link and a redirect-shortener link to it).
+US-13 AC2's "duplicate of an already-consumed source... even though it is a distinct Source row"
+disqualifier is not scoped to exact-string duplicates only — the fix below closes the full
+requirement, not a narrowed exact-match subset of it.
+
+**Where this is computed, and what it requires.** Three additive columns on `source_artifact`
+(SOL-MEDIUM-1 fix — the SQL block below carries all three columns this section
+and §1.4a both describe as living in migration `013`; the SQL block is the single
+source of truth and matches every prose reference to it), added in a new migration
+`013_source_artifact_canonical_identity.sql` (`013`, the next unused migration number after `012`;
+C2-S2's own scope, alongside `009` and §1.4a/§1.4b, since this is where
+`computeSourceResolution`/`resolveSourceArtifact` already live and all three new columns are
+populated exactly once, at resolution time, inside that same function):
+
+```sql
+-- 013_source_artifact_canonical_identity.sql
+ALTER TABLE source_artifact
+ ADD COLUMN IF NOT EXISTS canonical_url TEXT,
+ ADD COLUMN IF NOT EXISTS resolved_content_hash TEXT,
+ ADD COLUMN IF NOT EXISTS resolution_revision INTEGER NOT NULL DEFAULT 0; -- §1.4a SOL-MEDIUM-2's CAS
+                                                                          -- counter — same migration,
+                                                                          -- one ALTER TABLE, all
+                                                                          -- three additive columns
+
+-- SOL-MEDIUM-1 fix — one-time backfill for EXISTING, already-resolved rows. Adding these columns
+-- nullable-only (above) leaves every pre-migration `'content-retrieved'` row with NULL
+-- canonical_url/resolved_content_hash; the eligibility query's own anti-joins already exclude NULL
+-- identity values from the "already consumed" comparison set (`WHERE consumed_sa.canonical_url IS
+-- NOT NULL`/`consumed_sa.resolved_content_hash IS NOT NULL`), so an equivalent NEW submission could
+-- otherwise bypass an existing consumed row purely because that row predates this migration.
+--
+-- (1) resolved_content_hash — fully backfillable, no network call: every 'content-retrieved' row
+-- already has a non-NULL resolved_content (§1.4b/§4.8's own documented invariant), so its hash is
+-- a pure function of already-persisted data. This is plain SQL with no TypeScript dependency, so
+-- it runs here, inside migration 013 itself, in the same transaction as the ALTER TABLE above.
+UPDATE source_artifact
+   SET resolved_content_hash = encode(sha256(convert_to(resolved_content, 'UTF8')), 'hex')
+ WHERE resolution_status = 'content-retrieved'
+   AND resolved_content IS NOT NULL
+   AND resolved_content_hash IS NULL;
+```
+
+**`canonical_url`'s backfill cannot live inside migration `013` itself, and is specified as a
+separate, named, manually-run script instead.** `src/db/migrate.ts`
+executes every file under `src/db/migrations/` as a raw SQL string passed
+directly to `client.query(sql)`, one file per transaction — the migration runner has no hook of any
+kind for invoking TypeScript application code mid-migration, so a `.sql` file cannot call the real
+`canonicalizeUrl(raw)` helper directly. The column-add and the backfill are specified as two
+honestly-described steps:
+
+- **Migration `013` itself** — transactional and automatic, exactly like every other migration: the
+  `ALTER TABLE` above (all three columns) plus the plain-SQL `resolved_content_hash` backfill above
+  (no TypeScript dependency, so no reason to defer it). `canonical_url` is left `NULL` for every
+  pre-migration row by migration `013` alone — the `ALTER TABLE` adds the column nullable, nothing
+  in this migration file populates it.
+- **`src/db/scripts/backfill-013-canonical-url.ts` (new, named, manually-run, NOT part of any
+  migration file or transaction)** — a small one-off script that selects every `type = 'url'`,
+  `resolution_status = 'content-retrieved'` row with `canonical_url IS NULL`, calls the REAL
+  `canonicalizeUrl(raw)` helper (§4.8, `src/services/sourceCanonicalization.ts`) directly on each
+  row's stored `raw` value — no duplicated normalization logic, one implementation only — and
+  writes the result back with its own `UPDATE ... WHERE id = $1`. Forge runs this script manually,
+  once, immediately after migration `013` applies and before any other checkpoint work resumes;
+  this is part of C2-S2's own Done-When (§4.8/roadmap C2-S2), not an optional cleanup step. Because
+  this runs as a genuinely separate step from the `ALTER TABLE`, it is explicitly NOT transactional
+  with the column-add — a crash between the two leaves `canonical_url` `NULL` for pre-migration
+  rows exactly as it already is immediately after migration `013` alone, which is a safe, no-worse-
+  than-todo intermediate state (the eligibility query's `NULL`-tolerant anti-join fallback below
+  already handles it), not a corrupted one.
+- This backfill remains an explicitly disclosed DEGRADED fallback, not the real mechanism, for the
+  same reason as before: it is NOT fully backfillable without a live re-fetch (this script performs
+  no network I/O), since the true canonical value requires the FINAL post-redirect URL (§4.6a),
+  which is not recoverable from a stored `raw` value alone for a row that redirected. Calling the
+  real `canonicalizeUrl` helper against `raw` (instead of a resolved `finalUrl`) closes the majority
+  of the pre-migration gap (case/scheme/trailing-slash/tracking-parameter variants of the SAME
+  already-consumed URL) but does NOT close the redirect-normalization case (gap (b), §4.8) for rows
+  resolved before this migration — a pre-migration row that was reached via a redirect will
+  backfill to its ORIGINAL, not final, URL. This limitation is accepted and disclosed here, not
+  silently narrowed: every row resolved AFTER migration `013` ships computes the real, final-URL-
+  derived `canonical_url` per §4.8's live mechanism (inside `computeSourceResolution`, at resolution
+  time), so the degraded case is bounded to the existing-data population at migration time and does
+  not grow. A new test (`src/db/scripts/backfill-013-canonical-url.test.ts`) asserts the script
+  calls the real, imported `canonicalizeUrl` helper (not a hand-duplicated copy of its logic) and
+  correctly skips rows that are not `type = 'url'`/`'content-retrieved'` or whose `canonical_url` is
+  already non-`NULL`.
+
+**Eligibility-query fallback rule for any row this backfill still cannot resolve** (a `'url'` row
+whose `raw` itself fails `URL` parsing, or a `'text'` row, for which `canonical_url` is `NULL` by
+design and stays `NULL` even after backfill): the eligibility query's existing `canonical_url IS
+NULL OR canonical_url NOT IN (...)` structure already treats a `NULL` candidate `canonical_url` as
+"no canonical-identity anti-join contribution for this row" — this is unchanged and correct; it
+falls through to the `trim(raw)`/`resolved_content_hash` anti-joins, which the backfill above does
+make fully effective for every pre-migration row (`resolved_content_hash` has no degraded case,
+unlike `canonical_url`). No pre-migration row is left with a weaker guarantee than "duplicate
+content is caught by hash, duplicate raw text is caught by trim, duplicate canonical URL is caught
+prospectively from this migration forward and retroactively wherever the disclosed degraded backfill
+could compute one."
+
+- `canonical_url` — populated only for `type === 'url'` sources, inside `computeSourceResolution`
+  (§1.4a), immediately after the guarded fetch resolves any redirect chain, reading `§4.6a`'s
+  `FetchResult.finalUrl` (SOL-MEDIUM-1 fix — the same fetch call `ssrfGuardedFetch`/`resolveSourceArtifact`
+  already makes; no second network call, and now a real field to read the final URL from, rather
+  than an assertion that one was available). Computed from the FINAL, post-redirect URL (closing gap
+  (b) above) via Node's built-in `URL` normalization (lower-cased scheme and host, default port
+  stripped, trailing slash on a bare path normalized, fragment stripped) plus stripping of
+  well-known query-tracking parameters (`utm_*`, `gclid`, `fbclid` — among the most commonly
+  documented URL tracking parameters in general web practice; an allowlist-of-strip-targets, not a
+  numeric threshold, so no PROVISIONAL tag is owed here, but the honest framing is that this is a
+  reasonable-but-inherently-incomplete static list, not an exhaustive one — a tracking parameter
+  this list misses does not cause a valid duplicate to be missed silently: `resolved_content_hash`
+  below is the real backstop, catching byte-identical content regardless of which URL parameters
+  differ). `null` for any non-`'content-retrieved'` outcome or any non-`'url'` source (nothing to
+  canonicalize).
+- `resolved_content_hash` — populated for every `type` whenever `resolution_status ===
+  'content-retrieved'`, inside the same function, immediately after `resolved_content` is computed:
+  a SHA-256 hex digest of `resolved_content` (Node's built-in `crypto.createHash('sha256')`, no new
+  dependency). This is what closes gap (c): two textually different URLs (or a `url` and a `text`
+  source) that resolve to byte-identical content hash identically, independent of how they were
+  addressed. `null` for any non-`'content-retrieved'` outcome.
+
+Both columns are written by the SAME `UPDATE`/`INSERT` `resolveSourceArtifact`'s `persistResolution`
+(or, for the single-source re-check path, `recheckSourceArtifact`'s own compare-and-set `UPDATE`,
+§1.4a) already performs — no new write path, no new transaction, additive columns on an existing
+row write.
+
+**SOL-MEDIUM-1 fix — `searchWeb.ts`'s own direct `source_artifact` insert is a THIRD write path and must
+compute and persist both fields too.** Live `searchWeb.ts:247-253` inserts a `source_artifact` row
+directly for every landscape-research result classified `'retrieved'`, entirely independent of
+`resolveSourceArtifact`/`computeSourceResolution`. Computing canonical-identity fields only inside
+`computeSourceResolution` would leave every
+landscape-research-origin `source_artifact` row with permanently `NULL` `canonical_url`/
+`resolved_content_hash`, letting an equivalent duplicate bypass the eligibility query's
+anti-join entirely for this entire origin. Fix: `searchWeb.ts`'s `retrieveAndClassify` (§4.6a)
+already has access to `fetchWithGuards`'s `finalUrl` field for every result it retrieves; before its
+`INSERT INTO source_artifact` at `:247`, it now computes `canonicalUrl` (via the SAME `URL`-
+normalization-plus-tracking-parameter-stripping logic `computeSourceResolution` uses — extracted
+once, this checkpoint, into a small shared helper, `canonicalizeUrl(finalUrl: string): string`, in
+`src/services/sourceCanonicalization.ts` (new, tiny, pure function, no dependency of its own on
+`resolveSourceArtifact.ts` or `searchWeb.ts` so both can import it without a circular dependency) so
+this is genuinely one implementation, not two independently-maintained copies) and
+`resolvedContentHash` (the same SHA-256-of-`resolvedContent` computation, inlined or via the same
+shared helper module) and includes both in that `INSERT`:
+
+```sql
+-- searchWeb.ts:247, extended (SOL-MEDIUM-1 fix — was: investigation_id, submission_id, type, raw, origin,
+-- resolution_status, resolution_resolved_at, resolved_content only)
+INSERT INTO source_artifact
+   (investigation_id, submission_id, type, raw, origin,
+    resolution_status, resolution_resolved_at, resolved_content,
+    canonical_url, resolved_content_hash)
+ VALUES ($1, NULL, 'url', $2, 'landscape-research', 'content-retrieved', now(), $3, $4, $5)
+ RETURNING id;
+```
+
+This closes the third of the three write paths SOL-MEDIUM-1 identified (`resolveSourceArtifact`'s own
+`persistResolution`, `recheckSourceArtifact`'s compare-and-set `UPDATE`, and now `searchWeb.ts`'s
+direct insert) — every `source_artifact` row this system can ever create now has its canonical
+identity populated at the moment of its own creation/resolution, regardless of which of the three
+code paths created it.
+
+**Eligibility query** — an anti-join against the current `BriefVersion`'s producing run, by `id` (an
+already-consumed row, resubmitted unchanged), by exact trimmed `raw` content (a NEW
 `source_artifact` row — its own distinct id, never itself in the consumed table — whose content is
-byte-for-byte the same evidence already consumed under a different row). Content-identity, not row
-identity, is what US-13 AC2's "duplicate of an already-consumed source... even though it is a
-distinct Source row" disqualifier requires; excluding only by `id` (the prior draft of this query)
-leaves exactly that disqualified case reachable, since a resubmission always gets a fresh
-`source_artifact.id`:
+byte-for-byte the same evidence already consumed under a different row), AND by the two canonical-
+identity columns above (`canonical_url`, `resolved_content_hash`) — closing the redirect/
+normalization/cross-URL-same-content gaps the `trim(raw)` check alone cannot catch. Content-identity,
+not row identity or raw-string identity, is what US-13 AC2's "duplicate of an already-consumed
+source... even though it is a distinct Source row" disqualifier requires in full; excluding only by
+`id`, or only by `trim(raw)`, would both leave real disqualified cases reachable, since a resubmission always gets a
+fresh `source_artifact.id` and need not be byte-identical raw text to be the same underlying source:
 
 ```sql
 SELECT EXISTS (
@@ -2429,6 +3188,26 @@ SELECT EXISTS (
  -- resubmission under a new source_artifact.id is
  -- still excluded, closing the id-only gap above
  )
+ AND (
+ sa.canonical_url IS NULL
+ OR sa.canonical_url NOT IN (
+ SELECT consumed_sa.canonical_url
+ FROM generation_run_consumed_source grcs
+ JOIN source_artifact consumed_sa ON consumed_sa.id = grcs.source_artifact_id
+ WHERE grcs.generation_run_id = $2 AND consumed_sa.canonical_url IS NOT NULL
+ )
+ ) -- SOL-MEDIUM-1 fix: a redirect, tracking-parameter, or case/scheme variant of an already-
+ -- consumed URL is excluded even though its raw text differs
+ AND (
+ sa.resolved_content_hash IS NULL
+ OR sa.resolved_content_hash NOT IN (
+ SELECT consumed_sa.resolved_content_hash
+ FROM generation_run_consumed_source grcs
+ JOIN source_artifact consumed_sa ON consumed_sa.id = grcs.source_artifact_id
+ WHERE grcs.generation_run_id = $2 AND consumed_sa.resolved_content_hash IS NOT NULL
+ )
+ ) -- SOL-MEDIUM-1 fix: the same underlying document reached through two textually different
+ -- URLs (or a url/text source pair) resolving to byte-identical content is excluded
 ) AS eligible;
 ```
 
@@ -2437,8 +3216,9 @@ SELECT EXISTS (
  not this one).
 2. Read that `BriefVersion.generationRunId` — the producing run whose
  `generation_run_consumed_source` rows are the exact resolved-source snapshot (§4.8 above,
- `consideredSourceArtifactIds`, Extraction's own real `usableSourceIds` read set at write time) that
- run actually had the opportunity to use.
+ `consideredSourceArtifactIds`, the UNION of the primary Extraction's and Landscape Research's own
+ real `usableSourceIds` read sets at write time, SELF-4 fix) that run actually had the opportunity
+ to use.
 3. Run the query above. Eligible iff at least one `'submitted'`, resolved, non-consumed,
  non-duplicate-of-consumed source exists for this Investigation.
 
@@ -2448,7 +3228,9 @@ non-terminal/failed state); **empty** (`resolution_status = 'content-retrieved'`
 `resolveSourceArtifact`/`computeSourceResolution` never classifies blank/whitespace-only text as
 `'content-retrieved'` — this is NOT true of today's live `type: 'text'` code path and is fixed by
 §1.4b, a required Forge-slice edit assigned to C2-S2, not an existing guarantee); **a duplicate of an
-already-consumed source, even under a distinct row** (the `trim(raw)` anti-join above); and **already
+already-consumed source, even under a distinct row** (the `trim(raw)` anti-join, now joined by the
+`canonical_url`/`resolved_content_hash` anti-joins, SOL-MEDIUM-1 fix, closing the redirect/
+normalization/cross-URL-same-content cases exact-string equality alone cannot catch); and **already
 reflected in the current `BriefVersion`** (the `id`-based anti-join — the exact row Extraction
 actually read). A source added during the run but never reached because the run failed before
 Extraction's own read (`:333`) has no `generation_run_consumed_source` row under either anti-join and
@@ -2461,10 +3243,11 @@ produced any surviving `EvidenceItem` from it, and whether or not any resulting 
 claim-linked recommendation — is still recorded consumed (the join table records "was available to
 and actually read by this run's Extraction step," not "produced evidence" or "produced a claim"), so
 it cannot be resubmitted, verbatim or under a new row, to falsely register as new. Because
-`consideredSourceArtifactIds` is derived directly from Extraction's own real read set rather than
-inferred from a `started_at` timestamp comparison, there is no window or boundary logic at all in
-this mechanism, and no residual timing edge case: the ledger records exactly what this run's own code
-path actually read, not an approximation of it.
+`consideredSourceArtifactIds` is derived directly from the union of both extraction passes' own
+real read sets (SELF-4 fix) rather than inferred from a `started_at` timestamp comparison or a
+primary-only set, there is no window or boundary logic at all in this mechanism, and no residual
+timing edge case, and no origin left permanently outside the ledger: the ledger records exactly
+what this run's own code paths actually read, not an approximation of it.
 
 No coupling to `submitSources` (unmodified) or `assignValidityState` (US-12) — this function only
 reads.
@@ -2479,6 +3262,27 @@ perpetually eligible. This is currently unreachable, not a live bug: both live r
 status today, and §1.4b's required fix tightens this further by closing the blank/whitespace-only
 gap noted above. No mechanism change is made for this; it is documented here so a future change to
 either resolver's contract is checked against it.
+
+**Required tests, SOL-MEDIUM-1 fix (in addition to every other test this section and §4.9 already
+specify):**
+
+1. A pre-existing, pre-migration-shaped `source_artifact` row (`canonical_url`/
+   `resolved_content_hash` both `NULL` before migration `013`'s backfill runs) is, after the
+   backfill: (a) correctly EXCLUDED from eligibility once consumed, when a byte-identical or
+   hash-identical resubmission is attempted (`resolved_content_hash` backfill closes this fully);
+   (b) correctly EXCLUDED for a same-canonical-URL-different-tracking-parameter resubmission
+   (`canonical_url` backfill's non-degraded case); and (c) for a row whose original `raw` was itself
+   a redirect (the backfill's disclosed degraded case), the test asserts and documents the KNOWN
+   limitation directly, rather than silently passing on a narrower case than the live mechanism
+   provides for post-migration rows — a resubmission of the SAME final destination under its
+   canonical form is NOT guaranteed excluded for this specific pre-migration-redirect case, and the
+   test proves this is exactly the disclosed boundary, not a wider unintended gap.
+2. A landscape-research-consumed source (retrieved via `searchWeb`/`extractClaimsAndEvidenceForSourceArtifacts`
+   during a real run) correctly appears in that run's `generation_run_consumed_source` ledger rows
+   (`origin = 'landscape-research'`) — asserted by a direct DB read after a real end-to-end run — and
+   a subsequent operator submission of that exact same URL (by `raw`, by `canonical_url`, or by
+   `resolved_content_hash`) is correctly excluded from US-13 eligibility by the union fix above,
+   proving a landscape-incorporated source cannot be "resubmitted as new."
 
 ### 4.9 Stale/Interrupted Run Detection (US-4)
 
@@ -2575,7 +3379,7 @@ constant, and both are wired to it in C2-S3, after §4.9's derivation methodolog
 C2-S2 is complete once `computeLivenessState` is built, tested against an explicitly-labeled
 test-only threshold value, and its ONE call site exists but is not yet wired to a real constant
 (a `TODO`/explicit placeholder referencing this note is acceptable at that point, not a defect);
-C2-S3 completes the wiring. This removes the sequencing conflict the prior draft left unresolved.
+C2-S3 completes the wiring, so no sequencing conflict exists between the two slices.
 
 **Surfaced to the workspace** as `WorkspaceGenerationRunSummary.livenessState` (§3.2) — the ONLY
 field the UI may use to distinguish a healthy in-progress run from a stale/interrupted one; the
@@ -2655,7 +3459,7 @@ interface InvestigationWorkspaceScreenState {
 ```
 
 Polling (US-4 AC2): while `workspace.latestGenerationRun?.livenessState === 'active'` (§3.2, §4.9
-— not the bare `outcome === 'in-progress'` check the prior draft used, so a stale/interrupted run does not poll forever), the screen re-fetches
+— not the bare `outcome === 'in-progress'` check, so a stale/interrupted run does not poll forever), the screen re-fetches
 `GET.../workspace` at an interval governed by `POLL_INTERVAL_MS` — **engineering-owned,
 derived during Forge from real measured generation timing, expected concurrency, and endpoint cost,
 per §4.9's derivation methodology; not a specific value fixed at spec time.** The behavioral
@@ -2937,8 +3741,8 @@ No new third-party dependency is introduced. This sprint extends the existing st
  Investigation with prior resolved sources — no new parameter). `AddSourceInline` (§5.3) calls
  them via the EXISTING
  `POST /api/investigations` route, extended in place (§1.4, §3.1b, per the Add-Source-route ruling) — no new HTTP
- entry point is added onto them; the prior draft's `POST /api/investigations/:id/sources` is
- removed from this design.
+ entry point is added onto them; no `POST /api/investigations/:id/sources` route exists in this
+ design.
 - **Checkpoint 1 shell** (`src/client/App.tsx`, `PersistentNav`) — the new route is added inside
  the existing `<Routes>` sibling to `PersistentNav`, per Checkpoint 1's own documented mount
  structure (`product-surface-checkpoint-1/02-ARCHITECTURE.md` §6) — `PersistentNav` is never
@@ -2964,10 +3768,14 @@ No new third-party dependency is introduced. This sprint extends the existing st
  eleven real `recordGenerationStep`-bearing call sites (the three direct calls, the new preflight
  catch, and the seven `runStepWithProvenance` calls); §4.2/§1.6 add `GenerationRunAlreadyFinalizedError`
  catches at the eight call sites that finalize a run; §1.6 adds the `ROLLBACK`/
- `GenerationRunLostFinalizationRaceError` block at the fenced-out finalization path; and §4.8 adds
- the `consideredSourceArtifactIds` computation and its `generation_run_consumed_source` ledger
- `INSERT`. Every other line of `generateBriefVersion.ts` — its phase order, pipeline logic, prompts,
- and extraction/analysis/recommendation behavior — is unchanged.
+ `GenerationRunLostFinalizationRaceError` block at the fenced-out finalization path; §1.6 (SOL-HIGH-2
+ fix) wraps `attemptGenerationFailedTransition`'s status write in its own `assertFenceOwnership`-
+ guarded transaction and adds `GenerationRunFencedOutError` to the file's `:700-707` outer catch;
+ and §4.8 (SELF-4 fix) adds the UNIONED `consideredSourceArtifactIds` computation (both extraction
+ passes' own `usableSourceIds`) and its `generation_run_consumed_source` ledger `INSERT`, itself
+ wrapped in its own `assertFenceOwnership`-guarded transaction (SELF-4 fix). Every other line of
+ `generateBriefVersion.ts` — its phase order, pipeline logic, prompts, and
+ extraction/analysis/recommendation behavior — is unchanged.
 
 ---
 

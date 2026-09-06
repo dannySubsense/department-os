@@ -416,7 +416,13 @@ content", extended by US-1 AC5 to prior versions).
  persists the `Decision` bound to the exact `briefVersionId` currently on screen.
 6. User sees: an in-place confirmation on the same URL (no navigation) — the new `Decision` appears
  at the end of both the (still-visible, unchanged) per-version `priorDecisions` list and the
- whole-Investigation `decisionLineage` list.
+ whole-Investigation `decisionLineage` list. **SOL-MEDIUM-4 fix — exact refetch mechanism, not a
+ client-side optimistic append**: on the `201` decision-submit response, the client refetches BOTH
+ `GET.../workspace` (for the real, server-computed `decisionLineage`) and
+ `GET.../brief-versions/by-version/:versionNumber` (for the real, server-computed `priorDecisions`,
+ re-fetched for the exact `versionNumber` on screen) — never assembling either list by appending
+ the raw `201` response body to the client's existing in-memory list. This is the one binding
+ mechanism; both lists' new entry is only ever rendered once its own real refetch returns.
 7. End state: reload re-fetches the workspace and Brief; the same Brief and the same two decision
  lists render identically, in the same order.
 
@@ -705,6 +711,7 @@ same five-rule order, 0-4):
 |---|---|---|
 | Outcome/Status Panel — Version Not Found | Renders the explicit "Version N does not exist for this Investigation" message (§ Flow US-1 Not-found path / § Flow US-1 AC5 Non-existent version path) in region 2. No `AddSourceInline`, no `GenerateButton`, no other variant's controls of any kind — this is the ONLY case where region 2 itself carries no status-derived content, matching regions 3-5's existing treatment of the same case. Evaluated before every other Outcome/Status Panel rule (§5.4 rule 0), regardless of `investigation.status` or `latestGenerationRun?.outcome`. | `GET.../brief-versions/by-version/:versionNumber` returns `404` (`error: 'brief-version-not-found'`) while the Investigation itself resolves |
 | Investigation Header | Human-readable creation date/time, humanized `status`, `statusReason` (only when present), `sources.length`. A shortened id renders only as a clearly-labeled secondary detail (e.g. "ID: a1b2c3d8…"), never as the primary label. Once ≥1 `BriefVersion` exists, also renders "Version N of M" for whichever version is displayed, with "(current)" appended when `isCurrent === true`, and, when viewing a prior version, a navigable forward link to that version's own immediate successor via `forwardSupersededByVersionNumber` (not necessarily the current version in a lineage of 3+). Also renders a compact non-valid/supersession notice for the DISPLAYED version (sourced from the routed `GetBriefForReviewResult`, never `workspace.briefs.find(isCurrent)`) — rendered as a plain-language statement only when `assignedState !== 'valid'`, and/or a navigable `isSuperseded` link (human-readable `versionNumber`, never a raw UUID) when `true`; absent when both are the common case (`'valid'`, not superseded). **Also renders a BACKWARD link: whenever the displayed version's own `supersedesVersionId` is non-null, a navigable link to that prior version (human-readable `versionNumber`, resolved against `workspace.briefs`, never a raw UUID) — the two links point in opposite directions and may both render simultaneously (a middle version in a lineage of 3+ has both a successor and a predecessor).** This is the SAME underlying facts as region 5's banner, surfaced compactly right below the version indicator — not a duplicate control, not a second source of truth. | `WorkspaceInvestigationSummary`, `workspace.briefs`, the routed `GetBriefForReviewResult.version`/`assignedState`/`isSuperseded` |
+| `SourceListPanel` (region 1, SOL-HIGH-3 fix) | Always mounted, every workspace state — not gated on `investigation.status`. Renders each of `investigation.sources` (its real `raw`/`type`) alongside a human-readable label for its persisted `resolutionStatus` ("Content retrieved" / "Unreachable" / "No content" for `'content-retrieved'`/`'unreachable'`/`'reachable-no-content'` respectively) — never a raw enum value. This is the one place a `'content-retrieved'` source's own resolved status renders, including in the ordinary Open/Eligible case that no other component in this checkpoint shows; additive to, never a replacement for, the Blocked row's own richer per-unreachable-source `failureReason`/re-check rendering below. | `workspace.investigation.sources` (each source's `resolutionStatus`, `raw`, `type`) |
 | Outcome/Status Panel — Open/Eligible | "Ready to generate" state copy; a "Start generation" control, enabled iff `workspace.generationEligible === true` — the single server-computed flag, not re-derived from `status` | `investigation.status === 'open'`, `workspace.generationEligible` |
 | Outcome/Status Panel — In-Progress | Run start time, runtime identifier, list of persisted `WorkspaceGenerationStepSummary` rows (component, started/completed times, outcome, model identifier, `validationRecords`, `toolInvocations`). Generation trigger hidden/disabled while in-progress (reflected by `workspace.generationEligible === false` during this state). | `latestGenerationRun` where `outcome === 'in-progress'` and `livenessState === 'active'` |
 | Outcome/Status Panel — Stale/Interrupted | A distinct, non-in-progress-styled disclosure: "This run has not reported progress recently and may have been interrupted." A real "Refresh status" control (re-issues one manual read) AND a real "Abandon and retry" control (`02-ARCHITECTURE.md` §1.6 — calls the abandon route, finalizing the run `'failed'` and clearing the concurrency guard so retry becomes possible) are both rendered here. Everything else the In-Progress panel shows (persisted steps, honest-gap sentence context) remains visible below the disclosure — nothing hidden, only the "is this healthily running" claim is corrected. Rendered only when `workspace.briefs.length === 0` (no `BriefVersion` exists yet) or the displayed `BriefVersion` is current (§5.4 rule 1) — while viewing a prior version, this state instead renders as the Viewing Prior Version row's read-only notice, below, with no "Abandon and retry" control; a prior version can only be viewed when `briefs.length > 0`, so this condition never exposes the control to a prior-version view. | `latestGenerationRun` where `outcome === 'in-progress'` and `livenessState === 'stale-or-interrupted'` |
@@ -950,8 +957,17 @@ navigated by).
  its compact `assignedState`/`isSuperseded`/backward-supersession-link facts (region 1,
  `InvestigationIdentityHeader` — § Decision History Banner above), region 3
  (Brief content), and the Decision Area's per-version `priorDecisions` list and Approve/Reject/Watch
- controls (bound to that version's `briefVersionId`). Region 4 (Provenance
- Rail, all runs) does not change, since it is version-independent.
+ controls (bound to that version's `briefVersionId`). Region 4 (Provenance Rail)'s CONTAINER —
+ `CitationScopeNotice`, `RunHistoryList`, `TechnicalDisclosurePanel` — does
+ not change, since it is version-independent (all runs, regardless of which version is on screen).
+ Two children of region 4, stated once here and not repeated elsewhere as if they were a second,
+ divergent rule, are scoped to the displayed version instead, and DO update when the target version
+ changes: `EvidenceProvenanceList` (renders the resolved evidence for whichever `BriefVersion` is
+ currently on screen) and `SearchScopeNotice` (renders the search queries/limitations of the
+ DISPLAYED version's own producing `GenerationRun` — a reader viewing an old Brief version must see
+ the search scope that actually produced THAT version's evidence, never a later run's searches
+ conflated with it). `RunHistoryList` alone remains genuinely version-independent by design — it is
+ deliberately every run across the Investigation, not just the producing one.
 
 **Loading state:** the destination version's own Page-Load Fetch pattern, scoped to regions 3/5 (the
 version-dependent content) — regions 1/2/4 do not re-flash if their underlying data is unchanged.
@@ -1000,9 +1016,13 @@ Flow US-1 AC5.
 3. On submit, `DecisionForm` calls `POST /api/brief-versions/:briefVersionId/decisions`
  (`recordDecision`, `02-ARCHITECTURE.md` §5.2), supplying the exact `briefVersionId` on screen —
  never the Investigation's current version by default when a prior version is displayed.
-4. On success, `DecisionConfirmationPanel` renders an in-place confirmation on the same URL (no
- navigation), and the workspace's decision lists (`priorDecisions` and `decisionLineage`) are
- updated to include the new `Decision` without a full page reload.
+4. On success (`201`), `DecisionConfirmationPanel` renders an in-place confirmation on the same URL
+ (no navigation). **SOL-MEDIUM-4 fix — exact mechanism**: the client refetches
+ `GET.../brief-versions/by-version/:versionNumber` (real, server-computed `priorDecisions` for the
+ exact version on screen) and `GET.../workspace` (real, server-computed `decisionLineage`) —
+ never a client-side optimistic append of the raw `201` response body onto the existing
+ in-memory lists. Both decision lists render the new `Decision` only once their own refetch
+ returns it, without a full page reload.
 
 **Loading state:** the clicked control (Approve/Reject/Watch submit) shows a form-local pending
 treatment and disables itself for the duration of the request — no page-level spinner.
@@ -1093,6 +1113,19 @@ App (client-side router — Checkpoint 1's existing two routes UNCHANGED, plus t
  │ also renders the BACKWARD supersession
  │ link from this version's own
  │ supersedesVersionId, § Sections)
+ ├── SourceListPanel (region 1, SOL-HIGH-3 fix — always mounted,
+ │ every workspace state, not status-gated;
+ │ renders each of investigation.sources with
+ │ a human-readable label for its persisted
+ │ resolutionStatus — "Content retrieved",
+ │ "Unreachable", "No content" — never a raw
+ │ enum value; the one place a
+ │ 'content-retrieved' source's own resolved
+ │ status is visible, including in the
+ │ ordinary Open/Eligible case; additive to,
+ │ not a replacement for, BlockedSourcesPanel's
+ │ own richer per-unreachable-source
+ │ failureReason/re-check rendering below)
  ├── OutcomeStatusPanel (region 2 — exactly one variant renders,
  │ │ selected by the fixed-precedence rule
  │ │ (§5.4, § Sections): run-outcome/liveness
@@ -1204,12 +1237,22 @@ App (client-side router — Checkpoint 1's existing two routes UNCHANGED, plus t
  │ ├── UncertaintySection (never collapsed by default)
  │ └── SystemRecommendationSection (rationale included)
  ├── ProvenanceRail (region 4 — present iff ≥1 GenerationRun;
- │ │ version-independent, all runs)
+ │ │ CONTAINER (CitationScopeNotice/RunHistoryList/
+ │ │ TechnicalDisclosurePanel) is version-independent,
+ │ │ all runs — see EvidenceProvenanceList and
+ │ │ SearchScopeNotice below for the two exceptions,
+ │ │ SOL-MEDIUM-3 fix)
  │ ├── EvidenceProvenanceList (excerpt/label/source/stance/relevance,
- │ │ per resolvedEvidence entry — scoped to
- │ │ the displayed version)
- │ ├── SearchScopeNotice (reads real
- │ │ webSearchQueries[].scopeNote/limitations)
+ │ │ per resolvedEvidence entry — scoped to the
+ │ │ displayed version, not version-independent
+ │ │ like its container; updates on version
+ │ │ navigation)
+ │ ├── SearchScopeNotice (scoped to the DISPLAYED version's
+ │ │ own producing GenerationRun, like
+ │ │ EvidenceProvenanceList — NOT version-independent;
+ │ │ reads that run's real
+ │ │ webSearchQueries[].scopeNote/limitations;
+ │ │ updates on version navigation, SOL-MEDIUM-3 fix)
  │ ├── CitationScopeNotice (fixed, always visible)
  │ ├── RunHistoryList (every GenerationRun, all steps —
  │ │ not only the latest run; renders each

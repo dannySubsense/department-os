@@ -26,9 +26,14 @@ beforeAll(async () => {
       res.end('');
       return;
     }
+    if (req.url === '/whitespace-only') {
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('   \n\t  ');
+      return;
+    }
     if (req.url === '/paywall') {
       res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end('<html><body>Subscribe to continue</body></html>'); // short boilerplate
+      res.end('<html><body>Subscribe to continue</body></html>'); // short but non-empty content
       return;
     }
     if (req.url === '/not-found') {
@@ -119,10 +124,16 @@ describe('resolveSourceArtifact', () => {
     expect(resolution.noContentReason).toBeTruthy();
   });
 
-  it('classifies a reachable paywall-like short response as reachable-no-content', async () => {
-    const id = await insertArtifact('url', `${fixtureBaseUrl}/paywall`);
+  it('classifies a reachable whitespace-only response as reachable-no-content', async () => {
+    const id = await insertArtifact('url', `${fixtureBaseUrl}/whitespace-only`);
     const resolution = await resolveSourceArtifact(id);
     expect(resolution.status).toBe('reachable-no-content');
+  });
+
+  it('classifies a reachable short-but-non-empty paywall-like response as content-retrieved (paywall/JS-shell detection is downstream extraction\'s job, not this fetch-layer check)', async () => {
+    const id = await insertArtifact('url', `${fixtureBaseUrl}/paywall`);
+    const resolution = await resolveSourceArtifact(id);
+    expect(resolution.status).toBe('content-retrieved');
   });
 
   it('resolves a text artifact to content-retrieved without any network call, persisting the pasted text as resolved content', async () => {

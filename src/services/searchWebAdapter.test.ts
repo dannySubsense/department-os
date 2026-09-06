@@ -161,4 +161,40 @@ describe('searchWebAdapter — provider-level failure shapes → outcome: "query
     expect(result.selectedResultUrls).not.toContain(null);
     expect(result.queryLimitation?.reason).toMatch(/dropped 1 malformed result item/);
   });
+
+  it('reports a response truncated at the max_tokens cap as a limitation, not a clean unqualified "succeeded" (Frank spec-gate FAIL, 2026-09-05 — silent-truncation defect)', async () => {
+    createMock.mockResolvedValueOnce({
+      content: [],
+      stop_reason: 'max_tokens',
+    });
+
+    const result = await searchWebAdapter('truncated query');
+
+    expect(result.outcome).toBe('query-limited');
+    expect(result.selectedResultUrls).toEqual([]);
+    expect(result.queryLimitation).toBeDefined();
+    expect(result.queryLimitation?.reason).toMatch(/max_tokens/i);
+  });
+
+  it('folds truncation into queryLimitation even when a partial result set survived the max_tokens cap, never reporting it as clean unqualified "succeeded"', async () => {
+    createMock.mockResolvedValueOnce({
+      content: [
+        {
+          type: 'web_search_tool_result',
+          tool_use_id: 'toolu_6',
+          content: [
+            { type: 'web_search_result', url: 'https://example.com/partial', title: 'Partial', page_age: null },
+          ],
+        },
+      ],
+      stop_reason: 'max_tokens',
+    });
+
+    const result = await searchWebAdapter('partially truncated query');
+
+    expect(result.outcome).toBe('succeeded');
+    expect(result.selectedResultUrls).toEqual(['https://example.com/partial']);
+    expect(result.queryLimitation).toBeDefined();
+    expect(result.queryLimitation?.reason).toMatch(/max_tokens/i);
+  });
 });

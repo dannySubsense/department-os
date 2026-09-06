@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { classifyRetrievalOutcome } from './classifyRetrievalOutcome.js';
 import { MAX_RESPONSE_BYTES, FETCH_TIMEOUT_MS } from './ssrfGuardedFetch.js';
-import { MIN_CONTENT_LENGTH } from './resolveSourceArtifact.js';
 
 /** Full-table coverage of Architecture §1.6 item 3's blocked/failed classification rule — one
  *  test per table row, pure function, no network. */
@@ -40,15 +39,16 @@ describe('classifyRetrievalOutcome — blocked cases', () => {
     expect(result.failureReason).toBe('HTTP 451 Unavailable For Legal Reasons');
   });
 
-  it('classifies a 2xx response with body length below MIN_CONTENT_LENGTH as blocked (paywall/login-wall/JS-only heuristic)', () => {
+  it('classifies a 2xx response with a literally empty (trimmed) body as blocked (empty response guard, not a paywall/JS-shell detector)', () => {
     const result = classifyRetrievalOutcome({
       kind: 'http-response',
       statusCode: 200,
       statusMessage: 'OK',
-      bodyLength: MIN_CONTENT_LENGTH - 1,
+      bodyLength: 0,
     });
     expect(result.status).toBe('blocked');
-    expect(result.failureReason).toMatch(/paywall|login wall|JS-only/i);
+    expect(result.failureReason).toMatch(/empty/i);
+    expect(result.failureReason).toMatch(/does not detect/i);
   });
 
   it('classifies a thrown EBLOCKEDHOST error (from safeLookup mid-redirect) as blocked', () => {
@@ -163,12 +163,12 @@ describe('classifyRetrievalOutcome — failed cases', () => {
 });
 
 describe('classifyRetrievalOutcome — retrieved', () => {
-  it('classifies a 2xx response with body length at/above MIN_CONTENT_LENGTH as retrieved, no failureReason', () => {
+  it('classifies a 2xx response with any non-empty body as retrieved, no failureReason', () => {
     const result = classifyRetrievalOutcome({
       kind: 'http-response',
       statusCode: 200,
       statusMessage: 'OK',
-      bodyLength: MIN_CONTENT_LENGTH,
+      bodyLength: 1,
     });
     expect(result.status).toBe('retrieved');
     expect(result.failureReason).toBeUndefined();
