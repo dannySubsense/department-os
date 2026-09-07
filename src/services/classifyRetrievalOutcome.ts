@@ -8,7 +8,6 @@
  *            deliberately withheld). */
 
 import { MAX_RESPONSE_BYTES, MAX_REDIRECTS, FETCH_TIMEOUT_MS } from './ssrfGuardedFetch.js';
-import { MIN_CONTENT_LENGTH } from './resolveSourceArtifact.js';
 
 export interface RetrievalClassification {
   status: 'retrieved' | 'blocked' | 'failed';
@@ -60,12 +59,19 @@ export function classifyRetrievalOutcome(outcome: RetrievalOutcome): RetrievalCl
         };
       }
       if (statusCode >= 200 && statusCode < 300) {
-        if (bodyLength < MIN_CONTENT_LENGTH) {
+        // Emptiness only — no numeric threshold. Mirrors resolveSourceArtifact.ts after the
+        // measured removal of `MIN_CONTENT_LENGTH = 200`; evidence and the reasoning this check is
+        // limited to: `docs/specs/problem-department-mvp/min-content-length-measurement.md`.
+        if (bodyLength === 0) {
           return {
             status: 'blocked',
             failureReason:
-              'Response returned successfully but contained little or no extractable text — ' +
-              'likely a paywall, login wall, or JS-only render',
+              'Response returned successfully but the raw response body was empty or ' +
+              'whitespace-only. This check does not detect paywalls, login walls, or ' +
+              'JS-rendered pages — measured JS-rendered pages typically return substantial raw ' +
+              'HTML regardless of visible content, but paywall/login-wall behavior was not ' +
+              'measured — that judgment belongs to downstream content extraction, not this ' +
+              'fetch-layer check.',
           };
         }
         return { status: 'retrieved' };

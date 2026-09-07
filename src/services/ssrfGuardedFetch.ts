@@ -10,17 +10,33 @@ import https from 'node:https';
  *  the original module-private implementation. */
 
 /** Fetch timeout — bounds how long a single unreachable/hanging source can block resolution.
- *  PROVISIONAL — unvalidated; owner: Ledger. */
+ *  Unsourced — no mathematical, scientific, or programmatic precedent has been shown for 10
+ *  seconds specifically. This value must not be treated as accepted: it has no named owner
+ *  because nobody has reviewed real evidence for it, and "PROVISIONAL, owner: [name]" is not a
+ *  substitute for that evidence — a label is not a citation (DDR-0002,
+ *  `docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`). Tracked in
+ *  `docs/specs/problem-department-mvp/PROGRESS.md` pending real grounding before it can be either
+ *  cited or replaced. */
 export const FETCH_TIMEOUT_MS = 10_000;
 
 /** Response body size cap (Sol review item 2 — SSRF hardening): a malicious or misbehaving source
- *  could otherwise stream an unbounded response into memory. PROVISIONAL — unvalidated against
- *  real-world source sizes; owner: Ledger. Revisit if legitimate long-form sources are seen
- *  truncating. */
+ *  could otherwise stream an unbounded response into memory. Unsourced — no mathematical,
+ *  scientific, or programmatic precedent has been shown for 5 MiB specifically. This value must
+ *  not be treated as accepted: it has no named owner because nobody has reviewed real evidence
+ *  for it, and "PROVISIONAL, owner: [name]" is not a substitute for that evidence — a label is
+ *  not a citation (DDR-0002, `docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`).
+ *  Tracked in `docs/specs/problem-department-mvp/PROGRESS.md` pending real grounding. Revisit if
+ *  legitimate long-form sources are seen truncating. */
 export const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 
 /** Redirect hop cap — bounds how long a redirect chain can be followed before giving up.
- *  PROVISIONAL — unvalidated; owner: Ledger. */
+ *  Unsourced — no mathematical, scientific, or programmatic precedent has been shown for 5 hops
+ *  specifically. This value must not be treated as accepted: it has no named owner because
+ *  nobody has reviewed real evidence for it, and "PROVISIONAL, owner: [name]" is not a
+ *  substitute for that evidence — a label is not a citation (DDR-0002,
+ *  `docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`). Tracked in
+ *  `docs/specs/problem-department-mvp/PROGRESS.md` pending real grounding before it can be either
+ *  cited or replaced. */
 export const MAX_REDIRECTS = 5;
 
 /** Test-only escape hatch (Sol review item 2 fix). Private/loopback-network blocking is applied

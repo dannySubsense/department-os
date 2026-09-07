@@ -87,6 +87,104 @@ a human cannot see one succeed.** Three routes exist (`GET /investigations/new`,
 a Brief, its provenance, or the failed-retrieval fact; nothing triggers generation from the
 browser; nothing records a human decision.
 
+## Open constant-integrity items (2026-09-05, updated 2026-09-06)
+
+**Current disposition matches `docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`'s
+own Category A/B tables exactly (§ Interim disposition), verified live on branch
+`recovery/checkpoint-2-from-bfe41c4`.** The original eight-constant list (recorded uniformly
+"unsourced, unowned, unresolved" as of commit `7cfb1bc`, after a benchmark-agent audit, two Cold
+Frank FAILs, a Cold Frank HALT resolved by DDR-0002, and a subsequent unbriefed Cold Frank FAIL
+that added four more) is no longer one undifferentiated list — Danny ruled the eight are not one
+category and dispatched real measurement on the subset that gates evidence quality. This is a
+separate audit finding from a different date/process than the Product Reality Demonstration
+defects above — not a third item in that list.
+
+**Category A — evidence-critical, measured (4):**
+
+1. `MIN_CONTENT_LENGTH` (`resolveSourceArtifact.ts`) — **DELETED, resolved.** Real measurement run
+   and persisted (`docs/specs/problem-department-mvp/min-content-length-measurement.md`, 18 real
+   URLs, `scripts/measure-min-content-length.ts`, raw record
+   `scripts/min-content-length-measurement.json`) found no raw-body-length threshold can do this
+   job at any value. Deleted from both live consumers — `resolveSourceArtifact.ts` and
+   `classifyRetrievalOutcome.ts` — both now use an identical `body.trim().length === 0` /
+   `bodyLength === 0` check instead. This measurement and the deletion landed together in the same
+   commit (`c0c615e`) on `fix/llm-and-resolver-constant-integrity`, evidence-led, and are cherry-picked
+   onto this branch. Removed from the tracked-open list — resolved, not tracked-open.
+2. `MAX_REPAIR_ATTEMPTS` (`llmClient.ts`, caps schema-repair attempts at 1) — **Ruled an engineering
+   default, 2026-09-06 (DDR-0002 closure addendum).** No further sourcing needed. The measurement
+   attempt on 2026-09-05 (`docs/specs/problem-department-mvp/llm-constants-measurement.md`, query
+   `scripts/query-llm-attempt-history.sql`) found this pipeline's own `SchemaValidationAttempt`
+   history empty (0 runs, 0 steps, 0 attempts) — a real, re-checkable negative result, not evidence
+   the value is correct. The composer's ruling superseded further pursuit of a citation: one retry
+   before failing closed is a plain engineering choice.
+3. `MAX_OUTPUT_TOKENS` (`llmClient.ts`, 8192-token generation cap) — **Ruled an engineering default,
+   2026-09-06 (DDR-0002 closure addendum).** No further sourcing needed. Same empty-corpus
+   measurement result as above. The truncation this cap could cause is no longer silent — a real
+   defect fix landed this session (`stop_reason === 'max_tokens'` now reported as truncation, never
+   collapsed into a generic schema-validation error), which is what makes the cap's own value a
+   plain engineering choice rather than a hidden risk.
+4. `MAX_SEARCH_OUTPUT_TOKENS` (`searchWebAdapter.ts`, `= 1024`) — **Ruled an engineering default,
+   2026-09-06 (DDR-0002 closure addendum).** No further sourcing needed. Originally reclassified
+   Category B as a bare search-output budget, then flagged by a cold Frank spec-gate review and an
+   independent technical review (Wright, via Switchboard relay) as gating evidence quality directly
+   — a truncated `web_search` response could silently drop real result URLs. That silent-discard
+   risk is now closed by the same `stop_reason === 'max_tokens'` handling folded into
+   `queryLimitation` this session (a capped response is now reported, never presented as clean
+   success), which is what makes the cap's own value a plain engineering default rather than a
+   hidden risk. Explicitly rejected: collapsing into `MAX_OUTPUT_TOKENS` (the two caps answer
+   different questions — response verbosity vs. search-result-set completeness — reusing one for
+   the other would be a fabricated citation dressed up as a clean reuse). Full record:
+   `docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`, Addendum.
+
+**Category B — infrastructure/operational safety limits, reclassified, no source/owner required
+(4):** these are connection timeouts, a response size cap, a redirect hop limit, and a per-turn
+search-count budget — safety valves bounding resource consumption and failure blast radius, not
+constants gating evidence or correctness quality. No measurement can produce a citable "correct"
+value for an HTTP timeout the way one can for a content-quality threshold. Revisit trigger is an
+observed real operational incident, not a scheduled calibration. (`MAX_SEARCH_OUTPUT_TOKENS` was
+here until 2026-09-06 — see Category A item 4 above.)
+
+5. `MAX_SEARCHES_PER_TURN` (`searchWebAdapter.ts`, named and extracted from a bare `max_uses: 5`
+   literal 2026-09-05, Cold Frank FAIL finding F2) — Reclassified Category B, per DDR-0002 row B2.
+   No source, no owner; none required under the reduced claim.
+6. `FETCH_TIMEOUT_MS` (`ssrfGuardedFetch.ts`, 10-second fetch timeout) — Reclassified Category B,
+   per DDR-0002 row B3. Previously carried a disqualified `owner: Ledger` (an agent); stripped at
+   Cold Frank FAIL finding F3 and not reinstated. No source, no owner required.
+7. `MAX_RESPONSE_BYTES` (`ssrfGuardedFetch.ts`, 5 MiB response-body cap) — Reclassified Category B,
+   per DDR-0002 row B4. Same F3 correction. Stays Category B only while it hard-rejects rather than
+   silently truncates (verified live); a change to silent truncation returns it to Category A.
+8. `MAX_REDIRECTS` (`ssrfGuardedFetch.ts`, 5-hop redirect cap) — Reclassified Category B, per
+   DDR-0002 row B5. Same F3 correction. No source, no owner required.
+
+No constant in either category has acquired a named owner except by the exact rules DDR-0002
+states, and B2 through B5 do not require one at all under their reduced claim. The rule itself is
+tracked in `docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`, not left to
+conversation and commit-message history alone (a Cold Frank HALT on commit `ac63adf` found the
+rule invisible to an isolated-worktree gate before the DDR existed).
+
+**Real-run measurement.** For A2/A3, the next real step remains what it has been: real pipeline
+usage producing generation runs with attempt/token data the existing queries can then measure
+against. No further `benchmark` dispatch is needed until that data exists — the query and
+methodology are already built and already ran once, empty, on 2026-09-05.
+
+**Branch note.** This section is current as of branch `recovery/checkpoint-2-from-bfe41c4`
+(previously tracked against `fix/llm-and-resolver-constant-integrity`, from which the A1/B3-B5
+fixes were cherry-picked onto this branch — see `docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`
+§ Interim disposition for the exact commits and verification detail).
+
+**Real-LLM test environment gap (originally recorded on branch
+`fix/llm-and-resolver-constant-integrity`; the same gap is present on this branch,
+`recovery/checkpoint-2-from-bfe41c4`).**
+The real-LLM-call test suite (`extractClaimsAndEvidence.test.ts`) cannot run in this environment:
+it fails with `400 invalid_request_error: Your credit balance is too low`. The same failure was
+confirmed present at that branch's base commit (i.e. environmental, not a regression introduced by
+that branch's changes). Consequence: the `stop_reason` classification logic added/changed in both
+`llmClient.ts` (`callForcedTool`'s `max_tokens`/`pause_turn`/`refusal` branches) and
+`searchWebAdapter.ts` (its `end_turn`/`pause_turn`/`tool_use` handling) has only been verified
+against mocked Anthropic SDK responses at this commit — it has not been exercised against a live
+model call. Not fixed here; this note only records the gap honestly. Credentials/credit
+replenishment is out of scope for this fix.
+
 Test counts ARE now recorded for closed slices, but only as runner output taken at a quiescent
 database against a schema replayed from the migrations as written — never as an agent's report.
 

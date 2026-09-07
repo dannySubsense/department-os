@@ -213,11 +213,17 @@ reimplementation:
   hardened implementation — a fix to the SSRF guard (e.g. a new disallowed-range case) applies to
   both Source Resolver and Landscape Researcher retrieval automatically, rather than requiring the
   same fix to be independently re-applied twice.
-- `MIN_CONTENT_LENGTH` (the paywall/JS-shell content-length heuristic) stays specific to Source
-  Resolver's four-way `SourceResolution.status` and is **not** moved into the shared module as-is;
-  the controlled retrieval path below reuses the same heuristic value by importing the constant,
-  but maps its outcome onto the three-way `blocked`/`failed`/`retrieved` classification defined
-  next, not onto `SourceResolution`'s four-way status (the two call sites classify outcomes into
+- The prior `MIN_CONTENT_LENGTH` raw-response-body-length threshold was deleted (2026-09-05,
+  composer decision): it was trying to do two jobs — (1) catch a literally-empty/whitespace-only
+  response, and (2) distinguish real content from a paywall/JS-shell page with substantial markup
+  but no substance. Job 2 does not belong at the fetch layer; it is handled correctly downstream,
+  where content extraction either finds real claims/evidence or does not. Job 1 needs no arbitrary
+  number — it is a strict definition: the raw response body, trimmed, has zero length. Both
+  `resolveSourceArtifact.ts`'s `SourceResolution.status` no-content check and the controlled
+  retrieval path's `blocked` check below now apply this same strict-emptiness test independently
+  (no shared constant to import) and map the outcome onto their own status enum — Source
+  Resolver's four-way `SourceResolution.status`, or this path's three-way
+  `blocked`/`failed`/`retrieved` classification (the two call sites classify outcomes into
   different, non-interchangeable enums for different consumers).
 
 **1. `searchWeb` adapter contract — provider-level search-call failure ("query limitations")**
@@ -306,7 +312,7 @@ Concretely, classified by the shared retrieval module's outcome:
 |---|---|---|
 | `blocked` | HTTP `401` or `403` | `"HTTP 403 Forbidden"` |
 | `blocked` | HTTP `451` (legal/regulatory unavailability) | `"HTTP 451 Unavailable For Legal Reasons"` |
-| `blocked` | 2xx response, but body length below the shared `MIN_CONTENT_LENGTH` heuristic (paywall/login-wall/JS-only render — same signal `resolveSourceArtifact.ts` uses for `reachable-no-content`, mapped here onto `blocked` rather than a four-way status, since for search-result retrieval "content withheld" reads as blocked, not merely content-free) | `"Response returned successfully but contained little or no extractable text — likely a paywall, login wall, or JS-only render"` |
+| `blocked` | 2xx response, but the raw response body, trimmed, is literally empty (deleted the prior `MIN_CONTENT_LENGTH` threshold, 2026-09-05, composer decision: distinguishing real content from a paywall/JS-shell page is downstream content extraction's job, not this fetch-layer check; same strict-emptiness test `resolveSourceArtifact.ts` uses for `reachable-no-content`, mapped here onto `blocked` rather than a four-way status, since for search-result retrieval "content withheld" reads as blocked, not merely content-free) | `"Response returned successfully but the raw response body was empty or whitespace-only. This check does not detect paywalls, login walls, or JS-rendered pages — measured JS-rendered pages typically return substantial raw HTML regardless of visible content, but paywall/login-wall behavior was not measured — that judgment belongs to downstream content extraction, not this fetch-layer check."` |
 | `blocked` | `ssrfGuardedFetch` rejects the destination before any request left the process (`EBLOCKEDHOST` — private/loopback/CGNAT/reserved-range target) | `"Blocked by network policy: disallowed network address"` |
 | `failed` | DNS resolution failure | `"DNS resolution failed for '<host>'"` |
 | `failed` | Connection error/reset, or request timeout (`AbortError`) | `"Request timed out after <FETCH_TIMEOUT_MS>ms"` |

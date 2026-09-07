@@ -8,6 +8,22 @@ import type { SearchWebAdapterResult } from '../types/domain.js';
  *  provider-SDK-specific error shape. DDR-0001 selected Anthropic's built-in `web_search` server
  *  tool (row 9) as the search provider for this milestone's runtime; this adapter wraps that
  *  specific call, so a future provider swap touches only this file. */
+/** Ruled an engineering default, 2026-09-06 (DDR-0002 closure addendum) — no further sourcing
+ *  needed. The silent-discard risk this cap posed (a capped `web_search` response could drop real
+ *  result URLs before they became evidence) is closed by the `stop_reason === 'max_tokens'`
+ *  handling below, which folds a capped response into `queryLimitation` rather than reporting it
+ *  as clean success — see `docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`,
+ *  Addendum. */
+const MAX_SEARCH_OUTPUT_TOKENS = 1024;
+
+/** Unsourced — no mathematical, scientific, or programmatic precedent has been shown for 5
+ *  specifically. This value must not be treated as accepted: it has no named owner because
+ *  nobody has reviewed real evidence for it, and "PROVISIONAL, owner: [name]" is not a
+ *  substitute for that evidence — a label is not a citation. Per DDR-0002
+ *  (`docs/decisions/DDR-0002-constant-integrity-no-fourth-option.md`) this constant is tracked
+ *  in `PROGRESS.md` pending real grounding before it can be either cited or replaced. */
+const MAX_SEARCHES_PER_TURN = 5;
+
 export async function searchWebAdapter(query: string): Promise<SearchWebAdapterResult> {
   const performedAt = new Date().toISOString();
 
@@ -16,7 +32,7 @@ export async function searchWebAdapter(query: string): Promise<SearchWebAdapterR
     const anthropic = getClient();
     response = await anthropic.messages.create({
       model: MODEL,
-      max_tokens: 1024,
+      max_tokens: MAX_SEARCH_OUTPUT_TOKENS,
       messages: [
         {
           role: 'user',
@@ -27,7 +43,7 @@ export async function searchWebAdapter(query: string): Promise<SearchWebAdapterR
         {
           type: 'web_search_20250305',
           name: 'web_search',
-          max_uses: 5,
+          max_uses: MAX_SEARCHES_PER_TURN,
         },
       ],
     });
@@ -68,15 +84,37 @@ export async function searchWebAdapter(query: string): Promise<SearchWebAdapterR
     };
   }
 
-  // The `web_search` tool allows up to 5 searches per turn (max_uses: 5), so the response can
-  // contain MULTIPLE `web_search_tool_result` blocks — one per search performed. Iterate over ALL
-  // of them; reading only the first silently discards URLs and limitation info from blocks 2-5.
+  // The `web_search` tool allows up to MAX_SEARCHES_PER_TURN searches per turn, so the response
+  // can contain MULTIPLE `web_search_tool_result` blocks — one per search performed. Iterate over
+  // ALL of them; reading only the first silently discards URLs and limitation info from later
+  // blocks.
   const resultBlocks = response.content.filter(
     (block): block is Anthropic.WebSearchToolResultBlock =>
       block?.type === 'web_search_tool_result',
   );
 
+  // A response capped by MAX_SEARCH_OUTPUT_TOKENS mid-generation (stop_reason: 'max_tokens') can
+  // leave a partial, or even zero, set of `web_search_tool_result` blocks — indistinguishable from
+  // a genuinely complete, small result set unless this is checked explicitly. Never report a
+  // capped search as clean, unqualified 'succeeded' (this org's postmortem: a byte/token cap
+  // silently truncating the thing a pipeline exists to read, with no downstream signal).
+  const wasTruncated = response.stop_reason === 'max_tokens';
+
   if (resultBlocks.length === 0) {
+    if (wasTruncated) {
+      return {
+        outcome: 'query-limited',
+        query,
+        performedAt,
+        selectedResultUrls: [],
+        queryLimitation: {
+          id: '',
+          webSearchQueryId: '',
+          reason: `response truncated at the ${MAX_SEARCH_OUTPUT_TOKENS}-token output cap before any web_search_tool_result block could be produced (stop_reason: max_tokens)`,
+          occurredAt: new Date().toISOString(),
+        },
+      };
+    }
     // The model chose not to search (e.g. it had nothing to search for), or produced no
     // search-tool-result block at all — a legitimate zero-results outcome, not a provider
     // failure: the call itself succeeded, it simply selected zero URLs.
@@ -114,6 +152,16 @@ export async function searchWebAdapter(query: string): Promise<SearchWebAdapterR
     // discard: fold the drop count into the limitation reason so it is visible on the record.
     errorReasons.push(
       `dropped ${droppedItemCount} malformed result item${droppedItemCount === 1 ? '' : 's'} (missing/invalid url)`,
+    );
+  }
+
+  if (wasTruncated) {
+    // At least one web_search_tool_result block WAS produced, but the response as a whole was cut
+    // off at the MAX_SEARCH_OUTPUT_TOKENS cap — later blocks (and possibly items within the last
+    // captured block) may be missing. Never let a capped-but-nonempty result set look like a
+    // genuinely complete one.
+    errorReasons.push(
+      `response truncated at the ${MAX_SEARCH_OUTPUT_TOKENS}-token output cap (stop_reason: max_tokens) — result set may be incomplete`,
     );
   }
 
