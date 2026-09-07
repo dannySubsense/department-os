@@ -484,11 +484,11 @@ since before C2-S2 began.
 
 ### 1.5 US-13 eligibility
 
-`hasEligibleNewEvidenceSinceCurrentBriefVersion` determines whether a `'brief-generated'`
+`hasUnattemptedCorrectionSnapshot` determines whether a `'brief-generated'`
 Investigation is eligible for a corrective generation run. It is specified in full, including its
 exact persisted mechanism, in §4.8 — a real persisted consumption record, ledgered directly from
-Extraction's own actual read set (`usableSourceIds`, §4.8), not a `generation_run.started_at`
-timestamp bound, closes both the mid-run race a naive full-resolved-source snapshot would leave open
+Extraction's own actual read set (`extractionInputSourceIds`, §4.8), not a `generation_run.started_at`
+timestamp bound, closes both the mid-run race a naive full-extraction-input snapshot would leave open
 AND the narrower Extraction-read-boundary gap a `started_at` comparison alone cannot close.
 
 ### 1.6 Generation run ownership: fencing, heartbeat, and abandonment
@@ -1123,14 +1123,14 @@ never exposes "Abandon and retry" to a prior-version view.
 | **Validity/Invalidation Service** | `assignValidityState`/`getAssignedState`/`getAssignedStateAsRecorded` (§4.7) — append-only `StatusEvent` writer and the two bitemporal read queries; no browser-reachable route this checkpoint (Out of Scope) | `src/services/validityState.ts` (new) | US-12 |
 | **Dependent-Decision Reconstruction** | Computed inside `assignValidityState` (§4.7) — every `Decision` bound to a `BriefVersion` that referenced the invalidated target while its assigned state was last `'valid'`, reconstructed via `getAssignedStateAsRecorded` | `src/services/validityState.ts` (same module, not a separate file) | US-12 |
 | **Decision History / Validity Read Model** | Extends `getInvestigationWorkspace` and `getBriefForReview` (§3.2, §3.3) with `assignedState`/`isSuperseded` per `BriefVersion`, sourced from `getAssignedState` — feeds `DecisionHistoryBanner` (§5.3) | `src/services/getInvestigationWorkspace.ts`, `src/services/getBriefForReview.ts` (both edited, not new files) | US-12 |
-| **Resubmission Eligibility Check** | `hasEligibleNewEvidenceSinceCurrentBriefVersion(investigationId)` (§4.8, revised) — the single server-side gate that makes a `'brief-generated'` Investigation generation-eligible again, evaluated against `source_artifact.resolution_status` and the evidence actually consumed by the current `BriefVersion`, never by status or timestamp alone | `src/services/getInvestigationWorkspace.ts` (helper used by both the Generation Eligibility Rule and `InvestigationWorkspaceView.generationEligible`) | US-13 |
+| **Resubmission Eligibility Check** | `hasUnattemptedCorrectionSnapshot(investigationId)` (§4.8) — server-side gate for a correction attempt: a new operator-submitted, non-empty resolved-content hash exists outside the current-version attempt ledger. It does not claim evidentiary usability; Extraction decides that inside the run. | `src/services/getInvestigationWorkspace.ts` | US-13 |
 | **Prior-Version Navigation Resolver** | Resolves a human-readable `versionNumber` (never a raw `BriefVersion` UUID) to its `BriefVersion` row for a given Investigation, reload-stably | `src/web/apiRoutes.ts` (route), `src/services/getBriefForReview.ts` (unchanged callee) | US-1 AC5, US-12, US-13 |
 | **Stale/Interrupted Run Detector** | Computes a run's `livenessState` at read time from persisted facts only — never a stored field | `src/services/getInvestigationWorkspace.ts` (helper) | US-4, US-6 |
 | **Stale Run Abandonment** | `abandonGenerationRun(investigationId, generationRunId)` (§1.6, new) — the human-initiated recovery path for a run `computeLivenessState` classifies `'stale-or-interrupted'`; finalizes it `'failed'` via the existing exactly-once `finalizeGenerationRun`, clearing §1.1's concurrency guard so retry becomes possible; never invoked automatically | `src/web/apiRoutes.ts` (new route), small orchestration function beside the Generation Run Connector | US-4, US-6, US-8 |
 | **Decision Lineage / Condition Resolver** | Extends `getDecisionsForBriefVersion` to join `reconsideration_condition` and return resolved condition content (never a bare ID), and to carry each `Decision`'s owning `BriefVersion`'s human-readable version reference for the whole-Investigation lineage view, distinct from the per-version list | `src/services/getDecisionsForBriefVersion.ts` (edited) | US-10, US-12 |
 | **`ViewingPriorVersionPanel`** (new, C2; precedence corrected round-6; scope corrected Danny's ruling, this checkpoint) | Outcome/Status Panel variant rendered whenever the displayed `BriefVersion.isCurrent === false` (§5.4 rule 2, evaluated immediately after rule 1 — since rule 2 can only ever match when `briefs.length > 0` (there is no prior version to view when no `BriefVersion` exists), and within that case rule 1 requires `isCurrent === true` while this rule requires `isCurrent === false`, the two rules' conditions are mutually exclusive, so rule 2 wins over every later, run-outcome-selected/mutating rule (3, 4) regardless of `investigation.status` or `latestGenerationRun?.outcome`, including `'failed'` AND `'in-progress'`) — the version reached via the forward link is not necessarily the current version in a lineage of 3+; reaching the current version means following this same link again from the successor, one hop at a time, which no AC requires to be a single direct jump; **when `workspace.latestGenerationRun?.outcome === 'in-progress'` (against the current version, whether `livenessState` is `'active'` or `'stale-or-interrupted'`), also renders a distinct, clearly labeled read-only notice — "A generation run is currently active/stalled on the current version — go to the current workspace to view or manage it" — with a real navigable link to the current version's workspace route**; imports neither `AddSourceInline` nor `GenerateButton` nor the abandon control, making "no run-mutating control while viewing a prior version" structural, not a suppressed-conditional inside `BriefGeneratedSummaryPanel` or `GenerationProgressPanel` | `src/client/components/OutcomeStatusPanel/ViewingPriorVersionPanel.tsx` (new) | US-1 AC5, US-12, US-13 |
-| **`GenerationFailedPanel`** (§5.4 rule 3; component enumeration added) | Outcome/Status Panel variant rendered when `latestGenerationRun?.outcome === 'failed'` and the displayed `BriefVersion` is current (§5.4 rule 3) — renders `investigation.statusReason` when present, or otherwise the failed run's own persisted step/error text (the failed-correction case, where `statusReason` was never written); hosts the shared `GenerateButton` ("Retry generation") and a real `AddSourceInline` instance | `src/client/components/OutcomeStatusPanel/GenerationFailedPanel.tsx` (new) | US-3, US-6, US-13 |
-| **`BriefGeneratedSummaryPanel`** (§5.4 rule 4; component enumeration added) | Outcome/Status Panel variant rendered when `investigation.status === 'brief-generated'`, no run is in-progress or failed, and the displayed `BriefVersion` is current (§5.4 rule 4) — compact generation confirmation, an `AddSourceInline` instance, and the evidence-gated "Regenerate with new evidence" `GenerateButton`, disabled with an honest reason when `workspace.newEvidenceSinceCurrentBriefVersion === false` | `src/client/components/OutcomeStatusPanel/BriefGeneratedSummaryPanel.tsx` (new) | US-13 |
+| **`GenerationFailedPanel`** (§5.4 rule 3) | Current-version variant for failed runs except a correction attempt whose last persisted failed-step reason is exactly `no-new-usable-evidence`; that specific outcome falls through to `BriefGeneratedSummaryPanel` so the valid current Brief stays primary. Other failures render their own persisted reason and retry/add-source controls. | `src/client/components/OutcomeStatusPanel/GenerationFailedPanel.tsx` (new) | US-3, US-6, US-13 |
+| **`BriefGeneratedSummaryPanel`** (§5.4 rule 4) | Current-version `brief-generated` summary with `AddSourceInline` and the snapshot-gated "Regenerate with new source snapshot" control. It also renders a persisted `no-new-usable-evidence` correction outcome while keeping the current Brief and Decisions visible and generation disabled until another new snapshot exists. | `src/client/components/OutcomeStatusPanel/BriefGeneratedSummaryPanel.tsx` (new) | US-13 |
 
 No component list entry is added for "job queue" or "worker" — direct in-process execution only
 (Out of Scope, `01-REQUIREMENTS.md`). No component list entry is added for a "mark invalid" route
@@ -1680,10 +1680,10 @@ shape on empty" pattern, §5.1 note in `product-surface-checkpoint-1/02-ARCHITEC
 ```typescript
 interface InvestigationWorkspaceView {
  //...(all fields above, unchanged)...
- newEvidenceSinceCurrentBriefVersion: boolean; // Revised: §4.8's
- // hasEligibleNewEvidenceSinceCurrentBriefVersion
+ newSourceSnapshotSinceCurrentBriefVersion: boolean; // Revised: §4.8's
+ // hasUnattemptedCorrectionSnapshot
  // result, computed server-side against real
- // resolution-status and already-consumed-evidence
+ // resolution-status and already-attempted snapshot hashes
  // facts (§4.8), not a bare timestamp comparison;
  // false for an Investigation with no BriefVersion yet
  // (there is nothing to be "new since"). This is the
@@ -2065,7 +2065,7 @@ Steps (each numbered step maps directly to one US-3 acceptance criterion):
  > already exists for this Investigation** (`investigation.problemBriefId !== null` — i.e. step 3
  > below would set `supersedesVersionId`, a correction run regardless of which status the
  > Investigation happens to carry) — eligible **if and only if**
- > `hasEligibleNewEvidenceSinceCurrentBriefVersion(investigationId)` is `true`. The real
+ > `hasUnattemptedCorrectionSnapshot(investigationId)` is `true`. The real
  > discriminator for whether the evidence gate applies is "does this run supersede an existing
  > `BriefVersion`," not "what is the Investigation's current status" — a `ProblemBrief`'s
  > existence, not `status`, is what makes a run a correction (§4.2 step 3 already uses exactly
@@ -2097,7 +2097,7 @@ Steps (each numbered step maps directly to one US-3 acceptance criterion):
  > only the `'brief-generated'` case is live.
 
  The Generation Eligibility Rule above does NOT treat `'brief-generated'` as blanket-ineligible —
- US-13 restores the evidence-gated correction branch. The `'open'`/`'generation-failed'` branches,
+ US-13 restores the snapshot-gated correction branch. The `'open'`/`'generation-failed'` branches,
  and the concurrent-run guard, apply exactly as stated above regardless of that branch.
 
  **422 vs. 409 — which status the ordinary concurrent-click case actually returns.** Because
@@ -2111,7 +2111,7 @@ Steps (each numbered step maps directly to one US-3 acceptance criterion):
  ("a generation run is already in progress for this investigation") matches what the client's own
  prior read told it, where a `409` would imply a write conflict the client had no way to anticipate.
  `reason` for this specific ineligibility cause states it explicitly, distinguishable by message
- from the `'blocked'` 422 and the "no new evidence" 422 (§4.2's ineligible-outcome paragraph,
+ from the `'blocked'` 422 and the "no new source snapshot" 422 (§4.2's ineligible-outcome paragraph,
  below). **`409` is reserved for the genuinely narrow race** at step 5a: two requests that BOTH pass
  step 2's read before either request's `INSERT` commits — the only window in which two concurrent
  `POST`s can still collide at the database's own partial unique index despite both having read
@@ -2125,8 +2125,8 @@ Steps (each numbered step maps directly to one US-3 acceptance criterion):
  race this section describes.
 
  Ineligible → `{ outcome: 'ineligible', currentStatus, reason }` (422); when the ineligible cause
- is specifically a `'brief-generated'` Investigation with no new evidence, `reason` states that
- explicitly (e.g. `"no new source evidence has been added since the current Brief version"`) so
+ is specifically a `'brief-generated'` Investigation with no new source snapshot, `reason` states that
+ explicitly (e.g. `"no new source snapshot has been added since the current Brief version"`) so
  the connector's 422 is distinguishable from a `'blocked'` 422 by message, not only by
  `currentStatus`. This mirrors, at the connector boundary, the same `ALLOWED_PRIOR_STATUSES`
  reasoning `transitionInvestigationStatus.ts` already encodes for status transitions — it does not
@@ -2438,18 +2438,18 @@ export class BriefVersionNotFoundError extends Error {} // SOL-MEDIUM-5 fix — 
 function getInvestigationWorkspace(investigationId: string): Promise<InvestigationWorkspaceView | null>;
 // Returns null iff no Investigation row exists for investigationId — the Express handler maps
 // null to 404 (§4.1), never a 200 with an empty/placeholder body (US-1 AC4).
+// Database, connection, query, and unexpected failures propagate to the route error boundary.
 ```
 
 Assembly, read-only, no writes:
 
-1. `getInvestigation(investigationId)` (existing, live behavior — this function throws, it does not return `null`, on a nonexistent id; live
- `src/services/getInvestigation.ts:44-46` confirms this, and §3.1b's own text — "`getInvestigation`'s
- not-found error is now caught here" — already relies on the throw, not a `null` return). This
- step therefore wraps the call in a `try`/`catch`: on catch, `getInvestigationWorkspace` itself
- returns `null` (its own documented not-found contract, above) so every OTHER caller in this
- document keeps working against a `null`-returning read-model function — `getInvestigation`'s own
- throw-based contract is not changed by this sprint, only wrapped once, here, at this one call
- site. On success → `investigation`, `sourceArtifacts`.
+1. `getInvestigation(investigationId)` gains an explicit absence contract: it returns `null`
+ only when its query succeeds with no Investigation row (alternatively, a typed
+ `InvestigationNotFoundError` may carry that one condition). `getInvestigationWorkspace`
+ translates only that explicit absence signal to its own `null` result. It does not use a broad
+ `catch`: database, connection, mapping, and unexpected errors propagate unchanged so the route
+ returns its 500/API failure and the workspace renders §3.2's error state rather than a false
+ "Investigation not found." On success → `investigation`, `sourceArtifacts`.
 2. New SQL read: all `generation_run` rows for `investigationId`, each joined to its
  `generation_step` rows ordered by `step_index` (with `step_data`'s `validationRecords`/
  `toolInvocations` mapped through) and its `web_search_query`/`web_search_result`/
@@ -2482,14 +2482,14 @@ Assembly, read-only, no writes:
  populates `decisionLineage` (was `decisions`; renamed to make explicit this is the
  whole-Investigation lineage view, distinct from `getBriefForReview.priorDecisions`'s
  per-version list — US-10 AC12).
-5. (US-13, §4.8, revised) `hasEligibleNewEvidenceSinceCurrentBriefVersion(investigationId)`
- — populates `newEvidenceSinceCurrentBriefVersion`.
+5. (US-13, §4.8, revised) `hasUnattemptedCorrectionSnapshot(investigationId)`
+ — populates `newSourceSnapshotSinceCurrentBriefVersion`.
 6. `generationEligible` computed per §4.2's revised Generation Eligibility Rule, reading
  `investigation.status`, whether any `generationRuns` entry has `outcome === 'in-progress'`, and —
  per §4.2's `problemBriefId`-keyed correction, for `investigation.problemBriefId !== null` (i.e. a
  `ProblemBrief` already exists, so this would be a correction run regardless of
  which status the Investigation happens to carry, matching 03-UI-SPEC.md's Flow US-3/US-4 step 1)
- — step 5's `newEvidenceSinceCurrentBriefVersion` result.
+ — step 5's `newSourceSnapshotSinceCurrentBriefVersion` result.
 
 ### 4.5 `getDecisionsForBriefVersion`
 
@@ -2851,186 +2851,70 @@ which declares no `supersedesVersionId` field, §3.2). If found,
 `isSuperseded` already asserts exists — `forwardSupersededByVersionNumber` merely resolves it to a
 human-readable version number rather than leaving it as a boolean.
 
-### 4.8 Resubmission Eligibility Check (US-13)
+### 4.8 Correction-attempt eligibility and source-snapshot ledger (US-13)
 
 ```typescript
 // src/services/getInvestigationWorkspace.ts (helper)
-function hasEligibleNewEvidenceSinceCurrentBriefVersion(investigationId: string): Promise<boolean>;
+function hasUnattemptedCorrectionSnapshot(investigationId: string): Promise<boolean>;
 ```
 
-**Mechanism — exact persisted consumption facts, not a timestamp window at the eligibility-query
-layer.** A new join table records precisely which `source_artifact` rows each `GenerationRun`
-actually had the opportunity to consume:
+**Product boundary.** `content-retrieved` is a fetch-layer fact: the source resolved to non-empty
+material. It is not a claim that the material contains usable evidence. A `'brief-generated'`
+Investigation may start a correction attempt when at least one operator-submitted resolved-content
+snapshot is new relative to both (a) the current Brief's producing run and (b) earlier correction
+attempts against that same current `BriefVersion`. Extraction inside the run is the first place
+that can truthfully decide evidentiary usability.
+
+**Exact persisted read-set ledger.** Migration `012_generation_run_consumed_source.sql` records
+which source rows an extraction pass actually read:
 
 ```sql
--- 012_generation_run_consumed_source.sql
 CREATE TABLE IF NOT EXISTS generation_run_consumed_source (
  generation_run_id UUID NOT NULL REFERENCES generation_run(id),
  source_artifact_id UUID NOT NULL REFERENCES source_artifact(id),
+ correction_target_brief_version_id UUID REFERENCES brief_version(id),
  PRIMARY KEY (generation_run_id, source_artifact_id)
 );
+
 ```
 
-**Ledger content — the full resolved-source set this run had the opportunity to use, not the
-subset that produced surviving `EvidenceItem` rows.** `universeSourceArtifactIds`
-(`generateBriefVersion.ts:479`, `new Set(universe.map(e => e.sourceArtifactId))`) is derived from
-`EvidenceItem` rows only (`startSnapshot` ∪ `extraction.evidenceItems` ∪
-`landscape.landscapeEvidenceItems`), and `extractClaimsAndEvidence` inserts an `EvidenceItem` only
-for what the extraction model actually returned per source (`extractClaimsAndEvidence.ts:485-503`).
-A `'content-retrieved'` source the model extracted nothing from yields ZERO `EvidenceItem` rows and
-so never appears in `universeSourceArtifactIds`, even though it was fully available to and considered
-by this run's own Extraction step (Extraction always runs over the Investigation's ENTIRE
-content-retrieved source set — `extractClaimsAndEvidence.ts:390-398` — never a pre-filtered subset).
-A ledger keyed off `universeSourceArtifactIds` would therefore never record such a source as
-consumed, leaving it "not yet consumed" forever — including immediately after the very first
-successful generation with no new source ever added, since a first run's own content-retrieved
-sources producing zero evidence would satisfy every clause of the eligibility anti-join below.
-Writing the ledger from the earlier `startSnapshot` (`:330`, before Extraction runs) is separately
-wrong: `getEvidenceForInvestigation`
-reads from `evidence_item` (`getEvidenceForInvestigation.ts:22-27`), which is EMPTY for a first-ever
-run, so `startSnapshot` alone is always empty on that run regardless of the fix below.
+The planned additive extraction result field is named `extractionInputSourceIds: string[]`, not
+`usableSourceIds`. It is the exact set of `content-retrieved` rows the extraction call read,
+including an input from which the model produced zero valid `EvidenceItem` rows. Both primary
+Extraction and Landscape Research expose this same field. `generateBriefVersion` unions their
+actual read sets as `consideredSourceArtifactIds` and writes the ledger under the existing fence.
+For an initial run, `correction_target_brief_version_id` is null; for a correction attempt it is
+the server-resolved `supersedesVersionId`. The target is therefore durable even when the attempt
+creates no BriefVersion. A source resolved after a given extraction read is not recorded for that
+pass; a source resolved before and actually read is.
 
-**The fix: derive the ledger from `source_artifact.resolution_status` directly, not from
-`EvidenceItem` presence — and from Extraction's own real read set, not an independently re-derived
-snapshot.** The exact mechanism, and why it closes both the zero-evidence gap above and the
-timing gaps a naive resolution-status read would leave open, is specified in full immediately
-below.
+For a correction attempt, candidate operator-submitted source IDs are computed before Extraction
+and passed explicitly to the extraction call. If Extraction completes successfully but produces
+zero valid `EvidenceItem` rows from that candidate set:
 
-**The mid-run over-recording gap, and the exact fix.** Reading the resolved-source set independently
-at `:479` — after Extraction (`:333`) and Landscape (`:393`) have already run — risks recording a
-source as consumed by a run that never actually had the opportunity to read it: a source added via
-the Add-Source connector and resolved to `'content-retrieved'` WHILE this run is still in-progress
-(after `:333`/`:393` but before `:479`) would, under a plain resolution-status filter at `:479` alone,
-be recorded as consumed even though Extraction's own read at `:333` never saw it — permanently
-disqualifying that genuinely-new source from ever unlocking US-13 eligibility. Bounding the `:479`
-read by the run's own `started_at` timestamp avoids that
-false-disqualification, but at the cost of a narrower, opposite gap: a source that resolves to
-`'content-retrieved'` in the window `(started_at, :333]` — after the run starts but before
-Extraction's own internal read executes — IS actually read and reflected in the current
-`BriefVersion` (Extraction re-reads the live resolved-source set at its own call time, independent of
-`started_at`), yet a `startedAt`-only filter would exclude it from the ledger, leaving it falsely
-eligible for a redundant correction that adds no evidence beyond what the current Brief already
-reflects.
+1. Write those `extractionInputSourceIds` to `generation_run_consumed_source` with `correction_target_brief_version_id` set to the current BriefVersion.
+2. Persist a failed `GenerationStep` with component `Extraction: correction evidence validation`
+   and exact `error: 'no-new-usable-evidence'`.
+3. Finalize the run as `failed` after that step is durable.
+4. Create no `BriefVersion` and do not update `ProblemBrief.currentVersionId`.
+5. Leave `Investigation.status = 'brief-generated'`; the valid current Brief and its Decisions
+   remain visible and unchanged.
+6. Require another new, unattempted snapshot before a further correction attempt becomes eligible.
 
-**The precise fix: ledger the exact source set Extraction itself actually read, not an inferred
-timestamp bound.** `extractClaimsAndEvidence` already computes the real answer to "which
-`content-retrieved` sources did this run's Extraction step actually consider" as `usableSourceIds`
-(`extractClaimsAndEvidence.ts:392-397`) before delegating to
-`extractClaimsAndEvidenceForSourceArtifacts` — this is not an approximation, it is the literal set
-Extraction reads. `extractClaimsAndEvidence`'s return type gains one additive field,
-`usableSourceIds: string[]` (the same array already computed internally, now surfaced rather than
-discarded), and `generateBriefVersion.ts` captures that returned set directly instead of making a
-second, independent `getInvestigation` call bounded by `started_at`:
+Provider, validation, infrastructure, or truncation failure does not prove the candidate unusable;
+those failures retain their own typed reason and do not turn the candidate into a
+`no-new-usable-evidence` fact. When Extraction produces valid new evidence, the existing pipeline
+continues and creates the immutable superseding `BriefVersion`.
 
-```typescript
-// generateBriefVersion.ts, immediately after Extraction (`:333`) resolves — captures the exact set
-// Extraction itself already read (not an independent getInvestigation + startedAt-bound re-read),
-// eliminating both the false-disqualification risk (a source
-// resolved mid-run, before Extraction's own read, is correctly included) and the false-eligibility
-// gap (a source resolved after Extraction's own read, even if before `:479`, is correctly excluded,
-// since Extraction never saw it).
-const primaryUsableSourceIds = extraction.usableSourceIds;
-```
-
-**SELF-4 fix — landscape research's own read set is unioned in, not silently dropped.**
-`consideredSourceArtifactIds` is not written from `extraction.usableSourceIds` alone: primary
-Extraction runs at
-`:333`, BEFORE Landscape Research's own `extractClaimsAndEvidenceForSourceArtifacts` call
-(`landscapeResearcher.ts:272`, reached from `generateBriefVersion.ts:393`) has even executed, so
-`extraction.usableSourceIds` at that point cannot possibly contain any landscape-research-origin id.
-A source incorporated only through landscape research would therefore have no ledger row if the
-primary set alone were used, and could later be resubmitted (verbatim, by an operator who happened
-to already know its URL) and falsely register as new evidence — the fix below closes this.
-
-**Fix.** `extractClaimsAndEvidenceForSourceArtifacts` (`extractClaimsAndEvidence.ts:410-...`) gains
-the identical additive return field `extractClaimsAndEvidence` already has —
-`usableSourceIds: string[]`, populated from its own already-computed `knownSourceIds`
-(`extractClaimsAndEvidence.ts`'s internal `usableSources.map((s) => s.id)`, the literal set of
-`source_artifact` ids THIS call actually extracted from, scoped to the ids
-`landscapeResearcher.ts:272` passed in as its own `sourceArtifactIds` parameter — no new
-computation, the array already exists internally, only surfaced rather than discarded, same pattern
-as the primary function's own fix above). `generateBriefVersion.ts` captures this second set
-immediately after Landscape Research's own call resolves (`:393`, alongside its existing handling of
-that call's result) and unions it with the primary set captured above, immediately before the ledger
-write at `:479` — the write is unmoved (still the same standalone `INSERT`, still at `:479`, still
-after every extraction pass the run performs has completed), only its input is now the union:
-
-```typescript
-// generateBriefVersion.ts, immediately before the ledger INSERT at :479 — union of both
-// extraction passes' own real read sets, computed after both have executed (Landscape Research's
-// own call at :393 has already resolved by this point in every code path, whether or not it
-// actually performed any research this run).
-const consideredSourceArtifactIds = Array.from(
-  new Set([...primaryUsableSourceIds, ...(landscapeResult?.usableSourceIds ?? [])]),
-);
-```
-
-(`landscapeResult?.usableSourceIds` is `undefined`/absent whenever Landscape Research does not run
-or produces no extractable sources this run — the union then degrades to exactly the primary set,
-unchanged from before this fix, so this is purely additive.)
-
-The ledger write remains a standalone `INSERT` at `:479` (Phase 3 check 1(c), independent of any
-`GenerationStep` write), one row per id in this UNIONED `consideredSourceArtifactIds`, NOT
-`universeSourceArtifactIds`. Because this now reflects the union of BOTH extraction passes' own real
-read sets rather than an inferred boundary or a primary-only set, a `'content-retrieved'` source that
-yields zero extracted evidence is still recorded consumed (both extraction functions read over their
-respective ENTIRE scoped content-retrieved source sets, `extractClaimsAndEvidence.ts:390-398`/
-`:410-419`, so `usableSourceIds` includes a source regardless of whether it produced any
-`EvidenceItem`) — closing the zero-evidence gap identified above without reopening the mid-run gap,
-and without leaving the narrower Extraction-read-boundary gap a `startedAt` comparison alone could
-not close, AND without leaving landscape-research-consumed sources permanently outside the ledger.
-The ledger records BOTH `origin: 'submitted'` and `origin: 'landscape-research'` rows alike (no
-origin filter at write time, and now genuinely both are actually present in the unioned set, not
-just theoretically eligible to be); the eligibility query below already restricts to `sa.origin =
-'submitted'` at READ time, so recording `'landscape-research'` rows here too is harmless (they can
-never satisfy the query's own `origin` filter) and keeps the ledger a simple, complete,
-origin-agnostic fact about what this run's two extraction steps actually read, rather than
-duplicating origin-filtering logic in two places. This is a real fact about what this run's own code
-paths actually read — not an inference from timing, from `started_at`, or from evidence survival —
-and it requires no timestamp comparison at all, since both `usableSourceIds` sets are each
-extraction function's own real read set at the moment it read it.
-
-
-**SOL-MEDIUM-1 fix — canonical source identity and resolved-content fingerprint, not exact-string
-equality alone.** The `trim(raw)` anti-join below catches only a byte-for-byte-identical
-resubmission of the same raw input. It does not catch: (a) the same URL submitted with a different
-scheme/trailing-slash/query-tracking-parameter/case-of-host, (b) a URL that redirects to a location
-already consumed under a different original URL, or (c) the same underlying document reached
-through two textually different URLs (e.g. a canonical link and a redirect-shortener link to it).
-US-13 AC2's "duplicate of an already-consumed source... even though it is a distinct Source row"
-disqualifier is not scoped to exact-string duplicates only — the fix below closes the full
-requirement, not a narrowed exact-match subset of it.
-
-**Where this is computed, and what it requires.** Three additive columns on `source_artifact`
-(SOL-MEDIUM-1 fix — the SQL block below carries all three columns this section
-and §1.4a both describe as living in migration `013`; the SQL block is the single
-source of truth and matches every prose reference to it), added in a new migration
-`013_source_artifact_canonical_identity.sql` (`013`, the next unused migration number after `012`;
-C2-S2's own scope, alongside `009` and §1.4a/§1.4b, since this is where
-`computeSourceResolution`/`resolveSourceArtifact` already live and all three new columns are
-populated exactly once, at resolution time, inside that same function):
+**Snapshot identity, not permanent URL identity.** Migration
+`013_source_artifact_canonical_identity.sql` remains the single schema change:
 
 ```sql
--- 013_source_artifact_canonical_identity.sql
 ALTER TABLE source_artifact
  ADD COLUMN IF NOT EXISTS canonical_url TEXT,
  ADD COLUMN IF NOT EXISTS resolved_content_hash TEXT,
- ADD COLUMN IF NOT EXISTS resolution_revision INTEGER NOT NULL DEFAULT 0; -- §1.4a SOL-MEDIUM-2's CAS
-                                                                          -- counter — same migration,
-                                                                          -- one ALTER TABLE, all
-                                                                          -- three additive columns
+ ADD COLUMN IF NOT EXISTS resolution_revision INTEGER NOT NULL DEFAULT 0;
 
--- SOL-MEDIUM-1 fix — one-time backfill for EXISTING, already-resolved rows. Adding these columns
--- nullable-only (above) leaves every pre-migration `'content-retrieved'` row with NULL
--- canonical_url/resolved_content_hash; the eligibility query's own anti-joins already exclude NULL
--- identity values from the "already consumed" comparison set (`WHERE consumed_sa.canonical_url IS
--- NOT NULL`/`consumed_sa.resolved_content_hash IS NOT NULL`), so an equivalent NEW submission could
--- otherwise bypass an existing consumed row purely because that row predates this migration.
---
--- (1) resolved_content_hash — fully backfillable, no network call: every 'content-retrieved' row
--- already has a non-NULL resolved_content (§1.4b/§4.8's own documented invariant), so its hash is
--- a pure function of already-persisted data. This is plain SQL with no TypeScript dependency, so
--- it runs here, inside migration 013 itself, in the same transaction as the ALTER TABLE above.
 UPDATE source_artifact
    SET resolved_content_hash = encode(sha256(convert_to(resolved_content, 'UTF8')), 'hex')
  WHERE resolution_status = 'content-retrieved'
@@ -3038,252 +2922,77 @@ UPDATE source_artifact
    AND resolved_content_hash IS NULL;
 ```
 
-**`canonical_url`'s backfill cannot live inside migration `013` itself, and is specified as a
-separate, named, manually-run script instead.** `src/db/migrate.ts`
-executes every file under `src/db/migrations/` as a raw SQL string passed
-directly to `client.query(sql)`, one file per transaction — the migration runner has no hook of any
-kind for invoking TypeScript application code mid-migration, so a `.sql` file cannot call the real
-`canonicalizeUrl(raw)` helper directly. The column-add and the backfill are specified as two
-honestly-described steps:
+Every new `content-retrieved` resolution persists SHA-256 of the exact `resolved_content`.
+`resolveSourceArtifact`/recheck and `searchWeb` remain the three planned write paths and all write
+the hash. URL paths also persist `canonical_url` derived from the real guarded
+`FetchResult.finalUrl`; text sources leave it `NULL`.
 
-- **Migration `013` itself** — transactional and automatic, exactly like every other migration: the
-  `ALTER TABLE` above (all three columns) plus the plain-SQL `resolved_content_hash` backfill above
-  (no TypeScript dependency, so no reason to defer it). `canonical_url` is left `NULL` for every
-  pre-migration row by migration `013` alone — the `ALTER TABLE` adds the column nullable, nothing
-  in this migration file populates it.
-- **`src/db/scripts/backfill-013-canonical-url.ts` (new, named, manually-run, NOT part of any
-  migration file or transaction)** — a small one-off script that selects every `type = 'url'`,
-  `resolution_status = 'content-retrieved'` row with `canonical_url IS NULL`, calls the REAL
-  `canonicalizeUrl(raw)` helper (§4.8, `src/services/sourceCanonicalization.ts`) directly on each
-  row's stored `raw` value — no duplicated normalization logic, one implementation only — and
-  writes the result back with its own `UPDATE ... WHERE id = $1`. Forge runs this script manually,
-  once, immediately after migration `013` applies and before any other checkpoint work resumes;
-  this is part of C2-S2's own Done-When (§4.8/roadmap C2-S2), not an optional cleanup step. Because
-  this runs as a genuinely separate step from the `ALTER TABLE`, it is explicitly NOT transactional
-  with the column-add — a crash between the two leaves `canonical_url` `NULL` for pre-migration
-  rows exactly as it already is immediately after migration `013` alone, which is a safe, no-worse-
-  than-todo intermediate state (the eligibility query's `NULL`-tolerant anti-join fallback below
-  already handles it), not a corrupted one.
-- This backfill remains an explicitly disclosed DEGRADED fallback, not the real mechanism, for the
-  same reason as before: it is NOT fully backfillable without a live re-fetch (this script performs
-  no network I/O), since the true canonical value requires the FINAL post-redirect URL (§4.6a),
-  which is not recoverable from a stored `raw` value alone for a row that redirected. Calling the
-  real `canonicalizeUrl` helper against `raw` (instead of a resolved `finalUrl`) closes the majority
-  of the pre-migration gap (case/scheme/trailing-slash/tracking-parameter variants of the SAME
-  already-consumed URL) but does NOT close the redirect-normalization case (gap (b), §4.8) for rows
-  resolved before this migration — a pre-migration row that was reached via a redirect will
-  backfill to its ORIGINAL, not final, URL. This limitation is accepted and disclosed here, not
-  silently narrowed: every row resolved AFTER migration `013` ships computes the real, final-URL-
-  derived `canonical_url` per §4.8's live mechanism (inside `computeSourceResolution`, at resolution
-  time), so the degraded case is bounded to the existing-data population at migration time and does
-  not grow. A new test (`src/db/scripts/backfill-013-canonical-url.test.ts`) asserts the script
-  calls the real, imported `canonicalizeUrl` helper (not a hand-duplicated copy of its logic) and
-  correctly skips rows that are not `type = 'url'`/`'content-retrieved'` or whose `canonical_url` is
-  already non-`NULL`.
+There is no historical canonical-URL backfill script. A pre-migration redirect's final destination
+was never stored and must not be reconstructed from `raw` or claimed as known. Migration `013`
+fully backfills the historical content snapshots that actually were stored. Consequently:
 
-**Eligibility-query fallback rule for any row this backfill still cannot resolve** (a `'url'` row
-whose `raw` itself fails `URL` parsing, or a `'text'` row, for which `canonical_url` is `NULL` by
-design and stays `NULL` even after backfill): the eligibility query's existing `canonical_url IS
-NULL OR canonical_url NOT IN (...)` structure already treats a `NULL` candidate `canonical_url` as
-"no canonical-identity anti-join contribution for this row" — this is unchanged and correct; it
-falls through to the `trim(raw)`/`resolved_content_hash` anti-joins, which the backfill above does
-make fully effective for every pre-migration row (`resolved_content_hash` has no degraded case,
-unlike `canonical_url`). No pre-migration row is left with a weaker guarantee than "duplicate
-content is caught by hash, duplicate raw text is caught by trim, duplicate canonical URL is caught
-prospectively from this migration forward and retroactively wherever the disclosed degraded backfill
-could compute one."
+- equal `resolved_content_hash` means the snapshot was already consumed/attempted, regardless of
+  URL spelling, redirect alias, row ID, or source type;
+- same canonical URL plus the same hash is duplicate;
+- same canonical URL with a different hash is a new snapshot and may start an attempt, because an
+  updated page may contain new evidence;
+- canonical URL remains useful provenance/matching context but is never, by itself, a permanent
+  veto on changed content.
 
-- `canonical_url` — populated only for `type === 'url'` sources, inside `computeSourceResolution`
-  (§1.4a), immediately after the guarded fetch resolves any redirect chain, reading `§4.6a`'s
-  `FetchResult.finalUrl` (SOL-MEDIUM-1 fix — the same fetch call `ssrfGuardedFetch`/`resolveSourceArtifact`
-  already makes; no second network call, and now a real field to read the final URL from, rather
-  than an assertion that one was available). Computed from the FINAL, post-redirect URL (closing gap
-  (b) above) via Node's built-in `URL` normalization (lower-cased scheme and host, default port
-  stripped, trailing slash on a bare path normalized, fragment stripped) plus stripping of
-  well-known query-tracking parameters (`utm_*`, `gclid`, `fbclid` — among the most commonly
-  documented URL tracking parameters in general web practice; an allowlist-of-strip-targets, not a
-  numeric threshold, so no PROVISIONAL tag is owed here, but the honest framing is that this is a
-  reasonable-but-inherently-incomplete static list, not an exhaustive one — a tracking parameter
-  this list misses does not cause a valid duplicate to be missed silently: `resolved_content_hash`
-  below is the real backstop, catching byte-identical content regardless of which URL parameters
-  differ). `null` for any non-`'content-retrieved'` outcome or any non-`'url'` source (nothing to
-  canonicalize).
-- `resolved_content_hash` — populated for every `type` whenever `resolution_status ===
-  'content-retrieved'`, inside the same function, immediately after `resolved_content` is computed:
-  a SHA-256 hex digest of `resolved_content` (Node's built-in `crypto.createHash('sha256')`, no new
-  dependency). This is what closes gap (c): two textually different URLs (or a `url` and a `text`
-  source) that resolve to byte-identical content hash identically, independent of how they were
-  addressed. `null` for any non-`'content-retrieved'` outcome.
-
-Both columns are written by the SAME `UPDATE`/`INSERT` `resolveSourceArtifact`'s `persistResolution`
-(or, for the single-source re-check path, `recheckSourceArtifact`'s own compare-and-set `UPDATE`,
-§1.4a) already performs — no new write path, no new transaction, additive columns on an existing
-row write.
-
-**SOL-MEDIUM-1 fix — `searchWeb.ts`'s own direct `source_artifact` insert is a THIRD write path and must
-compute and persist both fields too.** Live `searchWeb.ts:247-253` inserts a `source_artifact` row
-directly for every landscape-research result classified `'retrieved'`, entirely independent of
-`resolveSourceArtifact`/`computeSourceResolution`. Computing canonical-identity fields only inside
-`computeSourceResolution` would leave every
-landscape-research-origin `source_artifact` row with permanently `NULL` `canonical_url`/
-`resolved_content_hash`, letting an equivalent duplicate bypass the eligibility query's
-anti-join entirely for this entire origin. Fix: `searchWeb.ts`'s `retrieveAndClassify` (§4.6a)
-already has access to `fetchWithGuards`'s `finalUrl` field for every result it retrieves; before its
-`INSERT INTO source_artifact` at `:247`, it now computes `canonicalUrl` (via the SAME `URL`-
-normalization-plus-tracking-parameter-stripping logic `computeSourceResolution` uses — extracted
-once, this checkpoint, into a small shared helper, `canonicalizeUrl(finalUrl: string): string`, in
-`src/services/sourceCanonicalization.ts` (new, tiny, pure function, no dependency of its own on
-`resolveSourceArtifact.ts` or `searchWeb.ts` so both can import it without a circular dependency) so
-this is genuinely one implementation, not two independently-maintained copies) and
-`resolvedContentHash` (the same SHA-256-of-`resolvedContent` computation, inlined or via the same
-shared helper module) and includes both in that `INSERT`:
-
-```sql
--- searchWeb.ts:247, extended (SOL-MEDIUM-1 fix — was: investigation_id, submission_id, type, raw, origin,
--- resolution_status, resolution_resolved_at, resolved_content only)
-INSERT INTO source_artifact
-   (investigation_id, submission_id, type, raw, origin,
-    resolution_status, resolution_resolved_at, resolved_content,
-    canonical_url, resolved_content_hash)
- VALUES ($1, NULL, 'url', $2, 'landscape-research', 'content-retrieved', now(), $3, $4, $5)
- RETURNING id;
-```
-
-This closes the third of the three write paths SOL-MEDIUM-1 identified (`resolveSourceArtifact`'s own
-`persistResolution`, `recheckSourceArtifact`'s compare-and-set `UPDATE`, and now `searchWeb.ts`'s
-direct insert) — every `source_artifact` row this system can ever create now has its canonical
-identity populated at the moment of its own creation/resolution, regardless of which of the three
-code paths created it.
-
-**Eligibility query** — an anti-join against the current `BriefVersion`'s producing run, by `id` (an
-already-consumed row, resubmitted unchanged), by exact trimmed `raw` content (a NEW
-`source_artifact` row — its own distinct id, never itself in the consumed table — whose content is
-byte-for-byte the same evidence already consumed under a different row), AND by the two canonical-
-identity columns above (`canonical_url`, `resolved_content_hash`) — closing the redirect/
-normalization/cross-URL-same-content gaps the `trim(raw)` check alone cannot catch. Content-identity,
-not row identity or raw-string identity, is what US-13 AC2's "duplicate of an already-consumed
-source... even though it is a distinct Source row" disqualifier requires in full; excluding only by
-`id`, or only by `trim(raw)`, would both leave real disqualified cases reachable, since a resubmission always gets a
-fresh `source_artifact.id` and need not be byte-identical raw text to be the same underlying source:
+**Eligibility query.** Resolve the current `BriefVersion` and its producing
+`generation_run_id`. Excluded snapshots are hashes ledgered by that producing run plus hashes
+ledgered by any correction attempt whose
+`generation_run_consumed_source.correction_target_brief_version_id` equals that current version:
 
 ```sql
 SELECT EXISTS (
  SELECT 1
- FROM source_artifact sa
- WHERE sa.investigation_id = $1
- AND sa.origin = 'submitted' -- operator-submitted only; a pipeline-inserted
- -- landscape-research source can never itself
- -- unlock eligibility
- AND sa.resolution_status = 'content-retrieved' -- excludes unreachable/unresolved and empty
- AND sa.id NOT IN (
- SELECT source_artifact_id
- FROM generation_run_consumed_source
- WHERE generation_run_id = $2 -- the current BriefVersion's producing GenerationRun
- )
- AND trim(sa.raw) NOT IN (
- SELECT trim(consumed_sa.raw)
- FROM generation_run_consumed_source grcs
- JOIN source_artifact consumed_sa ON consumed_sa.id = grcs.source_artifact_id
- WHERE grcs.generation_run_id = $2 -- same producing run — a verbatim-content
- -- resubmission under a new source_artifact.id is
- -- still excluded, closing the id-only gap above
- )
- AND (
- sa.canonical_url IS NULL
- OR sa.canonical_url NOT IN (
- SELECT consumed_sa.canonical_url
- FROM generation_run_consumed_source grcs
- JOIN source_artifact consumed_sa ON consumed_sa.id = grcs.source_artifact_id
- WHERE grcs.generation_run_id = $2 AND consumed_sa.canonical_url IS NOT NULL
- )
- ) -- SOL-MEDIUM-1 fix: a redirect, tracking-parameter, or case/scheme variant of an already-
- -- consumed URL is excluded even though its raw text differs
- AND (
- sa.resolved_content_hash IS NULL
- OR sa.resolved_content_hash NOT IN (
- SELECT consumed_sa.resolved_content_hash
- FROM generation_run_consumed_source grcs
- JOIN source_artifact consumed_sa ON consumed_sa.id = grcs.source_artifact_id
- WHERE grcs.generation_run_id = $2 AND consumed_sa.resolved_content_hash IS NOT NULL
- )
- ) -- SOL-MEDIUM-1 fix: the same underlying document reached through two textually different
- -- URLs (or a url/text source pair) resolving to byte-identical content is excluded
+ FROM source_artifact candidate
+ WHERE candidate.investigation_id = $1
+   AND candidate.origin = 'submitted'
+   AND candidate.resolution_status = 'content-retrieved'
+   AND candidate.resolved_content_hash IS NOT NULL
+   AND NOT EXISTS (
+     SELECT 1
+     FROM generation_run_consumed_source grcs
+     JOIN source_artifact prior ON prior.id = grcs.source_artifact_id
+     WHERE prior.resolved_content_hash = candidate.resolved_content_hash
+       AND (
+         grcs.generation_run_id = $2
+         OR grcs.correction_target_brief_version_id = $3
+       )
+   )
 ) AS eligible;
 ```
 
-1. Read `ProblemBrief.currentVersionId` for `investigationId`; if no `ProblemBrief` exists yet,
- return `false` (an initial generation is gated by the `'open'` branch of §4.2's eligibility rule,
- not this one).
-2. Read that `BriefVersion.generationRunId` — the producing run whose
- `generation_run_consumed_source` rows are the exact resolved-source snapshot (§4.8 above,
- `consideredSourceArtifactIds`, the UNION of the primary Extraction's and Landscape Research's own
- real `usableSourceIds` read sets at write time, SELF-4 fix) that run actually had the opportunity
- to use.
-3. Run the query above. Eligible iff at least one `'submitted'`, resolved, non-consumed,
- non-duplicate-of-consumed source exists for this Investigation.
+Parameters are Investigation ID, current Brief producing run ID, and current BriefVersion ID.
+There is no timestamp boundary and no `canonical_url` anti-join. A row that is unreachable,
+unresolved, empty, hash-identical to consumed material, or hash-identical to a completed
+no-evidence attempt cannot enable correction. A changed snapshot at the same URL can enable an
+attempt; Extraction determines whether that change is evidentiary.
 
-This satisfies every one of US-13 AC2's four disqualifiers: **unreachable
-or unresolved** (`resolution_status = 'content-retrieved'` excludes both, along with every
-non-terminal/failed state); **empty** (`resolution_status = 'content-retrieved'` excludes it PROVIDED
-`resolveSourceArtifact`/`computeSourceResolution` never classifies blank/whitespace-only text as
-`'content-retrieved'` — this is NOT true of today's live `type: 'text'` code path and is fixed by
-§1.4b, a required Forge-slice edit assigned to C2-S2, not an existing guarantee); **a duplicate of an
-already-consumed source, even under a distinct row** (the `trim(raw)` anti-join, now joined by the
-`canonical_url`/`resolved_content_hash` anti-joins, SOL-MEDIUM-1 fix, closing the redirect/
-normalization/cross-URL-same-content cases exact-string equality alone cannot catch); and **already
-reflected in the current `BriefVersion`** (the `id`-based anti-join — the exact row Extraction
-actually read). A source added during the run but never reached because the run failed before
-Extraction's own read (`:333`) has no `generation_run_consumed_source` row under either anti-join and
-correctly counts as eligible; the same is true, by construction, for a source that only becomes
-`'content-retrieved'` AFTER Extraction's own read executes, even if that happens before the ledger
-write at `:479` — `usableSourceIds` is Extraction's own real, already-executed read, so a source it
-never saw is never in that set regardless of when in the pipeline the ledger write itself runs. A
-`'content-retrieved'` source that resolved before Extraction's own read — whether or not extraction
-produced any surviving `EvidenceItem` from it, and whether or not any resulting evidence fed a
-claim-linked recommendation — is still recorded consumed (the join table records "was available to
-and actually read by this run's Extraction step," not "produced evidence" or "produced a claim"), so
-it cannot be resubmitted, verbatim or under a new row, to falsely register as new. Because
-`consideredSourceArtifactIds` is derived directly from the union of both extraction passes' own
-real read sets (SELF-4 fix) rather than inferred from a `started_at` timestamp comparison or a
-primary-only set, there is no window or boundary logic at all in this mechanism, and no residual
-timing edge case, and no origin left permanently outside the ledger: the ledger records exactly
-what this run's own code paths actually read, not an approximation of it.
+`getInvestigationWorkspace` exposes the result as
+`newSourceSnapshotSinceCurrentBriefVersion`. The Generation Eligibility Rule uses that one
+server-computed flag for the correction branch. The client does not infer it from status or source
+timestamps.
 
-No coupling to `submitSources` (unmodified) or `assignValidityState` (US-12) — this function only
-reads.
+**Required tests:**
 
-**Latent (not live) edge case, disclosed for completeness**: `extractClaimsAndEvidence.ts:394-395`'s
-own read of `usableSourceIds` additionally requires `typeof resolvedContent === 'string'`, while the
-eligibility query above filters only on `sa.resolution_status = 'content-retrieved'`. A hypothetical
-`'content-retrieved'` row with a NULL `resolved_content` would never be ledgered into
-`generation_run_consumed_source` yet would still satisfy the eligibility query, leaving it
-perpetually eligible. This is currently unreachable, not a live bug: both live resolver code paths
-(`computeSourceResolution`/`resolveSourceArtifact`) guarantee non-null `resolved_content` on that
-status today, and §1.4b's required fix tightens this further by closing the blank/whitespace-only
-gap noted above. No mechanism change is made for this; it is documented here so a future change to
-either resolver's contract is checked against it.
-
-**Required tests, SOL-MEDIUM-1 fix (in addition to every other test this section and §4.9 already
-specify):**
-
-1. A pre-existing, pre-migration-shaped `source_artifact` row (`canonical_url`/
-   `resolved_content_hash` both `NULL` before migration `013`'s backfill runs) is, after the
-   backfill: (a) correctly EXCLUDED from eligibility once consumed, when a byte-identical or
-   hash-identical resubmission is attempted (`resolved_content_hash` backfill closes this fully);
-   (b) correctly EXCLUDED for a same-canonical-URL-different-tracking-parameter resubmission
-   (`canonical_url` backfill's non-degraded case); and (c) for a row whose original `raw` was itself
-   a redirect (the backfill's disclosed degraded case), the test asserts and documents the KNOWN
-   limitation directly, rather than silently passing on a narrower case than the live mechanism
-   provides for post-migration rows — a resubmission of the SAME final destination under its
-   canonical form is NOT guaranteed excluded for this specific pre-migration-redirect case, and the
-   test proves this is exactly the disclosed boundary, not a wider unintended gap.
-2. A landscape-research-consumed source (retrieved via `searchWeb`/`extractClaimsAndEvidenceForSourceArtifacts`
-   during a real run) correctly appears in that run's `generation_run_consumed_source` ledger rows
-   (`origin = 'landscape-research'`) — asserted by a direct DB read after a real end-to-end run — and
-   a subsequent operator submission of that exact same URL (by `raw`, by `canonical_url`, or by
-   `resolved_content_hash`) is correctly excluded from US-13 eligibility by the union fix above,
-   proving a landscape-incorporated source cannot be "resubmitted as new."
-
+1. No new snapshot, an unresolved/unreachable/empty source, and an equal-hash resubmission each
+   remain ineligible.
+2. Different URL/source type with an equal hash remains ineligible.
+3. Same canonical URL with the same hash remains ineligible; same canonical URL with a different
+   hash becomes eligible for an extraction attempt.
+4. Migration `013` hash-backfills a pre-migration `content-retrieved` row, and an identical
+   resubmission is excluded without claiming the historical redirect destination is known.
+5. A successful Extraction returning zero valid candidate evidence writes the attempt ledger,
+   finalizes `no-new-usable-evidence`, creates no BriefVersion, preserves the current pointer,
+   Brief, Decisions, and `'brief-generated'` status, and leaves the same snapshot ineligible.
+6. Adding another distinct snapshot after that outcome re-enables a correction attempt.
+7. Valid new evidence follows the existing success path and creates a superseding version.
+8. Primary and Landscape extraction read sets are both ledgered; a source neither pass read is not.
+9. A provider/truncation/schema/infrastructure failure retains its real reason and does not get
+   mislabeled `no-new-usable-evidence`.
 ### 4.9 Stale/Interrupted Run Detection (US-4)
 
 **Mechanism**: computed at `getInvestigationWorkspace` read time (§4.4 step 2), never a stored
@@ -3518,14 +3227,14 @@ export async function submitDecision(
 |---|---|
 | `InvestigationIdentityHeader` | Renders creation date, status, status reason, source count as the primary human-readable identity (US-1 AC3) — a shortened id may appear only as a secondary, explicitly-labeled detail, never the primary label. Also renders a compact non-valid/supersession notice for the DISPLAYED `BriefVersion` — its `assignedState` as a plain-language statement only when non-`'valid'`, and its `isSuperseded` as a navigable link (human-readable `versionNumber`) when `true` — the SAME displayed-version binding `DecisionHistoryBanner` uses, not a separate fact source. **Link target: the forward `isSuperseded` link targets the IMMEDIATE successor that actually named the displayed version via `supersedesVersionId` — the real "what superseded this" fact — resolved via `displayedVersion.forwardSupersededByVersionNumber` (`WorkspaceBriefSummary`, §3.2, already fetched, already server-resolved to a human-readable `versionNumber`), never `ProblemBrief.currentVersionId` and never the raw `supersedesVersionId`/`currentVersionId` UUID. For the common two-version lineage (v1 superseded by v2) the immediate successor and the current version are the same version, so this is observably identical to the round-15 behavior; they diverge only in a lineage of 3+ (v1 named by v2, not by the current v3), where this is the correct behavior and the round-15 rationale was not. A separate "jump to current/latest version" affordance is out of scope here — this link's job is only "what superseded this," not "what is newest."** |
 | `InvestigationIdentityHeader` (backward link, US-12 AC8 / US-13 AC4/AC5, 2026-08-24 whole-package convergence) | The forward `isSuperseded` link above tells the operator "a newer version exists"; it never helps someone ON the current version reach the version IT superseded — no document previously specified this, and no component owned it (a real gap independently found by end-to-end tracing). Resolution: `InvestigationIdentityHeader` ALSO renders a second, backward-facing link whenever the DISPLAYED `BriefVersion`'s own `supersedesVersionId` (already returned by `GetBriefForReviewResult.version`, §3.3 — the same domain field `BriefVersion` has always carried) is non-null: resolve it to a human-readable `versionNumber` via `workspace.briefs.find(b => b.briefVersionId === displayedVersion.supersedesVersionId)?.versionNumber` (`workspace.briefs`, §3.2, already fetched — no new backend field, no second round trip), and render it as a real, clickable link to that version's own versioned route (§5.1) labeled with its human-readable version number (e.g. "View prior Version 1") — never the raw `supersedesVersionId` UUID (Anti-Patterns). This is the ONE component that owns BOTH directions of version navigation (forward via `isSuperseded`, backward via `supersedesVersionId`). |
-| `AddSourceInline` | Revised: its OWN small form (not a reuse of `StartInvestigationForm`, which has no `investigationId` prop and always calls `createInvestigation` with `investigationId` omitted — a new-Investigation-only call site, not a route difference), calling `addSourcesToInvestigation(investigationId, artifacts)` (§5.2) — a thin wrapper that always supplies `investigationId` to the EXISTING, extended `POST /api/investigations` (§3.1b). No `:id/sources` sub-route exists or is added. Mounted directly in the workspace for the Blocked-recovery, generation-failed-retry, AND `'brief-generated'` resubmission paths (US-2 AC3/AC4, US-5 AC3, US-8 AC1, US-13 AC1) — no navigation away from the workspace URL on submit; on success, triggers a workspace re-fetch (never a redirect). This is the ONLY control that can make a `'brief-generated'` Investigation generation-eligible again — there is no separate "regenerate"/"Generate correction" button anywhere in this component tree (Out of Scope, US-13), and submitting against a `'brief-generated'` Investigation never itself flips its status (§1.4/§3.1b's explicit skip branch) — only §4.8's eligibility check, read on the next poll, can make `GenerateButton` eligible. After a successful submission, the workspace re-fetch (`workspace.newEvidenceSinceCurrentBriefVersion`, §3.2, computed per §4.8's revised mechanism) is what flips `GenerateButton`'s (below) enabled state — `AddSourceInline` itself never directly triggers a generation request. |
+| `AddSourceInline` | Revised: its OWN small form (not a reuse of `StartInvestigationForm`, which has no `investigationId` prop and always calls `createInvestigation` with `investigationId` omitted — a new-Investigation-only call site, not a route difference), calling `addSourcesToInvestigation(investigationId, artifacts)` (§5.2) — a thin wrapper that always supplies `investigationId` to the EXISTING, extended `POST /api/investigations` (§3.1b). No `:id/sources` sub-route exists or is added. Mounted directly in the workspace for the Blocked-recovery, generation-failed-retry, AND `'brief-generated'` resubmission paths (US-2 AC3/AC4, US-5 AC3, US-8 AC1, US-13 AC1) — no navigation away from the workspace URL on submit; on success, triggers a workspace re-fetch (never a redirect). This is the ONLY control that can make a `'brief-generated'` Investigation generation-eligible again — there is no separate "regenerate"/"Generate correction" button anywhere in this component tree (Out of Scope, US-13), and submitting against a `'brief-generated'` Investigation never itself flips its status (§1.4/§3.1b's explicit skip branch) — only §4.8's eligibility check, read on the next poll, can make `GenerateButton` eligible. After a successful submission, the workspace re-fetch (`workspace.newSourceSnapshotSinceCurrentBriefVersion`, §3.2, computed per §4.8's revised mechanism) is what flips `GenerateButton`'s (below) enabled state — `AddSourceInline` itself never directly triggers a generation request. |
 | `GenerationProgressPanel` | Renders `latestGenerationRun`'s persisted steps only (US-4), including per-step `modelIdentifier`/`validationRecords`/`toolInvocations` and the run's `webSearchQueries` (§3.2) — no percent bar, no "currently executing" claim beyond the latest persisted step's `component` name. Revised: when `latestGenerationRun.livenessState === 'stale-or-interrupted'`, renders an explicit, honest disclosure (e.g. "This run has not reported progress recently and may have been interrupted") distinct from, and never visually identical to, the `'active'` in-progress rendering. **Revised further (§1.6, 2026-08-24): when `livenessState === 'stale-or-interrupted'`, also renders both the existing "Refresh status" control and a new "Abandon and retry" control that calls `POST.../generation-runs/:runId/abandon` (§1.6) — a real, explicit, distinct action from Refresh; on success, triggers a workspace re-fetch, after which `GenerateButton` reflects the cleared concurrency guard and (non-correction case) the real `'generation-failed'` status.** **Rendered only when `workspace.briefs.length === 0` (no `BriefVersion` exists yet — the first-ever-run case) or the displayed `BriefVersion` is current (§5.4 rule 1, scope corrected Danny's ruling, this checkpoint; `briefs.length === 0` disjunct added this checkpoint to close the first-run reachability gap) — never reachable while viewing a prior version, since a prior version can only be viewed when `briefs.length > 0`; that case instead renders `ViewingPriorVersionPanel`'s read-only notice (above).** |
-| `GenerateButton` | Issues `POST.../generation-runs` (§4.1) when `workspace.generationEligible` is `true`; disabled with an honest, specific reason string otherwise (e.g. "add a new source to enable correction" for an ineligible `'brief-generated'` Investigation, sourced from the connector's 422 `reason` on a stale attempt, or computed client-side from `generationEligible === false` + `status === 'brief-generated'` + `!newEvidenceSinceCurrentBriefVersion` for the pre-emptive disabled state) — never a bare unconditional "Generate correction" affordance (Out of Scope, US-13) |
+| `GenerateButton` | Issues `POST.../generation-runs` (§4.1) when `workspace.generationEligible` is `true`; disabled with an honest, specific reason string otherwise (e.g. "add a new source to enable correction" for an ineligible `'brief-generated'` Investigation, sourced from the connector's 422 `reason` on a stale attempt, or computed client-side from `generationEligible === false` + `status === 'brief-generated'` + `!newSourceSnapshotSinceCurrentBriefVersion` for the pre-emptive disabled state) — never a bare unconditional "Generate correction" affordance (Out of Scope, US-13) |
 | `BlockedSourcesPanel` | Renders each `unreachable` source with its real `failureReason` (US-5 AC2); renders a "Re-check this source" control per unreachable source (§1.4a — added to this row), calling `recheckSourceArtifact(sourceArtifactId)` (§5.2) and re-fetching `GET.../workspace` on completion |
 | `BriefReviewPanel` | Renders all seven Brief elements uncollapsed by default from `getBriefForReview`'s result — unchanged rendering contract from `problem-department-mvp`'s Slice 10 forward reference, now actually wired |
 | `DecisionForm` / `DecisionConfirmationPanel` | Approve/Reject/Watch controls; in-place confirmation on the same URL (US-10 AC10); no Reopen affordance anywhere |
-| `GenerationFailedPanel` (component enumeration added) | Outcome/Status Panel variant selected by §5.4 rule 3 (`latestGenerationRun?.outcome === 'failed'` AND displayed version is current) — `investigation.statusReason` when present, else the failed run's own persisted step/error text (failed-correction fallback); hosts `GenerateButton` ("Retry generation") and a real `AddSourceInline` instance |
-| `BriefGeneratedSummaryPanel` (component enumeration added) | Outcome/Status Panel variant selected by §5.4 rule 4 (`status === 'brief-generated'`, no in-progress/failed run, displayed version is current) — compact confirmation, `AddSourceInline`, and the evidence-gated "Regenerate with new evidence" `GenerateButton` |
+| `GenerationFailedPanel` (component enumeration added) | Current-version failed-run variant except when the persisted terminal reason is `no-new-usable-evidence`; other failures show their real reason and retry/add-source controls. |
+| `BriefGeneratedSummaryPanel` (component enumeration added) | Current-version `brief-generated` summary with `AddSourceInline` and snapshot-gated "Regenerate with new source snapshot"; also owns the `no-new-usable-evidence` correction result so the unchanged current Brief and Decisions remain visible. |
 | `ViewingPriorVersionPanel` (new; precedence corrected round-6, integrator report item 1; link description corrected; scope corrected Danny's ruling, this checkpoint) | Outcome/Status Panel variant selected by §5.4 rule 2 (displayed version `isCurrent === false`) — evaluated immediately after rule 1 (§5.4 rule 1, `GenerationProgressPanel`, which requires `briefs.length === 0` OR `isCurrent === true`); since rule 2 can only ever match when `briefs.length > 0` (there is no prior version to view when no `BriefVersion` exists), the two rules' conditions are mutually exclusive, and rule 2 wins over every later, run-outcome-selected/mutating rule (3, 4) regardless of `investigation.status` or `latestGenerationRun?.outcome`, including `'failed'` AND `'in-progress'` — read-only statement, navigable link forward to this version's own immediate successor via `forwardSupersededByVersionNumber` (NOT necessarily the current version in a lineage of 3+ — no direct jump-to-current affordance exists or is required by any AC; reaching the current version from a version 2+ hops back is a sequential walk, one forward link per hop); when the current version has an in-progress or stale/interrupted run, also a read-only notice plus a navigable link to the current version's workspace; no `AddSourceInline`, no `GenerateButton`, no "Abandon and retry", no other current-run-mutating control |
 | `DecisionHistoryBanner` | Revised (US-12; was `DecisionHistoryList`, a plain chronological log; Trace row 23 restored to full scope). Renders TWO requirements-distinct lists, never merged (US-10 AC12): (1) `priorDecisions` from the currently-displayed version's own `GetBriefForReviewResult` (§3.3) — scoped to exactly that `briefVersionId`, with resolved reconsideration-condition content (§4.5); (2) `workspace.decisionLineage` (§3.2, was `decisions`) — every Decision across the WHOLE Investigation's ProblemBrief lineage, each entry explicitly labeled with its own `versionNumber` (e.g. "Decision recorded against Version 1"), rendered as a clearly separate section, never interleaved into list (1) without that per-entry label, AND rendered as a real, clickable React Router `<Link>`/`navigate` call to that version's own versioned route (§5.1), matching this screen's other version-reference navigation affordances (`InvestigationIdentityHeader`'s forward/backward supersession links, above) — the label is the human-readable `versionNumber`, never a raw `briefVersionId` UUID rendered or navigated by it. `DecisionHistoryBanner` itself renders only the two chronological decision lists ((1) and (2)). No raw `StatusEvent` row, `targetId`, `briefVersionId`, or `ReconsiderationCondition` id is rendered as primary content anywhere in this component (Anti-Patterns, binding) — `assignedState` renders as a plain-language statement ("This Brief version has been challenged" / "invalidated"), not the enum literal verbatim, and every reconsideration condition renders its actual `description` text. |
 
@@ -3599,19 +3308,16 @@ Panel resolves its variant with a single, binding, first-match-wins order — fi
  version's workspace, where `GenerationProgressPanel` then lives. This panel imports neither
  `AddSourceInline`, `GenerateButton`, nor the abandon control — no reachable variant while viewing
  a prior version ever mounts a control that mutates the current version's run.
-3. **Failed, current version.** Otherwise (the displayed version is current), if
- `latestGenerationRun?.outcome === 'failed'` AND `investigation.status !== 'blocked'` →
- `GenerationFailedPanel` (§5.3). The `status !== 'blocked'` exception matters because a `'blocked'`
- Investigation whose latest run also reads `'failed'` must render `BlockedSourcesPanel`'s
- per-source failure disclosure, not a generic generation-failure panel with nothing to add. This
- rule covers both a classic initial-generation failure (`status` independently reads
- `'generation-failed'`) and a failed correction viewed on the current version (`status` stays
- `'brief-generated'` by construction, since a correction failure never transitions status) — the
- panel falls back to the failed run's own step/error text when `statusReason` was never written.
-4. **Status-selected (default).** Otherwise, the variant is selected by `investigation.status`
- exactly as the Sections table documents (`Open/Eligible`, `Blocked`, `Brief-Generated summary`,
- `Generation-Failed`). Reachable here only for the current version (rule 2 already excluded every
- prior-version view), and only when no run outcome above already claimed the case.
+3. **Failed, current version.** Otherwise, if the displayed version is current and
+ `latestGenerationRun?.outcome === 'failed'`, `investigation.status !== 'blocked'`, and the
+ latest run's last persisted failed-step reason is not exactly `no-new-usable-evidence`, render
+ `GenerationFailedPanel`. Provider, schema, validation, truncation, and infrastructure failures
+ retain and render their own reason here. The `blocked` exception falls through to
+ `BlockedSourcesPanel`.
+4. **Status-selected (default).** Otherwise select by `investigation.status`. In particular, a
+ correction attempt finalized with persisted reason `no-new-usable-evidence` still has status
+ `'brief-generated'` and therefore renders `BriefGeneratedSummaryPanel`, with the unchanged
+ current Brief and Decisions visible. Reachable only for the current version.
 
 **Totality.** `investigation.status ∈ {'open', 'generation-failed'}` with an existing `ProblemBrief`
 is unreachable in live code: `'open'` is only reached from a prior `'blocked'`, and once an initial
@@ -3662,7 +3368,7 @@ combination maps to exactly one variant.
 | Read model as a separate, purpose-built assembly function (not a shared "get everything" call) | `getInvestigationWorkspace` vs. `getBriefForReview` | The workspace payload is polled at `POLL_INTERVAL_MS` (§4.9, §5.2 — engineering-derived, not fixed here) and must stay small (no seven-element Brief content); the Brief payload is fetched once per version and can be large — matching Checkpoint 1's own `getMissionControlView`/`getProblemDepartmentOverview` split by call frequency and payload shape |
 | Append-only persistence with `reject_update_or_delete` trigger | `decision`, `reconsideration_condition`, `status_event` | Matches every other Brief-lineage table in this codebase (`brief_version`, `problem_statement`, `negative_finding`, etc.) — one established immutability mechanism, not a second one invented for this sprint |
 | Assigned state answered exclusively by query, never a stored field | `getAssignedState`/`getAssignedStateAsRecorded` over `status_event` (§4.7) | Reused unchanged from the already-committed MVP contract (Q-3) — a mutable `status` column could not answer "what did we assign at time T," and this checkpoint does not reopen that decision |
-| Eligibility gated by real, already-persisted signals (resolution status + consumed-evidence chain), not a mutable flag | `hasEligibleNewEvidenceSinceCurrentBriefVersion` (§4.8, revised) | No new write path, no risk of a "pending correction" flag drifting out of sync with reality, and now expresses all four of US-13 AC2's disqualifiers (unreachable/unresolved, empty, duplicate-of-consumed, already-reflected) — keeps `submitSources` fully unmodified and `resolveInvestigationSources` unmodified for this call site's observable behavior (§1.4's C1 fix only changes behavior on a second call against already-resolved rows, which this generation-eligibility path never triggers) (Constraints) |
+| Eligibility gated by a persisted resolved-content snapshot and attempt ledger, not a mutable flag | `hasUnattemptedCorrectionSnapshot` (§4.8) | The gate answers only whether Extraction may attempt a correction. Equal hashes cannot retry; a changed hash at the same canonical URL may. Evidence usability is decided only by Extraction, and zero valid evidence is persisted as `no-new-usable-evidence` without replacing the current Brief. |
 | Two independent service calls, no shared trigger | `assignValidityState` (US-12) vs. `generateBriefVersion` with `supersedesVersionId` (US-13) | Danny's explicit 2026-08-22 ruling — neither operation invokes, depends on, or is gated by the other; enforced structurally by §4.8's mechanism containing no call into §4.7's module |
 
 ### Anti-Patterns (Do Not Use)
@@ -3693,7 +3399,7 @@ combination maps to exactly one variant.
 - A generic "Generate correction" control, or any control that fires a generation request against a
  `'brief-generated'` Investigation without a preceding evidence submission in the same session's
  server-side state — `GenerateButton` (§5.3) has no such unconditional code path.
-- `assignValidityState` invoked from `hasEligibleNewEvidenceSinceCurrentBriefVersion`, `AddSourceInline`,
+- `assignValidityState` invoked from `hasUnattemptedCorrectionSnapshot`, `AddSourceInline`,
  or any part of the US-13 path, and vice versa — the two services share no call graph edge
  (Patterns table).
 
@@ -3772,7 +3478,7 @@ No new third-party dependency is introduced. This sprint extends the existing st
  fix) wraps `attemptGenerationFailedTransition`'s status write in its own `assertFenceOwnership`-
  guarded transaction and adds `GenerationRunFencedOutError` to the file's `:700-707` outer catch;
  and §4.8 (SELF-4 fix) adds the UNIONED `consideredSourceArtifactIds` computation (both extraction
- passes' own `usableSourceIds`) and its `generation_run_consumed_source` ledger `INSERT`, itself
+ passes' own `extractionInputSourceIds`) and its `generation_run_consumed_source` ledger `INSERT`, itself
  wrapped in its own `assertFenceOwnership`-guarded transaction (SELF-4 fix). Every other line of
  `generateBriefVersion.ts` — its phase order, pipeline logic, prompts, and
  extraction/analysis/recommendation behavior — is unchanged.
@@ -3805,8 +3511,8 @@ No new third-party dependency is introduced. This sprint extends the existing st
  against real persisted tables); Finding 3 — §3.1a, §5.1 (human-readable `versionNumber`
  route, reload-stable); Finding 4 — §1.4, §3.1b (reuse and extend the existing
  `POST /api/investigations` route, no new `:id/sources` route); Finding 5 — §1.5, §4.8
- (`hasEligibleNewEvidenceSinceCurrentBriefVersion` against real resolution-status +
- consumed-evidence chain); Finding 6 — §3.2, §4.5 (`decisionLineage` split from per-version
+ (`hasUnattemptedCorrectionSnapshot` against real resolution-status +
+ attempted-snapshot ledger); Finding 6 — §3.2, §4.5 (`decisionLineage` split from per-version
  `priorDecisions`, resolved condition content); Finding 7 — §3.6, §4.7 (`sequence` column,
  target-existence validation before insert); Finding 8 — §4.9 (`livenessState`,
  engineering-derived threshold per §4.9); Finding 11 — §0 (Checkpoint-1 edit boundary), §3.1

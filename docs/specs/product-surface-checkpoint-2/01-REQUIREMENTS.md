@@ -672,10 +672,10 @@ Acceptance Criteria:
 
 **US-13 — Resubmission-driven Brief correction**
 As the operator,
-I want to add or resubmit materially new source evidence to an Investigation whose status is
-`'brief-generated'`, and have that action make a new, correctly-superseding generation run
-eligible,
-so that a Brief can be corrected from real new evidence without losing the prior version or the
+I want to add or resubmit materially new source material to an Investigation whose status is
+`'brief-generated'`, and use a correction attempt to determine whether it contains real new
+evidence,
+so that a Brief can be corrected when that evidence exists without losing the prior version or the
 decisions already recorded against it — a scoped path restored to this checkpoint's scope per
 Danny's 2026-08-22 ruling, reversing the earlier "`'brief-generated'` is never eligible" exclusion.
 
@@ -686,28 +686,22 @@ Acceptance Criteria:
  §1.4 C1 — to skip re-fetching sources already resolved from a prior call, so this add-source
  request does not silently rewrite the resolution state of evidence the current Brief was
  already built from) — without leaving the workspace URL.
-- [ ] Generation becomes eligible again for a `'brief-generated'` Investigation ONLY when at least
- one added/resubmitted source is genuinely NEW and USABLE evidence that has not already been
- consumed by, or incorporated into, the current `BriefVersion` — never because the
- `'brief-generated'` status alone permits it, never merely because a source row was added
- *after* the current `BriefVersion`'s `createdAt` timestamp, and never via a bare
- "regenerate"/"Generate correction" control with no new-evidence precondition (see Out of
- Scope). A source does NOT count toward eligibility, and must not unlock a new generation
- request, when it is any of:
- - **Unreachable or unresolved** — resolution did not complete to usable retrieved content
- (e.g. still pending, or resolved to an `unreachable`/error outcome);
- - **Empty** — resolved but its content is empty or effectively empty (no usable evidentiary
- content);
- - **A duplicate of an already-consumed source** — its resolved content/identity matches a
- source the current `BriefVersion` was already generated from, even though it is a distinct
- `Source` row (e.g. the same URL or document resubmitted verbatim);
- - **Already reflected in the current `BriefVersion`** — a replay of evidence the current
- Brief already incorporated, rather than evidence genuinely new to it.
- A `'brief-generated'` Investigation with no newly added source satisfying all of the above
- remains ineligible for a new generation request. The exact server-side mechanism for
- evaluating these conditions (e.g. content hashing, a consumed-source ledger) is
- architecture's responsibility to design; this AC states the eligibility requirement, not the
- implementation.
+- [ ] A `'brief-generated'` Investigation becomes eligible for a **correction attempt** only when
+ at least one operator-submitted, resolved, non-empty source-content snapshot has not already been
+ consumed by the current `BriefVersion` or attempted by an earlier correction run against that
+ same current version. Eligibility is never granted by status alone, by row creation time, or by
+ a bare regenerate control. `content-retrieved` proves only that non-empty material was fetched;
+ it does not claim that the material contains usable evidence. Snapshot identity is the persisted
+ `resolved_content_hash`: an equal hash is already-consumed/attempted even when URL spelling or
+ source type differs. A canonical URL is provenance and matching context, not a veto on changed
+ content: the same canonical URL with a different hash is a new snapshot that may be attempted.
+- [ ] Extraction inside the correction run is the truth boundary for evidentiary usability. If the
+ new candidate snapshot set produces zero valid `EvidenceItem`s, the run terminates with the
+ explicit reason `no-new-usable-evidence`; no `BriefVersion` is created, the current
+ `ProblemBrief.currentVersionId` and its Decisions remain unchanged, and the Investigation remains
+ in the `'brief-generated'` product state. The attempted snapshots are recorded so the same
+ material cannot immediately enable another attempt; adding a different, unattempted snapshot can.
+ Only an attempt that produces valid new evidence continues to create a superseding version.
 - [ ] The resulting generation request (via US-3's endpoint) calls `generateBriefVersion` with
  `supersedesVersionId` set to `ProblemBrief.currentVersionId` at request time — the same
  contract `generateBriefVersion.ts:108-160` already validates (must belong to this
@@ -723,16 +717,14 @@ Acceptance Criteria:
  intact, and unreassigned after the new `BriefVersion` is created — decisions are never
  inherited or migrated onto the new version (binding rule carried from the original Interview
  stage and from US-10).
-- [ ] `assignValidityState` (US-12) is never invoked as a side effect of this generation-eligibility
- change, and adding a new source never itself appends a `StatusEvent` — invalidation and
- corrective generation remain fully independent operations, confirmed by absence of any call
- from this path into the validity service.
-- [ ] A browser-visible demonstration shows: a `'brief-generated'` Investigation → new,
- genuinely-usable, not-already-consumed source added from the workspace → generation becomes
- eligible → a real generation run with `supersedesVersionId` set progresses honestly (US-4) to
- a terminal outcome → the new `BriefVersion` is reviewable (US-9) → the prior `BriefVersion`,
- reached via its own navigable version reference (US-1 AC5), and its decision history remain
- reachable and unchanged.
+- [ ] `assignValidityState` (US-12) is never invoked as a side effect of this correction-attempt
+ eligibility change, and adding a new source never itself appends a `StatusEvent` — invalidation
+ and corrective generation remain fully independent operations.
+- [ ] Browser-visible demonstrations show both honest outcomes: (a) a new snapshot that extracts
+ no valid evidence produces `no-new-usable-evidence`, leaves the current Brief and its Decisions
+ unchanged, and requires another new snapshot before retry; and (b) a different new snapshot that
+ produces valid evidence continues through a real run with `supersedesVersionId` set, creates a
+ reviewable superseding `BriefVersion`, and leaves the prior version and its Decisions reachable.
 
 ---
 
@@ -862,9 +854,11 @@ Disposition column above, not carried forward from either prior count.)
 | Very long evidence excerpt or claim text | Renders in full within the uncollapsed section — no silent truncation of required content (truncation for layout purposes, if any, must be an explicit, disclosed "show more," never data loss) |
 | `assignValidityState` invalidates a `ClaimVersion` referenced by a `BriefVersion` with no `Decision`s yet recorded | `dependentDecisionIds` is an empty array — a real, correct answer, not an error |
 | A `StatusEvent` is backdated (`effectiveAt` in the past, `recordedAt` now) after a `Decision` was already recorded against the affected `BriefVersion` | `getAssignedStateAsRecorded` with `knownAsOf` before the backdated event's `recordedAt` still returns the pre-correction state for that Decision's own dependent-decision computation; `getAssignedState` reflects the new event for any `asOf` on/after the backdated `effectiveAt` — the two queries diverge as designed, not a bug |
-| A `'brief-generated'` Investigation is regenerated without any new source having been added (e.g. a stale/replayed request) | Rejected — generation-eligibility for a `'brief-generated'` Investigation requires new, usable, not-already-consumed evidence to have actually been added (US-13 AC2); no request bypasses this by status alone |
-| A `'brief-generated'` Investigation has a new `Source` row added, but that source is unreachable, empty, a duplicate of an already-consumed source, or already reflected in the current Brief | Rejected — none of these count as the "new, usable evidence" US-13 AC2 requires; generation does not become eligible from a disqualified source alone |
-| A corrective generation run (US-13) fails (`BriefGenerationFailedError`) | The prior `BriefVersion` remains `ProblemBrief.currentVersionId` and fully reviewable; the Investigation's resulting status is read back from the actual row per `generateBriefVersion`'s documented failure-status behavior, never assumed |
+| A `'brief-generated'` Investigation requests correction without a new, unattempted resolved-content snapshot | Rejected — correction-attempt eligibility never follows from status or row timestamps alone |
+| A correction candidate is unreachable, unresolved, empty, or has the same `resolved_content_hash` as material consumed by or already attempted against the current Brief | Rejected before a run; URL spelling, row identity, and timestamps do not make the same snapshot new |
+| A correction candidate has the same canonical URL but a different content hash | Accepted as a new snapshot for an extraction attempt; the changed page may contain new evidence, and extraction—not URL identity—decides |
+| A correction attempt extracts zero valid new `EvidenceItem`s | Run terminates `no-new-usable-evidence`; no new BriefVersion/current-pointer change; the existing Brief and Decisions remain visible and unchanged; the attempted snapshot cannot immediately retry |
+| A corrective generation run fails for another reason (`BriefGenerationFailedError`) | The prior `BriefVersion` remains `ProblemBrief.currentVersionId` and fully reviewable; the failure is rendered from persisted run facts without demoting or hiding the valid current Brief |
 | Operator navigates to a specific prior `BriefVersion` (US-1 AC5) and reloads that URL | The same prior version's content, and its own scoped decision list (US-10), render identically — reload never silently falls back to showing the current version instead |
 
 ---
@@ -912,55 +906,20 @@ Disposition column above, not carried forward from either prior count.)
  `ROLLBACK`, so a success that loses this specific race cannot commit a Brief the system's own audit
  trail simultaneously records as a failed run (§1.6's full per-site disposition, C2) — a distinct
  exception from (3) because it changes the rethrow behavior at one specific site rather than adding
- a uniform catch block; (5) **fencing/heartbeat threading (§1.6)** — a
- required `fenceToken: number` field added to every one of the file's eleven real
- `recordGenerationStep`-bearing progress-write call sites: its three direct `recordGenerationStep`
- calls (`:272`, `:573`, `:649`), the fourth added by category (2) above, its seven
- `runStepWithProvenance` calls
- (`:333,372,384,393,411,431,452` — `runStepWithProvenance` itself, in
- `src/services/provenanceRecorder.ts`, also gains this field and threads it to its own two internal
- `recordGenerationStep` calls), and its eight `finalizeGenerationRun` calls (the same eight sites
- named in category (3)) — a mechanical signature addition to every real call site, not a change to
- any call site's own decision logic; and (6) **the resubmission-eligibility consumed-source ledger
- write (§4.8, US-13 AC2)** — one new, additive field on `extractClaimsAndEvidence`'s return type,
- `usableSourceIds: string[]` (the same array that function's own top-level wrapper already computes
- internally to determine which `'content-retrieved'` sources this run's Extraction step actually
- considered, now surfaced rather than discarded), captured by `generateBriefVersion.ts` immediately
- after Extraction (`:333`) resolves as `consideredSourceArtifactIds` — deliberately NOT derived from
- `universeSourceArtifactIds`/`EvidenceItem` rows, which omit a `'content-retrieved'` source that
- produced zero extracted evidence, and deliberately NOT a second, independent `getInvestigation`
- read bounded by a timestamp comparison, which would leave a narrower timing gap open (§4.8) —
- followed by one standalone `INSERT INTO generation_run_consumed_source` per id in that set at
- `:479`, independent of any `GenerationStep` write; and (7) **SELF-1 fix (self-discovered during a
- correction pass, NOT a Sol cold-review finding) — the
- fence-ownership/status-transaction correction (`02-ARCHITECTURE.md` §1.6, this checkpoint's own
- SOL-HIGH-1/SOL-HIGH-2/SOL-MEDIUM-1 corrections)**: `02-ARCHITECTURE.md`'s corrected §1.6 requires wrapping
- four existing internal write calls with `assertFenceOwnership`. `searchWeb`, the consumed-source
- ledger `INSERT` (category (6) above), and `attemptGenerationFailedTransition`'s
- `Investigation.status` write each get the guard as the first statement of a NEW, short-lived
- transaction opened around that call's own writes — none of these span an LLM call. `extractClaimsAndEvidence` and
- `landscapeResearcher`'s own `extractClaimsAndEvidenceForSourceArtifacts` call are the exception:
- their LLM call requires the guard to be placed inside their EXISTING single transaction, called
- after the LLM call returns and immediately before the first `INSERT`, not as that transaction's
- first statement and not in a new, separately-opened transaction (`02-ARCHITECTURE.md` §1.6's
- SELF-4 correction). It also requires `extractClaimsAndEvidenceForSourceArtifacts` and
- `searchWeb` to each surface one additional additive field on their existing return types
- (`usableSourceIds`, matching category (6)'s already-permitted field on `extractClaimsAndEvidence`;
- `canonicalUrl`/`resolvedContentHash` computation on `searchWeb`'s own `source_artifact` insert,
- matching `computeSourceResolution`'s already-in-scope §1.4a/§4.8 fields) and to compute/persist
- canonical-identity fields on writes they already make. It also requires (cold Frank review
- finding, this pass) `recordGenerationStep`'s own typed signature, in
- `src/services/provenanceRecorder.ts`, to gain an optional `client?: PoolClient` field, matching the
- same optional-client convention `finalizeGenerationRun` already has — both the abandon flow (§1.6
- step 5) and `attemptGenerationFailedTransition`'s wrapper (this same category) call
- `recordGenerationStep` from inside a caller-owned transaction and must run on that transaction's
- own client, which the function's own signature did not previously accept. This permitted category is scoped EXACTLY
- to that transactional/fencing wrapper, that one additive optional parameter, and those two additive return/persistence fields on the four
- named call paths — it licenses no change to any phase's own order, any LLM prompt, or any
- extraction/analysis/recommendation OUTPUT content; a fence-check failing still means "this run's
- write is discarded," never "this run's write is computed differently." All seven exception
- CATEGORIES are error-finalization/observability/audit-ledger/write-authorization plumbing, not
- pipeline logic — no phase's own order, inputs, or output changes in any case.
+ a uniform catch block; (5) **fencing/heartbeat threading (§1.6)** — add the required
+ `fenceToken` to every direct `recordGenerationStep`, `runStepWithProvenance`, and
+ `finalizeGenerationRun` call site, plus the optional caller-owned `client?: PoolClient`
+ parameter needed for atomic status/finalization writes; (6) **the correction-attempt read-set
+ ledger (§4.8, US-13)** — surface `extractionInputSourceIds` from both extraction passes, union and
+ persist the exact rows those passes read, including an input that yields zero valid evidence, and
+ finalize that successful zero-evidence correction attempt as `no-new-usable-evidence` without
+ creating a BriefVersion or changing the current pointer/status; and (7) **fenced write and snapshot
+ identity plumbing** — add `assertFenceOwnership` around the existing extraction, landscape,
+ search, ledger, and failure-transition writes, and persist `canonicalUrl`/
+ `resolvedContentHash` on the existing resolution paths. These exceptions authorize
+ finalization, observability, audit-ledger, write-authorization, and correction-attempt control
+ flow only. They do not authorize changes to phase order, prompts, or extraction/analysis/
+ recommendation output semantics.
 - **No fabricated numeric constants** — every predetermined number needs a citable precedent, an
  explicit PROVISIONAL-tag-with-named-owner, or deletion. This applies to the poll interval and the
  stale/interrupted threshold exactly as it applies to every other constant: neither is asserted as
@@ -973,12 +932,13 @@ Disposition column above, not carried forward from either prior count.)
  validity state is always a query result (US-12), never a stored field.
 - **No browser control that initiates `assignValidityState`** — the service and its read-side
  surfacing are in scope; the human-facing write trigger is not.
-- **No generic "Generate correction" control decoupled from new-evidence submission** — US-13's
- eligibility is earned specifically by adding new source evidence, never granted by status alone
- or by an unconditional regenerate button.
-- **No eligibility unlocked by a disqualified source alone** — an unreachable/unresolved, empty,
- duplicate-of-already-consumed, or already-reflected-in-the-current-Brief source must never make
- a `'brief-generated'` Investigation eligible for a new generation request (US-13 AC2).
+- **No generic "Generate correction" control decoupled from new-source submission** — US-13's
+ correction-attempt eligibility is earned specifically by adding a new, unattempted resolved-content
+ snapshot, never granted by status alone or by an unconditional regenerate button.
+- **No eligibility unlocked by a disqualified snapshot alone** — unreachable/unresolved, empty, or
+ hash-identical already-consumed/attempted material must never make a `'brief-generated'`
+ Investigation eligible for another correction attempt (US-13 AC2). A changed snapshot at the same
+ URL is not presumed duplicate; extraction decides whether it contains usable new evidence.
 - **No coupling of invalidation and corrective generation** — `assignValidityState` and a
  `supersedesVersionId`-driven `generateBriefVersion` call remain two independent operations with
  independent triggers.
@@ -1001,10 +961,10 @@ Disposition column above, not carried forward from either prior count.)
  `getAssignedState`, `getAssignedStateAsRecorded`, dependent-decision reconstruction, browser-
  visible non-valid/prior-decisions/supersession-history surfacing) within this checkpoint — no
  further deferral, per Danny's 2026-08-22 ruling.
-- Must: implement US-13's corrective-generation trigger as evidence-driven only, gated on
- genuinely new, usable, not-already-consumed source evidence (US-13 AC2) — never as a
- status-driven, timestamp-only, or unconditional control, per Danny's 2026-08-22 ruling as
- tightened by the 2026-08-23 external-review correction.
+- Must: implement US-13's corrective-generation trigger as snapshot-driven and extraction-verified:
+ a new, unattempted resolved-content hash may start an attempt, but no corrected Brief is created
+ unless extraction produces valid new evidence (US-13 AC2) — never status-driven, timestamp-only,
+ or unconditional.
 - Must: detect and honestly disclose a stale or interrupted generation run (US-4) as a state
  distinct from a healthy in-progress run — never silently indistinguishable from one — and this
  disclosure must never itself mutate persisted workflow state.
@@ -1032,10 +992,8 @@ Disposition column above, not carried forward from either prior count.)
  class's addition to the `:681-684` inner catch's and `:700-707` outer catch's rethrow-without-
  refinalizing lists (§1.6's mechanism (a), C3/C5
  integrator trace, item 3: these rethrow-list edits are not finalization sites and were not covered
- by the eight-site figure above; named here as their own, fourth exception), the `fenceToken`
- threading across all eleven real `recordGenerationStep`-bearing progress-write call sites
  including inside `runStepWithProvenance` itself (§1.6, exception category (5) above,
- `src/services/provenanceRecorder.ts` also edited for this), the `usableSourceIds`-derived
+ `src/services/provenanceRecorder.ts` also edited for this), the `extractionInputSourceIds`-derived
  `consideredSourceArtifactIds`/`generation_run_consumed_source` ledger `INSERT` at `:479` (§4.8,
  exception category (6) above), and the SELF-1 fence-ownership/status-transaction correction
  (exception category (7) above — the guard-checked transactional wrapper around
@@ -1055,4 +1013,3 @@ Disposition column above, not carried forward from either prior count.)
  US-13's correction path and needs no change — verified directly against live source; if
  downstream architecture work finds this insufficient, that is a blocking finding to raise, not
  something to silently work around.
-</content>

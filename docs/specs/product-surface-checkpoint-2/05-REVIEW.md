@@ -87,38 +87,23 @@ the current specification, not a history of how it got here.
   `COMMIT`) rolls back its own transaction and rethrows instead, so a run that lost the race can
   never have its `BriefVersion` committed anyway. Migration `009` backfills any pre-existing
   stranded `'in-progress'` rows before creating its unique index.
-- **US-13 eligibility is an exact persisted fact, ledgered from BOTH extraction passes' own real
-  read sets, not an inferred timestamp bound or window (SELF-4).** A
-  new join table, `generation_run_consumed_source`, records exactly which `source_artifact` rows
-  each `GenerationRun` had the opportunity to consume — written at `generateBriefVersion.ts:479`
-  (the same point the run's full evidence universe is known) from the UNION of
-  `extractClaimsAndEvidence`'s own additive `usableSourceIds` return field (primary Extraction,
-  captured at `:333`) AND `extractClaimsAndEvidenceForSourceArtifacts`'s identical additive field
-  (Landscape Research's own second extraction pass, captured at `:393`) — NOT the primary set alone,
-  since primary Extraction runs before Landscape Research even executes and so cannot see any
-  landscape-research-origin source. A source incorporated only through landscape research would
-  otherwise have no ledger row and could be resubmitted as new. Neither set is derived from the `EvidenceItem`-derived
-  `universeSourceArtifactIds` — that omits any `'content-retrieved'` source that produced zero
-  extracted evidence, which would otherwise stay "not yet consumed" forever — nor from an independent
-  resolution-status read bounded by a `resolvedAt <= startedAt` timestamp comparison (a still-earlier
-  draft's approach), which leaves a narrower gap open in the other direction. Using each extraction
-  pass's own real `usableSourceIds`, unioned, closes all of these gaps at once, with no timestamp
-  comparison at all: a source neither pass saw is never in the union, and a source either pass did
-  see is always in it, regardless of when the ledger write itself executes. Existing, pre-migration
-  rows with `NULL` canonical identity are backfilled in two separate steps: migration `013` itself is pure SQL and backfills only
-  `resolved_content_hash` (fully — every `'content-retrieved'` row already has non-`NULL`
-  `resolved_content`, so its hash is computable with no network call); `canonical_url`'s backfill is
-  NOT part of migration `013` — it cannot be, since deriving it requires calling the real
-  `canonicalizeUrl(raw)` helper, which a plain-SQL migration runner cannot execute. It is instead a
-  separate, named, manually-run script (`src/db/scripts/backfill-013-canonical-url.ts`), run once,
-  immediately after migration `013` applies, calling the real `canonicalizeUrl` helper directly
-  against each pre-migration row's `raw` value. The disclosed degraded-case limitation is unchanged:
-  a pre-migration row whose original `raw` was itself a redirect gets a `canonical_url` derived from
-  that original, not final, post-redirect URL, since the true post-redirect value cannot be
-  recovered without a live re-fetch this script does not perform.
-  Eligibility itself is a plain anti-join against the current `BriefVersion`'s producing run's
-  ledger rows — no boundary/window logic at read time, and no timestamp comparison anywhere in this
-  mechanism. Full contract: `02-ARCHITECTURE.md` §4.8.
+- **US-13 eligibility is a correction-attempt gate, not a pre-extraction evidence verdict.**
+  `content-retrieved` means non-empty fetched material. A new operator-submitted content snapshot
+  may start a correction attempt; Extraction inside that run determines whether it contains valid
+  evidence. `generation_run_consumed_source` records the nullable `correction_target_brief_version_id` plus both extraction passes' exact
+  `extractionInputSourceIds`, including inputs that yield zero valid `EvidenceItem` rows. If a
+  correction extraction succeeds with zero valid candidate evidence, the run finalizes with
+  `no-new-usable-evidence`, creates no BriefVersion, preserves the current pointer, Brief,
+  Decisions, and `'brief-generated'` status, and records the attempted snapshot so it cannot
+  immediately retry. A different new snapshot may enable another attempt.
+- **Snapshot duplication is determined by stored content hash.** Equal
+  `resolved_content_hash` is already attempted/consumed regardless of URL spelling, redirect
+  alias, row id, or source type. Same canonical URL plus the same hash is duplicate; the same
+  canonical URL with a different hash is a new snapshot and may be attempted. Migration `013`
+  backfills hashes from historical stored `resolved_content`; historical `canonical_url` remains
+  nullable because the real final redirect destination was never persisted. There is no manual
+  canonical-URL backfill and no invented historical provenance. Full contract:
+  `02-ARCHITECTURE.md` §4.8.
 - **Canonical source identity/fingerprint is computed and persisted on EVERY write path that can
   create or resolve a `source_artifact` row, not just one (SOL-MEDIUM-1 correction).**
   `computeSourceResolution`'s own return type carries `canonicalUrl`/`resolvedContentHash` — the
@@ -230,7 +215,7 @@ the current specification, not a history of how it got here.
   to the guard-checked transactional wrapper (`assertFenceOwnership`) around
   `extractClaimsAndEvidence`, `landscapeResearcher`'s own extraction call, `searchWeb`, the
   consumed-source ledger insert, and `attemptGenerationFailedTransition`'s status write, plus the
-  two additive return/persistence fields (`usableSourceIds` on the landscape extraction call,
+  two additive return/persistence fields (`extractionInputSourceIds` on the landscape extraction call,
   `canonicalUrl`/`resolvedContentHash` on `searchWeb`'s insert) those corrections require, keeping
   the roadmap and requirements documents in alignment. Full contract:
   `01-REQUIREMENTS.md` Out of Scope, exception category (7).
@@ -291,7 +276,7 @@ the current specification, not a history of how it got here.
     `02-ARCHITECTURE.md` §1.6's SELF-3 correction and `04-ROADMAP.md`'s corresponding Files/Tests
     entries.
   - SELF-4 — US-13 eligibility's consumption ledger recorded only primary Extraction's
-    `usableSourceIds`, omitting Landscape Research's own second extraction pass; a
+    `extractionInputSourceIds`, omitting Landscape Research's own second extraction pass; a
     landscape-research-incorporated source had no ledger row and could be resubmitted as new. See
     the US-13 eligibility entry above and `02-ARCHITECTURE.md` §4.8's SELF-4 correction.
 

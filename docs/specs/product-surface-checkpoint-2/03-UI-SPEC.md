@@ -21,13 +21,13 @@ in this document.
 **Traces to**: `01-REQUIREMENTS.md` (US-1 through US-13; acceptance criteria as enumerated there —
 this document does not restate a count),
 `02-ARCHITECTURE.md` (Components §2, `InvestigationWorkspaceView` §3.2 including
-`newEvidenceSinceCurrentBriefVersion`/`decisionLineage`/`livenessState`, `GetBriefForReviewResult`
+`newSourceSnapshotSinceCurrentBriefVersion`/`decisionLineage`/`livenessState`, `GetBriefForReviewResult`
 §3.3 including `priorDecisions`, `Decision`/`ReconsiderationCondition` §3.4, the version-numbered
 Brief route §3.1a, the real, extended Add-Source Connector §1.4/§3.1b (the existing
 `POST /api/investigations` route, not a new one), `StatusEvent`/`AssignedValidityState`
 §3.6, API contracts §4 including the revised Generation Eligibility Rule (§4.2), the
 Validity/Invalidation Service (§4.7, read-side only), the Resubmission Eligibility Check
-`hasEligibleNewEvidenceSinceCurrentBriefVersion` (§4.8), Stale/Interrupted Run Detection (§4.9),
+`hasUnattemptedCorrectionSnapshot` (§4.8), Stale/Interrupted Run Detection (§4.9),
 React route/component boundaries §5 including the two-route SPA design (§5.1), the revised
 `DecisionHistoryBanner`/`AddSourceInline` components (§5.3)), `NORTH-STAR.md`.
 
@@ -201,10 +201,10 @@ existing inline error, no navigation occurs (unchanged from Checkpoint 1).
  `outcome === 'in-progress'`; OR, whenever `investigation.problemBriefId !== null` (a correction —
  in live operation `status` here only ever reads `'brief-generated'`; the `'open'`/
  `'generation-failed'`-with-existing-`ProblemBrief` combination is structurally unreachable),
- true only when `workspace.newEvidenceSinceCurrentBriefVersion === true`
+ true only when `workspace.newSourceSnapshotSinceCurrentBriefVersion === true`
  AND no run is in-progress (US-13 — see Flow US-13 below for the full path); `'blocked'` is never
  eligible regardless of evidence state (canonical rule, `02-ARCHITECTURE.md` §4.2). A
- `'brief-generated'` Investigation with no newly added source remains ineligible.
+ `'brief-generated'` Investigation with no new source snapshot remains ineligible.
 2. User sees: a "Start generation" (initial) or "Retry generation" control in the Outcome/Status
  Panel, enabled.
 3. User action: clicks the control.
@@ -273,14 +273,14 @@ existing inline error, no navigation occurs (unchanged from Checkpoint 1).
 **Success path:** as above.
 **Ineligible-request path:** the control is disabled/hidden whenever the server-provided
 `workspace.generationEligible` is `false` (this covers every disqualifying case — a run already
-in-progress, `status === 'blocked'`, `status === 'brief-generated'` with no new evidence, or any
+in-progress, `status === 'blocked'`, `status === 'brief-generated'` with no new source snapshot, or any
 other condition the Generation Eligibility Rule excludes — the control never derives its own subset
 of these cases); if a stale click still reaches the server, the workspace shows an inline error
 naming the reason, since the Generation Eligibility Rule (`02-ARCHITECTURE.md`
 §4.2 step 2) is evaluated before any `INSERT` is attempted, returning a `422`:
 `error: 'investigation-not-eligible'`
 with `reason` naming the cause — "a generation run is already in progress for this investigation" for
-the in-progress case, "no new source evidence has been added since the current Brief version" for the
+the in-progress case, "no new source snapshot has been added since the current Brief version" for the
 `'brief-generated'`-with-no-new-evidence case, or the `'blocked'` reason — each rendered as that exact
 server-provided text, distinguishable by message alone. `409` is reserved for the genuinely narrow
 race at the database's own partial unique index (two requests that both pass the eligibility read
@@ -498,40 +498,29 @@ version is itself viewed (Flow US-1 AC5).
 
 1. User starts at: the workspace, `investigation.status === 'brief-generated'`, viewing the CURRENT
  version — the Brief-Generated summary panel (§ Sections) is showing. (`AddSourceInline`/
- "Regenerate with new evidence" render only in this panel, which itself renders only for the
+ "Regenerate with new source snapshot" render only in this panel, which itself renders only for the
  current version — a prior version's view has no correction-trigger surface, since correction
  always targets `ProblemBrief.currentVersionId`.)
 2. User sees: an `AddSourceInline` control — its own small component — now also mounted in the Brief-Generated summary panel, plus a
- generation-trigger control labeled to communicate its evidence-driven nature (e.g. "Regenerate
- with new evidence") rather than a bare "Generate correction" — disabled, with an explicit reason
+ generation-trigger control labeled to communicate its snapshot-gated nature (e.g. "Regenerate
+ with new source snapshot") rather than a bare "Generate correction" — disabled, with an explicit reason
  ("Add a new source to enable a corrected Brief."), while `workspace.
- newEvidenceSinceCurrentBriefVersion === false`.
+ newSourceSnapshotSinceCurrentBriefVersion === false`.
 3. User action: submits a new source via `AddSourceInline`, without leaving the workspace URL.
-4. System response: `AddSourceInline` calls the existing, extended `POST /api/investigations`
- route with `{ artifacts, investigationId }` (`02-ARCHITECTURE.md` §1.4/§3.1b — the SAME route
- `StartInvestigationForm` uses to create a new Investigation, not a separate `:id/sources` route
- and not `StartInvestigationForm`'s own `createInvestigation` call). Because this Investigation's
- pre-mutation status is `'brief-generated'`, the handler runs `submitSources` (unmodified) and
- `resolveInvestigationSources` (which itself skips already-resolved sources — `02-ARCHITECTURE.md`
- §1.4 — reusing their persisted resolution state rather than re-fetching them) but explicitly
- **skips**
- `transitionInvestigationStatus` entirely for this request — the Investigation's status remains
- `'brief-generated'` in the `201` response (`CreateInvestigationResponseBody: { investigationId,
- status, sourcesAdded }`, real read-back state, never an assumed one). This route never flips a
- `'brief-generated'` Investigation back to `'open'`, directly or via an unconditional transition
- call it happens to rely on a guard to decline. On completion the workspace re-fetches
- `GET.../workspace`. The new `source_artifact` row has no row in `generation_run_consumed_source`
- for the current `BriefVersion`'s producing `GenerationRun` (it did not exist when that run took its
- evidence snapshot, so it cannot have been recorded consumed), and its resolved content is not a
- trimmed-`raw` match of any source that run DID consume — the real, persisted-consumption mechanism
- `hasEligibleNewEvidenceSinceCurrentBriefVersion` checks (`02-ARCHITECTURE.md` §4.8; no timestamp
- boundary of any kind), so `workspace.newEvidenceSinceCurrentBriefVersion` flips to `true` — that
- flag, not `investigation.status`, is what changes as a result of this request.
-5. User sees: the "Regenerate with new evidence" control becomes enabled — specifically and only
+4. System response: `AddSourceInline` calls the existing, extended
+ `POST /api/investigations` route with `{ artifacts, investigationId }`. The
+ `'brief-generated'` status remains unchanged. After resolution, the workspace re-fetches; the
+ server compares the new row's `resolved_content_hash` with hashes ledgered by the current Brief's
+ producing run and earlier correction attempts against that current version. A distinct,
+ operator-submitted non-empty snapshot sets
+ `workspace.newSourceSnapshotSinceCurrentBriefVersion` true. Equal content remains ineligible
+ regardless of URL spelling, redirect alias, row id, or source type; changed content at the same
+ canonical URL may enable an attempt. The client does not infer usability.
+5. User sees: the "Regenerate with new source snapshot" control becomes enabled — specifically and only
  because of step 4's real, re-fetched eligibility result, never because `'brief-generated'` status
  alone permits it, and never because of an assumed optimistic response from `AddSourceInline`'s
  own submission.
-6. User action: clicks "Regenerate with new evidence."
+6. User action: clicks "Regenerate with new source snapshot."
 7. System response: `POST /api/investigations/:id/generation-runs` (same endpoint as Flow US-3),
  which resolves `supersedesVersionId` server-side to `ProblemBrief.currentVersionId` and calls
  `generateBriefVersion` — a real new `GenerationRun` begins.
@@ -546,14 +535,16 @@ version is itself viewed (Flow US-1 AC5).
  overwritten.
 
 **Success path:** as above.
-**No-new-evidence path:** the "Regenerate with new evidence" control stays disabled with its stated
-reason; a stale/replayed request that reaches the server anyway is rejected `422` with
-`error: 'investigation-not-eligible'` and a reason naming the missing new evidence — matching the
-Ineligible-request path in Flow US-3/US-4, not a distinct error surface.
-**Corrective run fails path:** the run reaches `outcome === 'failed'` on a later poll (§ Flow
-US-3/4's revised error path) — the prior `BriefVersion` remains `ProblemBrief.currentVersionId` and
-fully reviewable, unchanged from before the attempt; the workspace re-reads `investigation.status`
-from the next `GET.../workspace` rather than assuming a status.
+**No-new-snapshot path:** the "Regenerate with new source snapshot" control stays disabled; a
+stale request is rejected `422` with `no-new-source-snapshot`.
+**No-new-usable-evidence result:** if correction Extraction succeeds with zero valid candidate
+`EvidenceItem` rows, the run finalizes with that exact persisted reason, creates no BriefVersion,
+and leaves the current Brief, Decisions, current pointer, and `'brief-generated'` status
+unchanged. The attempted snapshot becomes ineligible; a different new snapshot may enable another
+attempt.
+**Other corrective-run failure:** provider, validation, schema, truncation, or infrastructure
+failure retains its own persisted reason and is never relabeled as no usable evidence. The current
+Brief remains reviewable.
 **Concurrent-generation path:** identical to Flow US-3/US-4's `422`/`409` handling above (`422`
 for the ordinary visibly-in-progress case, `409` reserved for the narrow simultaneous-INSERT race) —
 no duplicate
@@ -563,10 +554,10 @@ no duplicate
 `CreateInvestigationNotFoundResponseBody`/`CreateInvestigationTransitionConflictResponseBody`) →
 the form shows its own inline error (§ Interactions, "Add Source (Blocked Recovery, Failed Retry,
 and Brief-Generated Resubmission)") and
-`newEvidenceSinceCurrentBriefVersion` is not touched — no optimistic flip of the "Regenerate"
+`newSourceSnapshotSinceCurrentBriefVersion` is not touched — no optimistic flip of the "Regenerate"
 control's enabled state ever occurs client-side.
 **Decoupling guarantee (binding, not just a copy note):** submitting a new source via `AddSourceInline`
-here never itself appends a `StatusEvent`, and triggering "Regenerate with new evidence" never calls
+here never itself appends a `StatusEvent`, and triggering "Regenerate with new source snapshot" never calls
 `assignValidityState` — US-12 and US-13 remain two fully independent operations, with no shared
 control anywhere in this flow (`02-ARCHITECTURE.md` §4.8, §6 Anti-Patterns).
 
@@ -695,17 +686,14 @@ same five-rule order, 0-4):
  while rule 2 requires `isCurrent === false` — so this rule wins over every later,
  run-outcome-selected/mutating row (Generation-Failed, Brief-Generated summary) for any
  prior-version view.
-- **Rule 3** — otherwise (the displayed version IS current), if `latestGenerationRun?.outcome ===
- 'failed'` AND `investigation.status !== 'blocked'` → the **Generation-Failed** row below. Without
- this exception, a `'blocked'` Investigation whose latest run happens to read `outcome: 'failed'`
- would wrongly render Generation-Failed instead of the Blocked row's per-source `failureReason`
- disclosure; when the exception applies, evaluation falls through to rule 4, which already selects
- the Blocked row for `status === 'blocked'`. This rule covers both a classic initial-generation
- failure and a failed correction viewed on the current version (`status` stays `'brief-generated'`
- by construction, since a correction failure never transitions status away from it).
-- **Rule 4** — otherwise, the row matching `investigation.status` exactly as each row's own
- condition states. Reachable here only for the current version (rule 2 already excluded every
- prior-version view), and only when no run outcome above already claimed the case.
+- **Rule 3** — otherwise, for the current version, a failed latest run selects the
+ **Generation-Failed** row only when `investigation.status !== 'blocked'` and the run's last
+ persisted failed-step reason is not exactly `no-new-usable-evidence`. Provider, validation,
+ schema, truncation, and infrastructure failures retain their own reason here. A blocked case falls
+ through to Blocked; the specific no-evidence correction result falls through to rule 4.
+- **Rule 4** — otherwise, select the row matching `investigation.status`. A
+ `no-new-usable-evidence` correction remains `'brief-generated'`, so the Brief-Generated summary
+ renders with the valid current Brief and Decisions still visible.
 
 | Section | Content | Data Source |
 |---|---|---|
@@ -717,7 +705,7 @@ same five-rule order, 0-4):
 | Outcome/Status Panel — Stale/Interrupted | A distinct, non-in-progress-styled disclosure: "This run has not reported progress recently and may have been interrupted." A real "Refresh status" control (re-issues one manual read) AND a real "Abandon and retry" control (`02-ARCHITECTURE.md` §1.6 — calls the abandon route, finalizing the run `'failed'` and clearing the concurrency guard so retry becomes possible) are both rendered here. Everything else the In-Progress panel shows (persisted steps, honest-gap sentence context) remains visible below the disclosure — nothing hidden, only the "is this healthily running" claim is corrected. Rendered only when `workspace.briefs.length === 0` (no `BriefVersion` exists yet) or the displayed `BriefVersion` is current (§5.4 rule 1) — while viewing a prior version, this state instead renders as the Viewing Prior Version row's read-only notice, below, with no "Abandon and retry" control; a prior version can only be viewed when `briefs.length > 0`, so this condition never exposes the control to a prior-version view. | `latestGenerationRun` where `outcome === 'in-progress'` and `livenessState === 'stale-or-interrupted'` |
 | Outcome/Status Panel — Blocked | Renders each unreachable source with its real `failureReason` (or `noContentReason` for reachable-but-contentless sources) — never a generic "failed" label — plus its own "Re-check this source" control (US-5 AC4); a real `AddSourceInline` instance for submitting another source without leaving the URL; no fabricated `GenerationRun` shown as if one ran. Selected when `investigation.status === 'blocked'` — the rule-3 "not `'blocked'`" exception is what lets evaluation fall through here instead of rendering Generation-Failed when the latest run also happens to read `'failed'`. | `investigation.status === 'blocked'`, `workspace.investigation.sources` |
 | Outcome/Status Panel — Generation-Failed | `investigation.statusReason` when present, otherwise the failed run's own persisted step/error text, per `02-ARCHITECTURE.md` §5.4 rule 3's content contract — this mount point is real and matches `02-ARCHITECTURE.md` §5.3's "Blocked-recovery, generation-failed-retry, AND 'brief-generated' resubmission paths" — its own real `AddSourceInline` component, calling the existing, extended `POST /api/investigations` route with `investigationId` in the body, for adding new source evidence before retrying (never itself triggers generation). **This row renders only when the displayed `BriefVersion` is current (§5.4 rule 2 precedes rule 3) — a failed correction viewed from a prior version instead renders the Viewing Prior Version row below, never this one.** | `latestGenerationRun` where `outcome === 'failed'`, `investigation.statusReason`, `workspace.generationEligible` |
-| Outcome/Status Panel — Brief-Generated summary | Compact generation confirmation; its own real `AddSourceInline` component calling the existing, extended `POST /api/investigations` route with `investigationId` in the body (this request never transitions the Investigation's status — it remains `'brief-generated'` — it only appends sources, and only `workspace.newEvidenceSinceCurrentBriefVersion` changes as a result); and a "Regenerate with new evidence" control, enabled iff `workspace.generationEligible === true` (which for this status requires `workspace.newEvidenceSinceCurrentBriefVersion === true` per the revised Generation Eligibility Rule) and disabled with an explicit reason otherwise. This panel renders **no unconditional/bare "Generate correction" control** — the only generation-trigger here is evidence-gated (Out of Scope, US-13). This panel — and therefore the correction trigger — renders only when viewing the current version; a prior version's Outcome/Status Panel region instead renders the **Viewing Prior Version** row below. | `workspace.briefs` (`isCurrent: true` entry), `investigation.status === 'brief-generated'`, `workspace.newEvidenceSinceCurrentBriefVersion`, `workspace.generationEligible` |
+| Outcome/Status Panel — Brief-Generated summary | Compact generation confirmation; its own real `AddSourceInline`; and a "Regenerate with new source snapshot" control enabled iff the server-computed `workspace.generationEligible` is true. A correction attempt with persisted reason `no-new-usable-evidence` renders that specific reason here, keeps the existing current Brief and Decisions visible, and leaves generation disabled until another new snapshot is added. The client never infers evidence usability. This panel renders only for the current version. | `workspace.briefs` (`isCurrent: true` entry), `investigation.status === 'brief-generated'`, `workspace.latestGenerationRun`, `workspace.newSourceSnapshotSinceCurrentBriefVersion`, `workspace.generationEligible` |
 | Outcome/Status Panel — Viewing Prior Version | A minimal, read-only statement: "You are viewing a prior version of this Brief. No correction can be triggered from this view." plus the same navigable forward link to this version's own immediate successor (`forwardSupersededByVersionNumber`, human-readable `versionNumber`, region 1) `InvestigationIdentityHeader` already renders. No `AddSourceInline`, no `GenerateButton`, no "Abandon and retry", no evidence-driven correction control or other current-run-mutating control of any kind — correction always targets `ProblemBrief.currentVersionId`, which by definition is not the version on screen here. **When `workspace.latestGenerationRun?.outcome === 'in-progress'` (against the current version, active or stale/interrupted), also renders a distinct, clearly labeled read-only notice — "A generation run is currently active/stalled on the current version — go to the current workspace to view or manage it" — with a real navigable link to the current version's workspace route, where `GenerationProgressPanel` and its controls (including "Abandon and retry") then correctly live.** This variant is reachable regardless of the CURRENT version's own live generation state, INCLUDING while that run is actively `'in-progress'` — it is also reached once a run against the current version is either absent or has reached a terminal outcome (`'failed'` or `'succeeded'`), while viewing a prior version — including immediately after that run has just failed — and still guarantees no current-run-mutating control of any kind. **Renders whenever the displayed version is not current (§5.4 rule 2), regardless of `latestGenerationRun?.outcome`, including `'in-progress'` (rendering the notice above), `'failed'` (a failed correction viewed from a prior version, so this row, not Generation-Failed, is what renders in that case), or terminal/absent (the plain read-only statement with no notice).** | displayed `BriefVersion.isCurrent === false`, `workspace.latestGenerationRun` |
 | Complete Brief Review | All seven elements, uncollapsed by default (see the collapse-by-default rule stated below), for whichever version the current URL addresses (current or a specific prior version); `NegativeFindingNotice` for the four negatable elements when a matching `NegativeFinding` exists; Personal Pull rendered as its own subsection, visually and structurally separate from Demand Evidence. No generation-trigger control appears anywhere in this panel — that control lives only in the Outcome/Status Panel above (Open/Eligible, Generation-Failed, or Brief-Generated summary variants, current version only). | `GetBriefForReviewResult` (fetched by `versionNumber`, §3.1a) |
 | Research/Provenance Rail | Per-evidence: excerpt, label, source, stance (from `ClaimVersionEvidenceRef`, not `EvidenceItem`), relevance note; contradicting evidence shown inline with supporting evidence, never hidden or in a separate collapsed tab; `SearchScopeNotice` (queries performed + failed/blocked retrievals); fixed `CitationScopeNotice`; per-run runtime identifier/models/tools/steps for every run in `workspace.generationRuns` (not only the latest), each step's real `validationRecords`/`toolInvocations` fields, and each run's real `webSearchQueries` array (queries + per-result retrieved/blocked/failed status). | `GetBriefForReviewResult`, `workspace.generationRuns` (runtime/steps/`validationRecords`/`toolInvocations`/`webSearchQueries`) |
@@ -804,11 +792,11 @@ race, `02-ARCHITECTURE.md` §1.6).
 
 ### Trigger Generation
 
-**Trigger:** click on "Start generation" / "Retry generation" / "Regenerate with new evidence"
+**Trigger:** click on "Start generation" / "Retry generation" / "Regenerate with new source snapshot"
 (same underlying `GenerateButton` component and same single enablement condition —
 `workspace.generationEligible === true` — different label by context; § Sections). The
-"Regenerate with new evidence" variant renders only inside the Brief-Generated summary panel (current
-version only) and only becomes enabled once `workspace.newEvidenceSinceCurrentBriefVersion === true`
+"Regenerate with new source snapshot" variant renders only inside the Brief-Generated summary panel (current
+version only) and only becomes enabled once `workspace.newSourceSnapshotSinceCurrentBriefVersion === true`
 (US-13; see the "Add Evidence and Corrective Generation" interaction below for the full
 evidence-driven path).
 **Component:** Outcome/Status Panel's generation-trigger control, calling
@@ -818,7 +806,7 @@ Brief-Generated summary panel; no instance re-derives eligibility from `investig
 from `latestGenerationRun` — every instance reads only `workspace.generationEligible`, the single
 server-computed flag defined by the Generation Eligibility Rule (`02-ARCHITECTURE.md` §3.2/§4.2),
 which is `true` for `'open'`/`'generation-failed'` whenever no run is in-progress, and for
-`'brief-generated'` only when `newEvidenceSinceCurrentBriefVersion` is also `true`. There is no
+`'brief-generated'` only when `newSourceSnapshotSinceCurrentBriefVersion` is also `true`. There is no
 state in which more than one instance of this control renders simultaneously, because the
 Outcome/Status Panel renders exactly one variant at a time, selected by the fixed-precedence rule
 above (§ Sections, run-outcome/liveness before status; `02-ARCHITECTURE.md` §5.4) — the shared flag
@@ -875,13 +863,13 @@ EXISTING Investigation, sharing the route but not the form component or its crea
 3. The workspace re-renders with updated `sources`, `status` (unchanged for the
  `'brief-generated'` context — only appended sources, never a status change), `generationEligible`,
  and — for the Brief-Generated summary panel's instance specifically —
- `newEvidenceSinceCurrentBriefVersion` (recomputed from the re-fetch, not derived from step 2's
+ `newSourceSnapshotSinceCurrentBriefVersion` (recomputed from the re-fetch, not derived from step 2's
  response body directly).
 4. `AddSourceInline` never itself calls the generation-runs endpoint and never calls
  `assignValidityState` — adding a source is strictly a source-submission action; the separate
- "Regenerate with new evidence" control (§ Trigger Generation) is what a user clicks next, as its
+ "Regenerate with new source snapshot" control (§ Trigger Generation) is what a user clicks next, as its
  own distinct action. Separately, whether a `'brief-generated'` Investigation becomes
- generation-eligible again is answered exclusively by `newEvidenceSinceCurrentBriefVersion` (§4.8)
+ generation-eligible again is answered exclusively by `newSourceSnapshotSinceCurrentBriefVersion` (§4.8)
  read on the next workspace poll — never by this route flipping `status` itself.
 
 **Loading/Error state:** control-local pending treatment; on `400` (`error:
@@ -898,7 +886,7 @@ the response body — never a generic message, never an assumed success.
 `InvestigationWorkspaceView` — if resolution moved `status` to `'open'` (the Blocked-recovery case),
 the Outcome/Status Panel switches from Blocked to Open/Eligible on the same render pass (single
 re-fetch, no intermediate flash of a third state). In the Brief-Generated context, `status` remains
-`'brief-generated'` and only `newEvidenceSinceCurrentBriefVersion` (and therefore
+`'brief-generated'` and only `newSourceSnapshotSinceCurrentBriefVersion` (and therefore
 `generationEligible`) changes, both read from the real re-fetch.
 
 ### Add Evidence and Corrective Generation (US-13)
@@ -908,15 +896,15 @@ only).
 **Component:** `AddSourceInline` and `GenerateButton`, reused verbatim from the interactions above.
 **Behavior:**
 1. `AddSourceInline` submission (as above) is followed by a workspace re-fetch; that re-fetch's
- `newEvidenceSinceCurrentBriefVersion` value (`02-ARCHITECTURE.md` §4.8's real
+ `newSourceSnapshotSinceCurrentBriefVersion` value (`02-ARCHITECTURE.md` §4.8's real
  resolution-status/consumed-evidence check) is the only thing that can flip this field to `true`
  for this Investigation — never `AddSourceInline`'s own submit-response body directly, and never a
  side effect of a status transition (this route explicitly does not transition a
  `'brief-generated'` Investigation's status at all).
-2. Once `true`, "Regenerate with new evidence" enables. Its disabled-state copy while `false` states
+2. Once `true`, "Regenerate with new source snapshot" enables. Its disabled-state copy while `false` states
  plainly why: "Add a new source to enable a corrected Brief." — never a bare disabled button with
  no reason shown.
-3. Clicking "Regenerate with new evidence" follows the same `POST.../generation-runs` path as any
+3. Clicking "Regenerate with new source snapshot" follows the same `POST.../generation-runs` path as any
  other generation trigger (§ Trigger Generation) — the connector resolves `supersedesVersionId`
  server-side; no client-supplied flag communicates "this is a correction."
 4. On `202`, the workspace transitions to the honest in-progress state (Flow US-4), then — once the
@@ -931,7 +919,7 @@ only).
 (sequential user actions, not a combined one-click flow).
 **Error state:** `AddSourceInline` errors are its own (§ Add Source (Blocked Recovery, Failed Retry,
 and Brief-Generated Resubmission), above); `GenerateButton` errors follow §
-Trigger Generation's error handling, including the specific "no new evidence" 422 reason if a stale
+Trigger Generation's error handling, including the specific "no new source snapshot" 422 reason if a stale
 click bypasses the disabled state, or a later-observed `outcome === 'failed'` poll tick for a
 pipeline failure.
 **Success state:** the workspace shows the newly generated current `BriefVersion`, and the prior
@@ -1186,15 +1174,15 @@ App (client-side router — Checkpoint 1's existing two routes UNCHANGED, plus t
  │ │ ├── AddSourceInline (US-13; the same real
  │ │ │ component/route as BlockedSourcesPanel's
  │ │ │ instance — the only action that can
- │ │ │ flip newEvidenceSinceCurrentBriefVersion,
+ │ │ │ flip newSourceSnapshotSinceCurrentBriefVersion,
  │ │ │ via a real re-fetch, never an optimistic
  │ │ │ assumption; this request never changes
  │ │ │ investigation.status away from
  │ │ │ 'brief-generated')
- │ │ └── GenerateButton (label "Regenerate with new evidence";
+ │ │ └── GenerateButton (label "Regenerate with new source snapshot";
  │ │ enabled iff workspace.generationEligible
  │ │ === true, which for this panel requires
- │ │ workspace.newEvidenceSinceCurrentBriefVersion
+ │ │ workspace.newSourceSnapshotSinceCurrentBriefVersion
  │ │ === true — same component as the two
  │ │ instances above, third label variant,
  │ │ never a distinct unconditional control)
@@ -1299,12 +1287,12 @@ summary panel) are three instances of this SAME new component, differing only in
 them and what happens after their shared `onSubmitted` callback triggers a workspace re-fetch. In
 every mount point, when the target Investigation's pre-mutation status is `'brief-generated'`, the
 route skips its transition step entirely — none of these three instances can cause
-`investigation.status` to change; only `newEvidenceSinceCurrentBriefVersion` changes, and only via
+`investigation.status` to change; only `newSourceSnapshotSinceCurrentBriefVersion` changes, and only via
 the next real `GET.../workspace` re-fetch.
 
 No component in this hierarchy is a client-side re-derivation of `generationEligible`,
 `isCurrent`, `assignedState`, `isSuperseded`, `livenessState`, or
-`newEvidenceSinceCurrentBriefVersion` — every one of these is rendered exactly as the server
+`newSourceSnapshotSinceCurrentBriefVersion` — every one of these is rendered exactly as the server
 computed it (`02-ARCHITECTURE.md` §6, "Server-computed derived flags" pattern). In particular, the
 three `GenerateButton` instances (`OpenEligiblePanel`, `GenerationFailedPanel`,
 `BriefGeneratedSummaryPanel`) are the same component reading the same `workspace.generationEligible`
@@ -1319,7 +1307,7 @@ consumer pattern across all three contexts. No component in this hierarchy calls
 
 | State | Visible In | Updated By |
 |---|---|---|
-| `InvestigationWorkspaceView` (identity, sources, all `generationRuns` including per-run `livenessState`/`webSearchQueries` and per-step `validationRecords`/`toolInvocations`, `briefs` including `assignedState`/`isSuperseded` per version, `decisionLineage`, `generationEligible`, `newEvidenceSinceCurrentBriefVersion`) | `InvestigationWorkspaceScreen` and every child region, including `DecisionHistoryBanner` and the Brief-Generated summary panel's `AddSourceInline`/`GenerateButton` pair | `GET.../workspace` on mount, then on each poll tick (at the engineering-derived `POLL_INTERVAL_MS` interval, `02-ARCHITECTURE.md` §4.9/§5.2 — not asserted here as a specific value) while `latestGenerationRun?.livenessState === 'active'`, then on any local action that changes server state (add source, trigger generation, record decision) |
+| `InvestigationWorkspaceView` (identity, sources, all `generationRuns` including per-run `livenessState`/`webSearchQueries` and per-step `validationRecords`/`toolInvocations`, `briefs` including `assignedState`/`isSuperseded` per version, `decisionLineage`, `generationEligible`, `newSourceSnapshotSinceCurrentBriefVersion`) | `InvestigationWorkspaceScreen` and every child region, including `DecisionHistoryBanner` and the Brief-Generated summary panel's `AddSourceInline`/`GenerateButton` pair | `GET.../workspace` on mount, then on each poll tick (at the engineering-derived `POLL_INTERVAL_MS` interval, `02-ARCHITECTURE.md` §4.9/§5.2 — not asserted here as a specific value) while `latestGenerationRun?.livenessState === 'active'`, then on any local action that changes server state (add source, trigger generation, record decision) |
 | `GetBriefForReviewResult` (seven elements, evidence, negative findings, notices, `priorDecisions`, `assignedState`, `isSuperseded`, `version`) for the routed/current version | `BriefReviewPanel`, `ProvenanceRail`'s evidence list, `InvestigationIdentityHeader`'s "Version N of M" indicator, `DecisionHistoryBanner`'s per-version list | `GET.../brief-versions/by-version/:versionNumber`, fetched once per displayed version (current when no `:versionNumber` route param is present, the routed value otherwise) — not re-fetched on every poll tick, re-fetched on version navigation (Flow US-1 AC5) |
 | routed `:versionNumber` (URL param, not component state) | `InvestigationWorkspaceScreen` (`useParams`) | the browser URL itself — reload-stable, never derived from in-memory navigation history |
 | `notFound` / `error` (investigation-level or version-level) | `InvestigationWorkspaceScreen` | the initial `GET.../workspace` fetch's outcome, or the version-specific `brief-version-not-found` outcome |
@@ -1359,15 +1347,15 @@ Checkpoint 1's no-state-management-library, no-cross-screen-cache design
  are layout subdivisions of architecture-assigned components, not new data-owning services.
 - Single generation-eligibility gate: yes — every generation-trigger control specified in this
  document (Open/Eligible's "Start generation", Generation-Failed's "Retry generation", and
- Brief-Generated summary's "Regenerate with new evidence") is the same `GenerateButton` component,
+ Brief-Generated summary's "Regenerate with new source snapshot") is the same `GenerateButton` component,
  gated solely on `workspace.generationEligible`, the one server-computed flag defined by
- `02-ARCHITECTURE.md` §3.2/§4.2's Generation Eligibility Rule (including its US-13 evidence-gated
+ `02-ARCHITECTURE.md` §3.2/§4.2's Generation Eligibility Rule (including its US-13 snapshot-gated
  branch) — no section, flow, or component in this document re-derives eligibility from
- `investigation.status` or `newEvidenceSinceCurrentBriefVersion` independently.
+ `investigation.status` or `newSourceSnapshotSinceCurrentBriefVersion` independently.
 - No unconditional "Generate correction" control: yes — the only generation-trigger control ever
  rendered for a `'brief-generated'` Investigation is `GenerateButton` gated on
  `workspace.generationEligible`, which for that status requires
- `newEvidenceSinceCurrentBriefVersion === true`; no separate, always-enabled control exists (§
+ `newSourceSnapshotSinceCurrentBriefVersion === true`; no separate, always-enabled control exists (§
  Sections, § Component Hierarchy, § Interactions "Add Evidence and Corrective Generation").
 - No invalidation-trigger control: yes — `DecisionHistoryBanner` (§ Sections, § Component
  Hierarchy, § Interactions "Decision History Banner") is read-only; no control anywhere in this
@@ -1407,7 +1395,7 @@ Checkpoint 1's no-state-management-library, no-cross-screen-cache design
   - § Sections (Research/Provenance Rail, In-Progress panel), § Interactions (Honest In-Progress Rendering), § Component Hierarchy (`ProvenanceRail`) all now name `validationRecords`/`toolInvocations`/`webSearchQueries` as the real rendered field shapes.
   - new Flow "US-1 AC5", new Interaction "Navigate to a Specific Brief Version", the second route in § Screens/§ Component Hierarchy, and `InvestigationIdentityHeader`'s forward/backward supersession links now addressed by human-readable `versionNumber`.
   - § Interactions "Add Source (Blocked Recovery, Failed Retry, and Brief-Generated Resubmission)" and
- § Component Hierarchy state explicitly `AddSourceInline` is its own component calling the existing, extended `POST /api/investigations` route (`investigationId` in the request body — not a new `:id/sources` route) and rendering the real persisted `CreateInvestigationResponseBody`, never a `StartInvestigationForm` reuse or an assumed optimistic state, and never implying a `'brief-generated'` Investigation's status silently changes — only `newEvidenceSinceCurrentBriefVersion` does.
+ § Component Hierarchy state explicitly `AddSourceInline` is its own component calling the existing, extended `POST /api/investigations` route (`investigationId` in the request body — not a new `:id/sources` route) and rendering the real persisted `CreateInvestigationResponseBody`, never a `StartInvestigationForm` reuse or an assumed optimistic state, and never implying a `'brief-generated'` Investigation's status silently changes — only `newSourceSnapshotSinceCurrentBriefVersion` does.
   - § Flow US-10, § Sections, § Interactions "Decision History Banner", and § Component Hierarchy all render `priorDecisions` (per-version) and `decisionLineage` (whole-Investigation) as two separate, labeled lists, with every reconsideration condition rendered as resolved text.
   - new "Stale/Interrupted" Outcome/Status Panel variant, § Interactions' revised polling behavior keyed on `livenessState`, honest informational-only copy plus the real "Refresh status" and "Abandon and retry" controls (`02-ARCHITECTURE.md` §1.6).
   - the binding header note (top of this document) states the determined resolution (decision controls available on the displayed version, current or prior, per `02-ARCHITECTURE.md` §5.2's explicit "prior or current alike"), and every region now discloses which version is on screen via `InvestigationIdentityHeader`'s "Version N of M" indicator.
