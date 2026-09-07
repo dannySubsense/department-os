@@ -510,8 +510,7 @@ version is itself viewed (Flow US-1 AC5).
 4. System response: `AddSourceInline` calls the existing, extended
  `POST /api/investigations` route with `{ artifacts, investigationId }`. The
  `'brief-generated'` status remains unchanged. After resolution, the workspace re-fetches; the
- server compares the new row's `resolved_content_hash` with hashes ledgered by the current Brief's
- producing run and earlier correction attempts against that current version. A distinct,
+ server compares the new row's `resolved_content_hash` with hashes ledgered across the current BriefVersion's full ancestry — every lineage-producing run and every correction attempt targeting a lineage version. A distinct,
  operator-submitted non-empty snapshot sets
  `workspace.newSourceSnapshotSinceCurrentBriefVersion` true. Equal content remains ineligible
  regardless of URL spelling, redirect alias, row id, or source type; changed content at the same
@@ -536,7 +535,7 @@ version is itself viewed (Flow US-1 AC5).
 
 **Success path:** as above.
 **No-new-snapshot path:** the "Regenerate with new source snapshot" control stays disabled; a
-stale request is rejected `422` with `no-new-source-snapshot`.
+stale request is rejected `422` with `"no new source snapshot has been added since the current Brief version"`.
 **No-new-usable-evidence result:** if correction Extraction succeeds with zero valid candidate
 `EvidenceItem` rows, the run finalizes with that exact persisted reason, creates no BriefVersion,
 and leaves the current Brief, Decisions, current pointer, and `'brief-generated'` status
@@ -919,7 +918,7 @@ only).
 (sequential user actions, not a combined one-click flow).
 **Error state:** `AddSourceInline` errors are its own (§ Add Source (Blocked Recovery, Failed Retry,
 and Brief-Generated Resubmission), above); `GenerateButton` errors follow §
-Trigger Generation's error handling, including the specific "no new source snapshot" 422 reason if a stale
+Trigger Generation's error handling, including the exact `"no new source snapshot has been added since the current Brief version"` 422 reason if a stale
 click bypasses the disabled state, or a later-observed `outcome === 'failed'` poll tick for a
 pipeline failure.
 **Success state:** the workspace shows the newly generated current `BriefVersion`, and the prior

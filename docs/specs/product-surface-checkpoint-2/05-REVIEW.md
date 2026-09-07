@@ -91,7 +91,7 @@ the current specification, not a history of how it got here.
   `content-retrieved` means non-empty fetched material. A new operator-submitted content snapshot
   may start a correction attempt; Extraction inside that run determines whether it contains valid
   evidence. `generation_run_consumed_source` records the nullable `correction_target_brief_version_id` plus both extraction passes' exact
-  `extractionInputSourceIds`, including inputs that yield zero valid `EvidenceItem` rows. If a
+  `extractionInputSourceIds`, including inputs that yield zero valid `EvidenceItem` rows. Eligibility recursively traverses the current BriefVersion's full ancestry and excludes hashes ledgered by every producing run or correction attempt targeting a lineage version, so an input consumed by v1 cannot become eligible again merely because a correction produced v2. If a
   correction extraction succeeds with zero valid candidate evidence, the run finalizes with
   `no-new-usable-evidence`, creates no BriefVersion, preserves the current pointer, Brief,
   Decisions, and `'brief-generated'` status, and records the attempted snapshot so it cannot

@@ -688,8 +688,8 @@ Acceptance Criteria:
  already built from) — without leaving the workspace URL.
 - [ ] A `'brief-generated'` Investigation becomes eligible for a **correction attempt** only when
  at least one operator-submitted, resolved, non-empty source-content snapshot has not already been
- consumed by the current `BriefVersion` or attempted by an earlier correction run against that
- same current version. Eligibility is never granted by status alone, by row creation time, or by
+ consumed by any BriefVersion in the current version's full ancestry or attempted by a correction
+ run targeting any version in that ancestry. Eligibility is never granted by status alone, by row creation time, or by
  a bare regenerate control. `content-retrieved` proves only that non-empty material was fetched;
  it does not claim that the material contains usable evidence. Snapshot identity is the persisted
  `resolved_content_hash`: an equal hash is already-consumed/attempted even when URL spelling or

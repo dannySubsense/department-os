@@ -414,6 +414,10 @@ including its full provenance fields, is never under-reported).
 - `src/services/classifyRetrievalOutcome.test.ts` — **already edited**, updated fixtures/assertions
  for the zero-length rule, with the old `MIN_CONTENT_LENGTH`-threshold fixtures and the now-dead
  import already gone.
+- `src/services/getInvestigation.ts` — edit: export
+ `InvestigationNotFoundError`; throw it only when the Investigation query succeeds with zero
+ rows. Keep the existing parameter and successful return shape. This file and behavior are owned
+ by C2-S2, not left implicit in `getInvestigationWorkspace`.
 - `src/services/getInvestigationWorkspace.ts` (new) — steps 1, 2, and 6 of §4.4's assembly built for
  real: step 1 `getInvestigation`; step 2 the real `generation_run`/`generation_step`/
  `web_search_query`/`web_search_result`/`query_limitation` join query,
@@ -596,9 +600,11 @@ including its full provenance fields, is never under-reported).
  demonstration.
 
 **Tests:**
-- [ ] `getInvestigationWorkspace`: returns `null` only for typed/explicit Investigation
- absence; returns a populated view for real rows; an injected database/query failure rejects and is
- not converted to `null`.
+- [ ] `getInvestigation`: zero-row result throws `InvestigationNotFoundError`; an injected
+ database/query failure propagates as its original error and is not converted to that type.
+- [ ] `getInvestigationWorkspace`: catches only `InvestigationNotFoundError` and returns `null`;
+ returns a populated view for real rows; an injected database/query failure rejects and is not
+ converted to `null`.
 - [ ] `getInvestigationWorkspace`: for an Investigation with pre-existing, real `generation_run`/
  `generation_step`/`web_search_query` rows (seeded directly against the real tables, not
  mocked), returns the full real generation history in `generationRuns`/`latestGenerationRun`
@@ -900,7 +906,7 @@ C2-S4/C2-S5's scope).
  `error` text (§4.2 step 7, unchanged US-3 AC6 guarantee, relocated mechanism);
  - implements step 2's revised, tightened Generation Eligibility Rule (§4.2) in full, including the
  `'brief-generated'` branch gated on `hasUnattemptedCorrectionSnapshot` (US-13 AC2)
- and the distinct 422 `reason` `no-new-source-snapshot` vs. `'blocked'` ineligibility;
+ and the distinct 422 `reason` `"no new source snapshot has been added since the current Brief version"` vs. `'blocked'` ineligibility;
  - attaches a SECOND, separate `.catch` to `pipeline`, only after `generationRun = await runCreated` has resolved successfully, so
  it structurally can never fire before `generationRun` is assigned and can never observe a
  pre-Phase-1 rejection (those are already fully handled by the synchronization catch and the
@@ -919,11 +925,11 @@ C2-S4/C2-S5's scope).
  (a) extend `generationEligible`'s computation to also treat `'generation-failed'` as an eligible
  status (retry, US-6 AC3);
  (b) add `hasUnattemptedCorrectionSnapshot(investigationId)` (§4.8): resolve the current
- Brief's producing run and return true only for an operator-submitted `content-retrieved` row with
- a non-null `resolved_content_hash` not ledgered by that run or an earlier correction attempt
- against the same current BriefVersion. Equal hashes are duplicate regardless of row id, URL
- spelling, redirect alias, or source type. Canonical URL alone does not exclude changed content.
- Wire the result to `InvestigationWorkspaceView.newSourceSnapshotSinceCurrentBriefVersion` and
+ BriefVersion and use a recursive `supersedes_version_id` CTE to traverse the full ancestry.
+ Exclude any candidate hash ledgered by a run that produced a lineage version or by a correction
+ attempt targeting a lineage version. Equal hashes are duplicate regardless of row id, URL spelling,
+ redirect alias, or source type; canonical URL alone does not exclude changed content. Wire the
+ result to `InvestigationWorkspaceView.newSourceSnapshotSinceCurrentBriefVersion` and
  `generationEligible`; use no timestamp or canonical-URL anti-join;
  (c) wire the real, derived `STALE_THRESHOLD_MS` into `computeLivenessState`'s (defined and
  unit-tested as a pure parameterized function in C2-S2, §4.9's sequencing fix) ONE call site in
@@ -1320,7 +1326,7 @@ C2-S4/C2-S5's scope).
  error), the handler consumes and logs that rejection and attempts no write — confirmed by no
  uncaught/unhandled rejection surfacing in the test process and no row mutation occurring.
 - [ ] `createGenerationRunForInvestigation`: no unattempted snapshot returns `422`
- `no-new-source-snapshot`; a distinct operator-submitted `content-retrieved` hash accepts a
+ `"no new source snapshot has been added since the current Brief version"`; a distinct operator-submitted `content-retrieved` hash accepts a
  correction attempt and sets `supersedesVersionId` to the current version. The gate does not claim
  the snapshot contains evidence.
 - [ ] **New, required — `InvalidSupersedeTargetError` step recording (US-3 AC6)**: a real correction request whose `supersedesVersionId` no longer
@@ -1336,6 +1342,10 @@ C2-S4/C2-S5's scope).
 - [ ] Equal hash is ineligible across different row IDs, URL spellings, redirect aliases, and
  source types. Same canonical URL plus the same hash is duplicate; same canonical URL plus a
  different hash may be attempted.
+- [ ] **Required correction-of-a-correction lineage regression:** v1's producing run consumes A;
+ distinct B produces v2; distinct C produces v3; while v3 is current, resubmitting A or B with the
+ same hash remains ineligible. Use real ledger and BriefVersion rows so a one-producing-run-deep
+ query cannot pass.
 - [ ] A correction Extraction returning zero valid candidate `EvidenceItem` rows ledgers
  `extractionInputSourceIds`, finalizes `no-new-usable-evidence`, creates no BriefVersion,
  preserves the current pointer, Brief, Decisions, and `brief-generated` status, and makes the
@@ -1562,7 +1572,7 @@ C2-S4/C2-S5's scope).
 - **US-13 mechanism check**: once a real generation run from this same demonstration succeeds and
  the Investigation is `'brief-generated'`, this slice's own service-level tests above (not a
  browser step) are the proof that a direct `createGenerationRunForInvestigation` call against it,
- with no unattempted snapshot, is rejected with `no-new-source-snapshot`; a distinct hash enables an attempt without claiming evidence usability.
+ with no unattempted snapshot, is rejected with `"no new source snapshot has been added since the current Brief version"`; a distinct hash enables an attempt without claiming evidence usability.
 
 **Done When:**
 - [ ] All tests above pass; Frank forge-gate PASS.

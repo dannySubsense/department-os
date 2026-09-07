@@ -1123,7 +1123,7 @@ never exposes "Abandon and retry" to a prior-version view.
 | **Validity/Invalidation Service** | `assignValidityState`/`getAssignedState`/`getAssignedStateAsRecorded` (§4.7) — append-only `StatusEvent` writer and the two bitemporal read queries; no browser-reachable route this checkpoint (Out of Scope) | `src/services/validityState.ts` (new) | US-12 |
 | **Dependent-Decision Reconstruction** | Computed inside `assignValidityState` (§4.7) — every `Decision` bound to a `BriefVersion` that referenced the invalidated target while its assigned state was last `'valid'`, reconstructed via `getAssignedStateAsRecorded` | `src/services/validityState.ts` (same module, not a separate file) | US-12 |
 | **Decision History / Validity Read Model** | Extends `getInvestigationWorkspace` and `getBriefForReview` (§3.2, §3.3) with `assignedState`/`isSuperseded` per `BriefVersion`, sourced from `getAssignedState` — feeds `DecisionHistoryBanner` (§5.3) | `src/services/getInvestigationWorkspace.ts`, `src/services/getBriefForReview.ts` (both edited, not new files) | US-12 |
-| **Resubmission Eligibility Check** | `hasUnattemptedCorrectionSnapshot(investigationId)` (§4.8) — server-side gate for a correction attempt: a new operator-submitted, non-empty resolved-content hash exists outside the current-version attempt ledger. It does not claim evidentiary usability; Extraction decides that inside the run. | `src/services/getInvestigationWorkspace.ts` | US-13 |
+| **Resubmission Eligibility Check** | `hasUnattemptedCorrectionSnapshot(investigationId)` (§4.8) — server-side gate for a correction attempt: a new operator-submitted, non-empty resolved-content hash exists outside the current BriefVersion's full-lineage attempt ledger. It does not claim evidentiary usability; Extraction decides that inside the run. | `src/services/getInvestigationWorkspace.ts` | US-13 |
 | **Prior-Version Navigation Resolver** | Resolves a human-readable `versionNumber` (never a raw `BriefVersion` UUID) to its `BriefVersion` row for a given Investigation, reload-stably | `src/web/apiRoutes.ts` (route), `src/services/getBriefForReview.ts` (unchanged callee) | US-1 AC5, US-12, US-13 |
 | **Stale/Interrupted Run Detector** | Computes a run's `livenessState` at read time from persisted facts only — never a stored field | `src/services/getInvestigationWorkspace.ts` (helper) | US-4, US-6 |
 | **Stale Run Abandonment** | `abandonGenerationRun(investigationId, generationRunId)` (§1.6, new) — the human-initiated recovery path for a run `computeLivenessState` classifies `'stale-or-interrupted'`; finalizes it `'failed'` via the existing exactly-once `finalizeGenerationRun`, clearing §1.1's concurrency guard so retry becomes possible; never invoked automatically | `src/web/apiRoutes.ts` (new route), small orchestration function beside the Generation Run Connector | US-4, US-6, US-8 |
@@ -2111,7 +2111,7 @@ Steps (each numbered step maps directly to one US-3 acceptance criterion):
  ("a generation run is already in progress for this investigation") matches what the client's own
  prior read told it, where a `409` would imply a write conflict the client had no way to anticipate.
  `reason` for this specific ineligibility cause states it explicitly, distinguishable by message
- from the `'blocked'` 422 and the "no new source snapshot" 422 (§4.2's ineligible-outcome paragraph,
+ from the `'blocked'` 422 and the `"no new source snapshot has been added since the current Brief version"` 422 (§4.2's ineligible-outcome paragraph,
  below). **`409` is reserved for the genuinely narrow race** at step 5a: two requests that BOTH pass
  step 2's read before either request's `INSERT` commits — the only window in which two concurrent
  `POST`s can still collide at the database's own partial unique index despite both having read
@@ -2125,8 +2125,7 @@ Steps (each numbered step maps directly to one US-3 acceptance criterion):
  race this section describes.
 
  Ineligible → `{ outcome: 'ineligible', currentStatus, reason }` (422); when the ineligible cause
- is specifically a `'brief-generated'` Investigation with no new source snapshot, `reason` states that
- explicitly (e.g. `"no new source snapshot has been added since the current Brief version"`) so
+ is specifically a `'brief-generated'` Investigation with no new source snapshot, `reason` is exactly `"no new source snapshot has been added since the current Brief version"` so
  the connector's 422 is distinguishable from a `'blocked'` 422 by message, not only by
  `currentStatus`. This mirrors, at the connector boundary, the same `ALLOWED_PRIOR_STATUSES`
  reasoning `transitionInvestigationStatus.ts` already encodes for status transitions — it does not
@@ -2443,12 +2442,12 @@ function getInvestigationWorkspace(investigationId: string): Promise<Investigati
 
 Assembly, read-only, no writes:
 
-1. `getInvestigation(investigationId)` gains an explicit absence contract: it returns `null`
- only when its query succeeds with no Investigation row (alternatively, a typed
- `InvestigationNotFoundError` may carry that one condition). `getInvestigationWorkspace`
- translates only that explicit absence signal to its own `null` result. It does not use a broad
- `catch`: database, connection, mapping, and unexpected errors propagate unchanged so the route
- returns its 500/API failure and the workspace renders §3.2's error state rather than a false
+1. `getInvestigation(investigationId)` exports and throws
+ `InvestigationNotFoundError` only when its Investigation query succeeds with zero rows. Its
+ existing parameter and successful return shape remain unchanged.
+ `getInvestigationWorkspace` catches only `InvestigationNotFoundError` and returns `null`.
+ Database, connection, mapping, and unexpected errors propagate unchanged so the route returns its
+ 500/API failure and the workspace renders §3.2's error state rather than a false
  "Investigation not found." On success → `investigation`, `sourceArtifacts`.
 2. New SQL read: all `generation_run` rows for `investigationId`, each joined to its
  `generation_step` rows ordered by `step_index` (with `step_data`'s `validationRecords`/
@@ -2860,10 +2859,10 @@ function hasUnattemptedCorrectionSnapshot(investigationId: string): Promise<bool
 
 **Product boundary.** `content-retrieved` is a fetch-layer fact: the source resolved to non-empty
 material. It is not a claim that the material contains usable evidence. A `'brief-generated'`
-Investigation may start a correction attempt when at least one operator-submitted resolved-content
-snapshot is new relative to both (a) the current Brief's producing run and (b) earlier correction
-attempts against that same current `BriefVersion`. Extraction inside the run is the first place
-that can truthfully decide evidentiary usability.
+Investigation may start a correction attempt only when an operator-submitted resolved-content hash
+is new relative to the current BriefVersion's full ancestry: every run that produced the current
+version or an ancestor, plus every correction attempt targeting any version in that ancestry.
+Extraction inside the run is the first place that can truthfully decide evidentiary usability.
 
 **Exact persisted read-set ledger.** Migration `012_generation_run_consumed_source.sql` records
 which source rows an extraction pass actually read:
@@ -2939,12 +2938,24 @@ fully backfills the historical content snapshots that actually were stored. Cons
 - canonical URL remains useful provenance/matching context but is never, by itself, a permanent
   veto on changed content.
 
-**Eligibility query.** Resolve the current `BriefVersion` and its producing
-`generation_run_id`. Excluded snapshots are hashes ledgered by that producing run plus hashes
-ledgered by any correction attempt whose
-`generation_run_consumed_source.correction_target_brief_version_id` equals that current version:
+**Eligibility query.** Resolve the current `BriefVersion`, then traverse its complete ancestry
+through `brief_version.supersedes_version_id`, including the current version. Excluded snapshots
+are hashes ledgered by (a) every generation run that produced a version in that lineage and (b)
+every correction attempt whose `correction_target_brief_version_id` is any version in that
+lineage:
 
 ```sql
+WITH RECURSIVE current_lineage AS (
+ SELECT id, supersedes_version_id, generation_run_id
+ FROM brief_version
+ WHERE id = $2
+
+ UNION ALL
+
+ SELECT prior.id, prior.supersedes_version_id, prior.generation_run_id
+ FROM brief_version prior
+ JOIN current_lineage newer ON newer.supersedes_version_id = prior.id
+)
 SELECT EXISTS (
  SELECT 1
  FROM source_artifact candidate
@@ -2955,21 +2966,28 @@ SELECT EXISTS (
    AND NOT EXISTS (
      SELECT 1
      FROM generation_run_consumed_source grcs
-     JOIN source_artifact prior ON prior.id = grcs.source_artifact_id
-     WHERE prior.resolved_content_hash = candidate.resolved_content_hash
+     JOIN source_artifact prior_source ON prior_source.id = grcs.source_artifact_id
+     WHERE prior_source.resolved_content_hash = candidate.resolved_content_hash
        AND (
-         grcs.generation_run_id = $2
-         OR grcs.correction_target_brief_version_id = $3
+         grcs.generation_run_id IN (
+           SELECT generation_run_id FROM current_lineage
+         )
+         OR grcs.correction_target_brief_version_id IN (
+           SELECT id FROM current_lineage
+         )
        )
    )
 ) AS eligible;
 ```
 
-Parameters are Investigation ID, current Brief producing run ID, and current BriefVersion ID.
-There is no timestamp boundary and no `canonical_url` anti-join. A row that is unreachable,
-unresolved, empty, hash-identical to consumed material, or hash-identical to a completed
-no-evidence attempt cannot enable correction. A changed snapshot at the same URL can enable an
-attempt; Extraction determines whether that change is evidentiary.
+Parameters are Investigation ID and current BriefVersion ID. There is no timestamp boundary and no
+`canonical_url` anti-join. The recursive lineage is necessary because a correction run may read
+only its new candidate snapshot while its resulting Brief inherits the prior version's
+`startSnapshot`; looking only at the current producing run would forget ancestor inputs. A row
+that is unreachable, unresolved, empty, hash-identical anywhere in the lineage ledger, or
+hash-identical to a completed no-evidence attempt against any lineage version cannot enable
+correction. Changed content at the same URL can enable an attempt; Extraction determines whether
+that change is evidentiary.
 
 `getInvestigationWorkspace` exposes the result as
 `newSourceSnapshotSinceCurrentBriefVersion`. The Generation Eligibility Rule uses that one
@@ -2993,6 +3011,11 @@ timestamps.
 8. Primary and Landscape extraction read sets are both ledgered; a source neither pass read is not.
 9. A provider/truncation/schema/infrastructure failure retains its real reason and does not get
    mislabeled `no-new-usable-evidence`.
+10. Correction-of-a-correction lineage regression: v1's producing run consumes snapshot A; a
+    correction using distinct B creates v2; a correction using distinct C creates v3; while v3 is
+    current, resubmitting A or B with the same hash remains ineligible. This proves traversal beyond
+    the current producing run and its immediate target.
+
 ### 4.9 Stale/Interrupted Run Detection (US-4)
 
 **Mechanism**: computed at `getInvestigationWorkspace` read time (§4.4 step 2), never a stored
@@ -3435,10 +3458,11 @@ No new third-party dependency is introduced. This sprint extends the existing st
  The legacy `POST /investigations` form route's own call site (`src/web/server.ts:93`) is
  untouched.
 - **`getInvestigation`** (`src/services/getInvestigation.ts`) — read by
- `getInvestigationWorkspace`, the Generation Run Connector's eligibility check, and (NEW this
- revision, per the Add-Source-route ruling) `POST /api/investigations`'s extended handler — once before mutation, to
- branch on an existing Investigation's real current status, and once after, to respond with real,
- read-back status rather than an assumed one (§1.4, §3.1b); unmodified signature.
+ `getInvestigationWorkspace`, the Generation Run Connector, and the extended
+ `POST /api/investigations` handler. C2-S2 owns one explicit behavior correction: export
+ `InvestigationNotFoundError` and throw it only when the Investigation query returns zero rows.
+ The parameter and successful return shape stay unchanged; callers that need a 404 catch only this
+ type, while database/query failures remain distinguishable and propagate.
 - **`submitSources`** (existing) — reused unmodified, no new call, no new parameter, no new
  behavior. **`resolveInvestigationSources`** (existing, modified per §1.4's C1 fix — skips
  already-resolved artifacts, reusing their persisted status for the `allUnreachable` aggregate
