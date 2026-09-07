@@ -19,14 +19,20 @@ locked doc's own Acceptance Criteria section (one slice per major
 rule/component, or a single slice if splitting would be artificial,
 orchestrator's judgment stated before work starts) → Frank binding
 forge-gate (same substitution: the locked doc stands in for
-`NORTH-STAR.md`) → human merge approval. `PROGRESS.md` and `GATE-LOG.md`
-live alongside the tool doc (`docs/tooling/{tool-name}-PROGRESS.md`,
-`docs/tooling/{tool-name}-GATE-LOG.md`) rather than in a sprint directory.
-Same binding-gate discipline as the full sequence throughout, no manual
-override at either Frank gate. This contract is authoritative here; the
-local `/spec-start --lite` and `/forge-start --lite` commands are one
-implementation of it, not its source. Live precedent:
-`docs/tooling/spec-doc-checker.md` (locked via this sequence).
+`NORTH-STAR.md`) → human merge approval. `PROGRESS.md` lives alongside the
+tool doc (`docs/tooling/{tool-name}-PROGRESS.md`) rather than in a sprint
+directory. **No `GATE-LOG.md` of any kind, lite mode or full sprint** —
+standing protocol, confirmed 2026-09-07: gate history (attempts, verdicts,
+findings) belongs in the gating commit message and/or PR description, per
+`development-workflow.md`'s "gate record names the exact commit gated"
+convention, never in a standalone tracked file. This corrects this
+document's own prior text, which still named a `{tool-name}-GATE-LOG.md`
+after that protocol was set. Same binding-gate discipline as the full
+sequence throughout, no manual override at either Frank gate. This
+contract is authoritative here; the local `/spec-start --lite` and
+`/forge-start --lite` commands are one implementation of it, not its
+source. Live precedent: `docs/tooling/spec-doc-checker.md` (locked via
+this sequence).
 
 `PROGRESS.md` (or the lite-mode path above) is updated slice-by-slice, not
 at the end — it is ground truth for build state, read first on session
