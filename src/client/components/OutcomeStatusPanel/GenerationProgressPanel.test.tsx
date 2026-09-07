@@ -87,11 +87,11 @@ describe('GenerationProgressPanel', () => {
     expect(screen.getByText('a real limitation')).toBeInTheDocument();
   });
 
-  it('renders neither "Refresh status" nor "Abandon and retry" and shows the fixed honest-gap sentence when livenessState is active', () => {
+  it('renders neither "Refresh status" nor "Abandon and retry" and shows the no-progress-yet notice when livenessState is active and steps is empty', () => {
     render(
       <GenerationProgressPanel
         investigationId="inv-1"
-        generationRun={buildRun({ livenessState: 'active' })}
+        generationRun={buildRun({ livenessState: 'active', steps: [] })}
         onWorkspaceChanged={vi.fn()}
       />,
     );
@@ -99,8 +99,38 @@ describe('GenerationProgressPanel', () => {
     expect(screen.queryByRole('button', { name: 'Refresh status' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Abandon and retry' })).not.toBeInTheDocument();
     expect(
+      screen.getByText(/No progress recorded yet\. If a previous attempt on this Investigation/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText('Generation is running. Persisted progress will appear here as each step completes.'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('renders the "Generation is running" message (not the no-progress-yet notice) when livenessState is active and one or more steps are present', () => {
+    render(
+      <GenerationProgressPanel
+        investigationId="inv-1"
+        generationRun={buildRun({
+          livenessState: 'active',
+          steps: [
+            {
+              component: 'Extraction',
+              startedAt: '2026-01-01T00:00:00.000Z',
+              completedAt: '2026-01-01T00:00:01.000Z',
+              outcome: 'succeeded',
+            },
+          ],
+        })}
+        onWorkspaceChanged={vi.fn()}
+      />,
+    );
+
+    expect(
       screen.getByText('Generation is running. Persisted progress will appear here as each step completes.'),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/No progress recorded yet\. If a previous attempt on this Investigation/),
+    ).not.toBeInTheDocument();
   });
 
   it('renders the distinct stale/interrupted disclosure with both "Refresh status" and "Abandon and retry" controls when livenessState is stale-or-interrupted, and "Refresh status" triggers a re-fetch via onWorkspaceChanged', async () => {

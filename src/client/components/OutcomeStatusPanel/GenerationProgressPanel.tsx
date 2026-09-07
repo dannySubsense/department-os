@@ -100,6 +100,13 @@ export function GenerationProgressPanel({
             </p>
           ) : null}
         </div>
+      ) : generationRun.steps.length === 0 ? (
+        <p className="generation-progress-panel__gap-notice">
+          No progress recorded yet. If a previous attempt on this Investigation was just
+          abandoned, this run may need to wait briefly for it to fully release before starting —
+          that can take up to a minute. We can't tell from here which is happening, so this isn't
+          necessarily a problem yet.
+        </p>
       ) : (
         <p className="generation-progress-panel__gap-notice">
           Generation is running. Persisted progress will appear here as each step completes.
