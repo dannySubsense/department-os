@@ -1,6 +1,8 @@
 # Architecture: Product Surface — Checkpoint 2
 
-**Status**: Draft (pending Frank spec-gate + human approval)
+**Status**: Approved — Danny's human approval given 2026-09-06, following Frank spec-gate PASS
+(narrow, on the final round of external-review findings) and codex-reviewer's independent sign-off;
+recorded 2026-09-07.
 **Date**: 2026-08-22, revised 2026-08-23 to resolve external-review (Codex + Sol) findings 1-8 and
 11 against `01-REQUIREMENTS.md`'s 2026-08-23 tightened US-1 AC5, US-4/US-6 stale-run AC, and US-13
 AC2 — see §1.3-§1.5 for the newly-reconciled assumptions this revision corrects, and §3-§5 for the

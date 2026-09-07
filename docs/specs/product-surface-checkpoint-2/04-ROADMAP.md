@@ -1,6 +1,8 @@
 # Roadmap: Product Surface — Checkpoint 2
 
-**Status**: Draft (pending Frank spec-gate + human approval).
+**Status**: Approved — Danny's human approval given 2026-09-06, following Frank spec-gate PASS
+(narrow, on the final round of external-review findings) and codex-reviewer's independent sign-off;
+recorded 2026-09-07.
 
 This roadmap states the following binding design decisions directly, as the current, final state:
 

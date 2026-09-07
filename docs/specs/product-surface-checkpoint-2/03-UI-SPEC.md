@@ -1,6 +1,8 @@
 # UI Spec: Product Surface — Checkpoint 2
 
-**Status**: Draft (pending Frank spec-gate + human approval).
+**Status**: Approved — Danny's human approval given 2026-09-06, following Frank spec-gate PASS
+(narrow, on the final round of external-review findings) and codex-reviewer's independent sign-off;
+recorded 2026-09-07.
 
 This spec covers the two-route SPA design (§4.9 `livenessState`, §3.1a/§5.1 version-numbered Brief
 route, §1.4/§3.1b/§5.3 real `AddSourceInline` calling the extended `POST /api/investigations`

@@ -1,13 +1,15 @@
 # Requirements: Product Surface — Checkpoint 2
 
-**Status**: Draft (pending Frank spec-gate + human approval) — returned for rework after Frank
-attempt-1 PASS by Danny's material scope ruling, 2026-08-22 (see "Resolved Scope Corrections"
-below). Further revised 2026-08-23 to address external-review (Codex + Sol) findings 3, 5, 6, 8 —
-see inline AC changes in US-1, US-4, US-10, US-12, US-13 and the revised Out of Scope line below.
-Further revised 2026-08-24 to remove asserted polling-interval/stale-threshold numeric constants
-per Danny's ruling that timing values are an engineering decision, not a product decision — see the
-revised US-4 ACs and Non-Functional Requirements below.
-**Date**: 2026-08-24
+**Status**: Approved — Danny's human approval given 2026-09-06, following Frank spec-gate PASS
+(narrow, on the final round of external-review findings) and codex-reviewer's independent sign-off;
+recorded 2026-09-07. Prior history: returned for rework after Frank attempt-1 PASS by Danny's
+material scope ruling, 2026-08-22 (see "Resolved Scope Corrections" below). Further revised
+2026-08-23 to address external-review (Codex + Sol) findings 3, 5, 6, 8 — see inline AC changes in
+US-1, US-4, US-10, US-12, US-13 and the revised Out of Scope line below. Further revised 2026-08-24
+to remove asserted polling-interval/stale-threshold numeric constants per Danny's ruling that
+timing values are an engineering decision, not a product decision — see the revised US-4 ACs and
+Non-Functional Requirements below.
+**Date**: 2026-08-24 (status updated 2026-09-07)
 
 ## Summary
 

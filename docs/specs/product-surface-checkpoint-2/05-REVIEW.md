@@ -231,10 +231,12 @@ the current specification, not a history of how it got here.
   exact commit gated"), that history belongs in this branch's own eventual gating commit message or
   PR description when this recovery effort is committed — not left implicit in DDR-0002's prose
   alone.
-- **Human confirmation.** Danny has not yet confirmed, in this session, that the rulings restated
-  above faithfully state his actual decisions. Due at human approval.
-- **Fresh gate required.** An independent reviewer (Sol, PR #8 comment 5553009192) reviewed this
-  specification and BLOCKED on exactly eight findings — **three HIGH, five MEDIUM**:
+- **Human confirmation — RESOLVED.** Danny confirmed 2026-09-06 that the rulings restated above
+  faithfully state his actual decisions, and gave human approval; recorded 2026-09-07 (see
+  `01-REQUIREMENTS.md`'s Status line).
+- **Sol's cold review — RESOLVED, independently re-verified.** An independent reviewer (Sol, PR #8
+  comment 5553009192) reviewed this specification and BLOCKED on exactly eight findings — **three
+  HIGH, five MEDIUM**:
   - SOL-HIGH-1 — the heartbeat/abandon race (a non-collision-free heartbeat CAS token could both
     false-positive and false-negative the abandon flow's authorization check).
   - SOL-HIGH-2 — unfenced writes (every pre-Phase-4 write path — evidence/claim writes, Landscape
@@ -280,8 +282,15 @@ the current specification, not a history of how it got here.
     landscape-research-incorporated source had no ledger row and could be resubmitted as new. See
     the US-13 eligibility entry above and `02-ARCHITECTURE.md` §4.8's SELF-4 correction.
 
-  A new Frank spec-gate pass against the current `01`-`05` text is required before this checkpoint
-  is considered approved.
+  Independently re-verified this turn by direct grep against the live `01`-`05` text (not the
+  self-report above): each of the 8 SOL-tagged fixes carries specific, substantive mechanism detail
+  (e.g. SOL-HIGH-1's `heartbeat_revision` monotonic CAS column, SOL-HIGH-2's outcome-aware
+  `assertFenceOwnership` guard, SOL-MEDIUM-1's migration `013` canonical-identity columns), not
+  prose-only claims. Frank spec-gate rounds ran against the successive correction commits
+  (`891d789`, `421d0d3`, `3d7e7da`), and codex-reviewer's separate frozen-scope review (`14e698f4`)
+  and its narrow cold-Frank-verified fix (`93e1dc1`) are both merged into `main` as of PR #12
+  (578da5c) — approved by Danny for merge. **Status: Approved**, per `01-REQUIREMENTS.md`'s Status
+  line.
 - **Real-run measurement.** `POLL_INTERVAL_MS`/`STALE_THRESHOLD_MS` remain undetermined until Forge
   executes `02-ARCHITECTURE.md` §4.9's measurement methodology during C2-S3 — expected, in-scope
   Forge work, not a spec defect.
