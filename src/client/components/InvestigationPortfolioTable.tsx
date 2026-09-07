@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import type { InvestigationSummary } from '../../types/readModels.js';
 import type { InvestigationStatus } from '../../types/domain.js';
 import {
@@ -74,15 +75,12 @@ export function InvestigationPortfolioTable({
                   <div className="data-value investigation-portfolio-table__id">
                     {shortenId(inv.id)}
                   </div>
-                  {inv.status === 'brief-generated' ? (
-                    <p className="investigation-portfolio-table__legacy-note">
-                      Brief ready — review workspace not yet available.
-                    </p>
-                  ) : (
-                    <a href={`/investigations/${inv.id}`} className="legacy-view-button">
-                      Open current view
-                    </a>
-                  )}
+                  <Link
+                    to={`/departments/problem-department/investigations/${inv.id}`}
+                    className="legacy-view-button"
+                  >
+                    Open current view
+                  </Link>
                 </td>
                 <td className="data-value">{humanizeStatus(inv.status)}</td>
                 <td className="data-value">{formatDateTime(inv.createdAt)}</td>

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { fetchMissionControl } from '../api.js';
 import { ProblemDepartmentCard } from '../components/ProblemDepartmentCard.js';
 import {
@@ -201,15 +202,12 @@ function RecentInvestigationsList({ investigations }: { investigations: Investig
                 {formatInvestigationLabel(inv.createdAt)}
               </div>
               <div className="data-value recent-list__label-secondary">{shortenId(inv.id)}</div>
-              {inv.status === 'brief-generated' ? (
-                <p className="investigation-portfolio-table__legacy-note">
-                  Brief ready — review workspace not yet available.
-                </p>
-              ) : (
-                <a href={`/investigations/${inv.id}`} className="legacy-view-button">
-                  Open current view
-                </a>
-              )}{' '}
+              <Link
+                to={`/departments/problem-department/investigations/${inv.id}`}
+                className="legacy-view-button"
+              >
+                Open current view
+              </Link>{' '}
               <span className="data-value">{humanizeStatus(inv.status)}</span>
             </li>
           ))}

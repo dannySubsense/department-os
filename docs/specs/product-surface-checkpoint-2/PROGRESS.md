@@ -12,7 +12,25 @@
       QC PASS, all 7 review points independently verified against live diff/test run, not prior
       reports. Advisory: Test 1 needs live network egress to example.com; will fail in an
       egress-isolated CI runner — flag if that's ever the case.
-- [ ] C2-S2: Investigation Workspace Scaffold — PENDING
+- [x] C2-S2: Investigation Workspace Scaffold — COMPLETE (2026-09-07). Migrations 009/013,
+      getInvestigationWorkspace/recheckSourceArtifact/sourceCanonicalization services,
+      InvestigationWorkspaceScreen + SourceListPanel/BlockedSourcesPanel/AddSourceInline
+      components. 2 real defects found and fixed during QC cycle: BlockedSourcesPanel wasn't
+      rendering `reachable-no-content` sources (spec required it, minus the re-check control);
+      recheckSourceArtifact ran status-recovery on the CAS loser path (Frank's binding verdict:
+      gated to winner-only per §1.4a). CAS-race test rewritten with a genuine synchronization
+      barrier (was an unsynchronized Promise.all). 386/391 tests passing (4 confirmed
+      pre-existing failures in extractClaimsAndEvidence.test.ts/generateBriefVersion.test.ts,
+      unrelated to this slice, independently reproduced in an isolated worktree at baseline).
+      QC PASS, all 7 review points independently verified. Non-blocking note: CAS guard uses
+      `IS NOT DISTINCT FROM` vs spec's literal `=` — safer, NULL-safe deviation.
+      Backend verified end-to-end via real HTTP against real Postgres: content-retrieved and
+      unreachable/blocked paths both confirmed with real persisted data; client bundle builds
+      clean and the workspace route serves the correct SPA shell. **No headless-browser tool
+      available in this environment — could not capture an actual rendered screenshot/click
+      demonstration.** Backend+build verification is real end-to-end evidence but is not the
+      full "real clicks, rendered screen" claim the roadmap's Browser Demonstration technically
+      asks for; flagging honestly rather than overclaiming.
 - [ ] C2-S3: Generation Run Connector — PENDING
 - [ ] C2-S4: Brief Review — PENDING
 - [ ] C2-S5: Decision Recording and History — PENDING
@@ -21,7 +39,7 @@
       transcribed into this file's `## Forge Gate` section.
 
 ## Current
-Slice: C2-S2
+Slice: C2-S3
 Step: not yet started
 Last updated: 2026-09-07
 

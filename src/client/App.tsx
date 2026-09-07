@@ -2,6 +2,7 @@ import { Routes, Route } from 'react-router-dom';
 import { PersistentNav } from './components/PersistentNav.js';
 import { MissionControlScreen } from './screens/MissionControlScreen.js';
 import { ProblemDepartmentScreen } from './screens/ProblemDepartmentScreen.js';
+import { InvestigationWorkspaceScreen } from './screens/InvestigationWorkspaceScreen.js';
 
 /** Client-side router — exactly two route paths this checkpoint (§6, §0a), no catch-all, no
  *  `/departments` catalog route. `PersistentNav` is mounted once here, as a sibling to
@@ -16,6 +17,10 @@ export function App() {
           <Route
             path="/departments/problem-department"
             element={<ProblemDepartmentScreen />}
+          />
+          <Route
+            path="/departments/problem-department/investigations/:investigationId"
+            element={<InvestigationWorkspaceScreen />}
           />
         </Routes>
       </main>

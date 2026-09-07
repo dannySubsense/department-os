@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { fetchProblemDepartmentOverview } from '../api.js';
 import { InvestigationPortfolioTable } from '../components/InvestigationPortfolioTable.js';
 import { InvestigationPortfolioEmptyState } from '../components/InvestigationPortfolioEmptyState.js';
@@ -17,18 +18,9 @@ interface FetchState {
  *  state), Sources/Evidence counts, Runs/Activity, Start Investigation form
  *  (03-UI-SPEC.md Screen: Problem Department Overview). */
 export function ProblemDepartmentScreen() {
+  const navigate = useNavigate();
   const [state, setState] = useState<FetchState>({ data: null, error: null });
   const [statusFilter, setStatusFilter] = useState<InvestigationStatus | 'all'>('all');
-
-  const load = useCallback(() => {
-    fetchProblemDepartmentOverview()
-      .then((data) => {
-        setState({ data, error: null });
-      })
-      .catch((err: Error) => {
-        setState({ data: null, error: err.message });
-      });
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -67,10 +59,10 @@ export function ProblemDepartmentScreen() {
 
   const overview = state.data;
 
-  // On successful submission, re-fetch GET /api/problem-department once — a one-shot refetch
-  // triggered by the submit event, never a polling/interval loop (§8 Anti-Patterns).
-  function handleSubmitted() {
-    load();
+  // On successful submission, navigate into the new durable workspace URL (US-2 AC1) instead of
+  // re-fetching this same-page overview.
+  function handleSubmitted(investigationId: string) {
+    navigate(`/departments/problem-department/investigations/${investigationId}`);
   }
 
   return (

@@ -93,6 +93,8 @@ describe('008 legacy-path reconciliation (real quarantined-007 fixture required)
           '006_generation_run_provenance.sql',
           '007_problem_brief_and_versioning.sql',
           '008_reconcile_brief_versioning_constraints.sql',
+          '009_generation_run_investigation_in_progress_unique.sql',
+          '013_source_artifact_canonical_identity.sql',
         ]);
 
         // ---- Legacy path: 001 -> 006 for real, then the QUARANTINED 007's actual content (NOT
@@ -136,7 +138,11 @@ describe('008 legacy-path reconciliation (real quarantined-007 fixture required)
         // ---- Run the PRODUCTION migration runner. It must see 007 as already-applied (skip it)
         // and apply only 008 — through the real code path, not hand-applied SQL. ----
         const legacyApplied = await runMigrations(legacyDb);
-        expect(legacyApplied).toEqual(['008_reconcile_brief_versioning_constraints.sql']);
+        expect(legacyApplied).toEqual([
+          '008_reconcile_brief_versioning_constraints.sql',
+          '009_generation_run_investigation_in_progress_unique.sql',
+          '013_source_artifact_canonical_identity.sql',
+        ]);
 
         // ---- Mechanical, complete convergence check: every constraint row and every column row,
         // not a subset of names. A names-only comparison is exactly the class of check that

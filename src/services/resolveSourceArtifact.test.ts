@@ -1,9 +1,11 @@
 import { beforeEach, beforeAll, afterAll, describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { createServer } from 'node:http';
 import { pool } from '../db/pool.js';
 import {
   resolveSourceArtifact,
+  computeSourceResolution,
   __allowPrivateNetworkHostForTests,
   __resetPrivateNetworkTestAllowlist,
 } from './resolveSourceArtifact.js';
@@ -39,6 +41,18 @@ beforeAll(async () => {
     if (req.url === '/not-found') {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('Not Found');
+      return;
+    }
+    if (req.url === '/redirect-source') {
+      res.writeHead(302, { Location: `${fixtureBaseUrl}/redirect-target?utm_source=test` });
+      res.end();
+      return;
+    }
+    // Location carries a query string through to the actual request (`/redirect-target?utm_source=test`),
+    // so req.url is never exactly '/redirect-target' here — match the path prefix, not full equality.
+    if (req.url === '/redirect-target' || req.url?.startsWith('/redirect-target?')) {
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('final destination content, well over any reasonable length threshold');
       return;
     }
     res.writeHead(500);
@@ -176,5 +190,59 @@ describe('resolveSourceArtifact', () => {
     expect(resolution.status).toBe('unreachable');
     expect(resolution.failureReason).toContain('screenshot');
     expect(resolution.failureReason).toMatch(/unsupported/i);
+  });
+
+  it('§4.8: a url source resolving through a redirect persists canonical_url derived from the final, normalized post-redirect URL, and resolved_content_hash as a real SHA-256 digest', async () => {
+    const id = await insertArtifact('url', `${fixtureBaseUrl}/redirect-source`);
+    const resolution = await resolveSourceArtifact(id);
+    expect(resolution.status).toBe('content-retrieved');
+
+    const row = await pool.query(
+      'SELECT canonical_url, resolved_content_hash, resolved_content FROM source_artifact WHERE id = $1',
+      [id],
+    );
+    // Tracking param stripped, normalized to the FINAL destination — never the originally
+    // submitted /redirect-source path.
+    expect(row.rows[0].canonical_url).toBe(`${fixtureBaseUrl}/redirect-target`);
+    expect(row.rows[0].resolved_content_hash).toBe(
+      createHash('sha256').update(row.rows[0].resolved_content, 'utf8').digest('hex'),
+    );
+  });
+
+  it('§4.8: a text source never gets a canonical_url, but does get a real resolved_content_hash when content-retrieved', async () => {
+    const id = await insertArtifact('text', 'some pasted text');
+    await resolveSourceArtifact(id);
+
+    const row = await pool.query(
+      'SELECT canonical_url, resolved_content_hash FROM source_artifact WHERE id = $1',
+      [id],
+    );
+    expect(row.rows[0].canonical_url).toBeNull();
+    expect(row.rows[0].resolved_content_hash).toBe(
+      createHash('sha256').update('some pasted text', 'utf8').digest('hex'),
+    );
+  });
+
+  it('§4.8: a non-content-retrieved outcome leaves both canonical_url and resolved_content_hash NULL', async () => {
+    const id = await insertArtifact('url', `${fixtureBaseUrl}/not-found`);
+    await resolveSourceArtifact(id);
+
+    const row = await pool.query(
+      'SELECT canonical_url, resolved_content_hash FROM source_artifact WHERE id = $1',
+      [id],
+    );
+    expect(row.rows[0].canonical_url).toBeNull();
+    expect(row.rows[0].resolved_content_hash).toBeNull();
+  });
+
+  it('§1.4b: blank/whitespace-only text does not resolve content-retrieved via computeSourceResolution called directly', async () => {
+    const computed = await computeSourceResolution({ id: 'unused', type: 'text', raw: '   ' });
+    expect(computed.resolution.status).toBe('reachable-no-content');
+    expect(computed.resolution.noContentReason).toBeTruthy();
+  });
+
+  it('§1.4b: non-blank text still resolves content-retrieved via computeSourceResolution (no regression to the ordinary case)', async () => {
+    const computed = await computeSourceResolution({ id: 'unused', type: 'text', raw: 'real content' });
+    expect(computed.resolution.status).toBe('content-retrieved');
   });
 });

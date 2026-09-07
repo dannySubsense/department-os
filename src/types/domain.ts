@@ -586,3 +586,48 @@ export interface BriefVersion {
   recommendation: Recommendation;
   personalPullNoteIds: string[]; // may be empty
 }
+
+// ---- Decision / ReconsiderationCondition (Product Surface Checkpoint 2, §3.4, §1.2 resolution
+// applied) — type declarations only in C2-S2, moved earlier from C2-S5 because this checkpoint's
+// own WorkspaceDecisionSummary (readModels.ts) references ReconsiderationConditionType. No
+// migration, no service logic, no route exists yet for these types — that remains C2-S5's scope. ----
+
+/** NEW union, first defined by this checkpoint — mirrors migration 010's
+ *  `reconsideration_condition.type` CHECK constraint exactly (C2-S5's own scope). */
+export type ReconsiderationConditionType =
+  | 'new-evidence'
+  | 'product-change'
+  | 'stronger-demand-signal'
+  | 'feasibility-shift'
+  | 'price-change'
+  | 'market-event'
+  | 'other';
+
+export interface ReconsiderationCondition {
+  id: string;
+  decisionId: string;
+  type: ReconsiderationConditionType;
+  otherTypeLabel?: string; // required when type === 'other'
+  description: string;
+}
+
+/** No actor/identity field (§1.2). Immutable once created — a revisit creates a new Decision, it
+ *  never edits an existing one. */
+export interface Decision {
+  id: string;
+  briefVersionId: string; // bound to the specific version reviewed — never reassigned on a later
+  // correction (US-10 AC1)
+  decision: RecommendationDecision; // 'Approve' | 'Reject' | 'Watch'
+  decidedAt: string;
+  rationale?: string;
+  reconsiderationConditionIds: string[]; // length >= 1 iff decision === 'Watch' (US-10 AC4)
+}
+
+// ---- AssignedValidityState (Product Surface Checkpoint 2, §3.6, US-12) — type-alias declaration
+// only in C2-S2, for the identical sequencing reason as above: this checkpoint's own
+// WorkspaceBriefSummary (readModels.ts) references it. Migration 011, status_event table, and
+// both real read queries remain C2-S4's own scope exactly as before. ----
+
+/** Answers "what validity state did Department OS assign to this item at time T" — never "was
+ *  this item objectively valid at time T." */
+export type AssignedValidityState = 'valid' | 'challenged' | 'invalidated';

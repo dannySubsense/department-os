@@ -37,6 +37,8 @@ describe('runMigrations', () => {
         '006_generation_run_provenance.sql',
         '007_problem_brief_and_versioning.sql',
         '008_reconcile_brief_versioning_constraints.sql',
+        '009_generation_run_investigation_in_progress_unique.sql',
+        '013_source_artifact_canonical_identity.sql',
       ]);
 
       const column = await db.query(
@@ -122,6 +124,8 @@ describe('runMigrations', () => {
         '006_generation_run_provenance.sql',
         '007_problem_brief_and_versioning.sql',
         '008_reconcile_brief_versioning_constraints.sql',
+        '009_generation_run_investigation_in_progress_unique.sql',
+        '013_source_artifact_canonical_identity.sql',
       ]);
 
       // The intended triggers must exist on THEIR OWN tables — scoped via tgrelid resolved
@@ -185,6 +189,8 @@ describe('runMigrations', () => {
         '006_generation_run_provenance.sql',
         '007_problem_brief_and_versioning.sql',
         '008_reconcile_brief_versioning_constraints.sql',
+        '009_generation_run_investigation_in_progress_unique.sql',
+        '013_source_artifact_canonical_identity.sql',
       ]);
 
       const after = await db.query(
@@ -276,6 +282,8 @@ describe('runMigrations', () => {
         '006_generation_run_provenance.sql',
         '007_problem_brief_and_versioning.sql',
         '008_reconcile_brief_versioning_constraints.sql',
+        '009_generation_run_investigation_in_progress_unique.sql',
+        '013_source_artifact_canonical_identity.sql',
       ]);
 
       // The orphaned row is untouched (never silently dropped) and the constraint exists, marked
@@ -460,10 +468,15 @@ describe('runMigrations', () => {
       );
       const investigationId = investigation.rows[0].id;
 
+      // Migration 009 (§1.1) enforces at most one 'in-progress' GenerationRun per Investigation.
+      // Each brief_version below needs its own distinct generation_run_id (UNIQUE(generation_run_id)
+      // on brief_version), but they must not collide on the *same* Investigation while both
+      // 'in-progress' — so every run seeded here is immediately marked 'completed' after creation,
+      // which the new partial unique index does not restrict.
       async function seedGenerationRun(): Promise<string> {
         const run = await db.query<{ id: string }>(
-          `INSERT INTO generation_run (investigation_id, outcome, started_at, runtime_identifier)
-           VALUES ($1, 'in-progress', now(), 'test') RETURNING id`,
+          `INSERT INTO generation_run (investigation_id, outcome, started_at, completed_at, runtime_identifier)
+           VALUES ($1, 'succeeded', now(), now(), 'test') RETURNING id`,
           [investigationId],
         );
         return run.rows[0].id;
