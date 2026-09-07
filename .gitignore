@@ -1,4 +1,4 @@
-CLAUDE.md
+/CLAUDE.local.md
 MACHINE-SETUP.md
 .env
 .env*.local
@@ -24,6 +24,11 @@ Thumbs.db
 
 # Build (additional, beyond the fixed set above)
 build/
+
+# Vite build output (src/client/vite.config.ts outDir) — hand-authored files in
+# src/web/public/ (submission-screen.js, submission-screen.test.ts, etc.) are NOT covered.
+src/web/public/index.html
+src/web/public/assets/
 
 # Python (reserved for future use)
 __pycache__/

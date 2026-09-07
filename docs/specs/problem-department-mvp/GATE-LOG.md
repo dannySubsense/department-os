@@ -17,11 +17,29 @@ Convergence judgment (attempt 3, final): **SHRINKING** — see attempt 3 row abo
 Orchestrator independent re-derivation: AGREES — orchestrator independently verified the `BriefElement` union and exclusionary language directly (not via Frank's account) before dispatching attempt 3, and independently fixed and re-verified the one post-gate residual before concurring with final PASS.
 
 ## Forge Gate
-Counter: 0/3
+
+### Slice 9 — Brief Assembler
+Counter: 1/3
 
 | Attempt | Date | Verdict | Findings Summary | Snapshot |
 |---|---|---|---|---|
+| 1 | 2026-08-16 | **PASS** | Frank briefed COLD (map only: the artifact's own claims, where things live, his standing authority — no orchestrator narrative, no findings list, no test-result reassurance). Pre-checks all pass: no new unsourced constants (every 007 enum/CHECK traces to `02-ARCHITECTURE.md` §3; the one added beyond the design's minimum, `UNIQUE (brief_version.generation_run_id)`, carries reasoned justification); INPUT checked at source — Frank diffed `src/db/fixtures/quarantined-007-*.sql` against the git blob himself rather than trusting the file's own claim; evidence independence held — he re-ran `tsc` and the suite against live `deptos_core` (270 passed / 1 skipped, no deadlock). Verified as genuinely implemented, not narrated: preflight snapshot + current-version equality (zero LLM spend on caller-contract violations); the three-term evidence universe INCLUDING `ExtractionResult.evidenceItems`; zero-foreign (not at-least-one-local) ownership with mixed-ownership tests across all five citing entities; investigation-row lock; two-observation race classification; transition return value checked inside the transaction with full rollback; exactly-once finalization with `loadStepLog` on the transaction client; failed corrections never disturbing a healthy `brief-generated`. Judged migration 008 the strongest piece — 'a filename-tracked runner plus a rewritten 007 is exactly a shared-well trap… and it wasn't fudged': the legacy path is exercised with the REAL quarantined bytes through the production runner, with a full `pg_constraint` + `information_schema.columns` diff, not a names-only check. Judged the one skipped test correct polarity — an alarm wired to fire on the dangerous condition (fixture missing) rather than on the safe one. Treated the uncommitted `SLICE-09-DESIGN.md` step-1b edit with explicit suspicion as doer-adjacent spec amendment before accepting it as behaviour-preserving. Layer 1 PASS, Layer 2 PASS (`docs/NORTHSTAR.md` read directly, `Status: Active`). One item flagged and actioned: `PROGRESS.md` still read 'BLOCKED / NOT STARTED'. | working tree on d02d3ff |
 
-Convergence judgment (attempt 3 only): SHRINKING | STATIC | THRASHING
-Deep-diagnosis evidence:
-Orchestrator independent re-derivation: AGREES | DISAGREES — [if disagrees, both readings recorded here before escalation]
+Convergence judgment (attempt 1): N/A — passed on first forge-gate attempt. Note this is NOT evidence
+the work was clean: the artifact reached Frank only after FOUR Composer design gates (design revisions
+4→8, each returning real blocking defects) and TWO QC rounds (round 1 FAIL with 5 defects, including a
+shared-well in which the dev database carried a quarantined attempt's schema and invalidated every
+green result before the rebuild). The forge gate passed first time because the defects had already been
+found upstream, not because there were none.
+
+Orchestrator independent re-derivation: AGREES — Ledger independently verified before dispatching Frank:
+the quarantined-007 fixture is the genuine stale shape (7 DEFERRABLE, 12 TEXT[], 0 UUID[], matching the
+drift measured on the live DB before rebuild); the rebuilt schema matches the migration set (0 missing
+constraints, `_uuid` x10, 92 constraints, only migration 005's legitimate deferrable pair remaining);
+and the legacy-reconciliation test is mutation-verified — inverting a single guard in 008 so the
+deferrable-FK fix never fires makes it FAIL, restoring makes it PASS.
+
+Standing caveat recorded at close: one proof can no longer be completed. Whether the quarantined 007
+file is byte-identical to what was ACTUALLY applied to `deptos_core` is now unfalsifiable — the database
+was replayed without a prior `pg_dump -s`. Convergence is proven FROM THE QUARANTINED FILE; the two main
+drift dimensions (column types, missing constraints) were captured before the drop, but not a full dump.
