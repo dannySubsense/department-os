@@ -2,6 +2,7 @@ import { beforeEach, afterAll, describe, expect, it } from 'vitest';
 import { pool } from '../db/pool.js';
 import { submitSources } from './submitSources.js';
 import { extractClaimsAndEvidence } from './extractClaimsAndEvidence.js';
+import { createGenerationRun } from './provenanceRecorder.js';
 
 /** Real-LLM-call integration tests (DDR-0001: Claude Agent SDK / direct Anthropic API, forced
  *  tool-use). These exercise the actual extraction/clustering/labeling judgment the model makes —
@@ -24,9 +25,17 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await pool.query(
-    'TRUNCATE claim_version_evidence, evidence_item, claim_version, claim, source_artifact, submission, investigation CASCADE',
+    'TRUNCATE claim_version_evidence, evidence_item, claim_version, claim, generation_step, generation_run, source_artifact, submission, investigation CASCADE',
   );
 });
+
+/** C2-S3: `extractClaimsAndEvidence` now requires a real GenerationRun's id + fenceToken (fencing
+ *  write-guard, §1.6). Each call site needs its own real run — `assertFenceOwnership` checks the
+ *  run's own outcome/fence_token, so a shared/stale run would spuriously fence out a later call. */
+async function seedGenerationRun(investigationId: string): Promise<{ id: string; fenceToken: number }> {
+  const run = await createGenerationRun({ investigationId, runtimeIdentifier: 'test-runtime' });
+  return { id: run.id, fenceToken: run.fenceToken };
+}
 
 async function seedResolvedTextSources(
   contents: string[],
@@ -57,7 +66,8 @@ describe('extractClaimsAndEvidence (real LLM calls)', () => {
           'button is hidden behind several nested menus and it is frustrating every time."',
       ]);
 
-      const result = await extractClaimsAndEvidence(investigationId);
+      const run = await seedGenerationRun(investigationId);
+      const result = await extractClaimsAndEvidence(investigationId, run.id, run.fenceToken);
 
       expect(result.generationFailed).toBe(false);
       expect(result.claimVersions.length).toBeGreaterThan(0);
@@ -82,7 +92,8 @@ describe('extractClaimsAndEvidence (real LLM calls)', () => {
         'Support log: "Our onboarding flow takes new users about 45 minutes to complete, which is ' +
           'far too long and causes many users to abandon partway through."',
       ]);
-      const first = await extractClaimsAndEvidence(investigationId);
+      const firstRun = await seedGenerationRun(investigationId);
+      const first = await extractClaimsAndEvidence(investigationId, firstRun.id, firstRun.fenceToken);
       expect(first.generationFailed).toBe(false);
       expect(first.claimVersions.length).toBeGreaterThan(0);
       const originalClaimId = first.claimVersions[0].claimId;
@@ -103,7 +114,8 @@ describe('extractClaimsAndEvidence (real LLM calls)', () => {
         [correctionSubmission.sourceArtifactIds[0], correctionText],
       );
 
-      const second = await extractClaimsAndEvidence(investigationId);
+      const secondRun = await seedGenerationRun(investigationId);
+      const second = await extractClaimsAndEvidence(investigationId, secondRun.id, secondRun.fenceToken);
       expect(second.generationFailed).toBe(false);
 
       const priorRow = await pool.query('SELECT text, version_number FROM claim_version WHERE id = $1', [
@@ -134,7 +146,8 @@ describe('extractClaimsAndEvidence (real LLM calls)', () => {
           'people, in various ways, at various times.',
       ]);
 
-      const result = await extractClaimsAndEvidence(investigationId);
+      const run = await seedGenerationRun(investigationId);
+      const result = await extractClaimsAndEvidence(investigationId, run.id, run.fenceToken);
 
       expect(result.problemStatementCandidates).toHaveLength(0);
       expect(result.generationFailed).toBe(true);

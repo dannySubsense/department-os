@@ -2,6 +2,7 @@ import type { PoolClient } from 'pg';
 import { pool } from '../db/pool.js';
 import { getInvestigation } from './getInvestigation.js';
 import { callForcedTool, LlmValidationError } from './llmClient.js';
+import { assertFenceOwnership } from './provenanceRecorder.js';
 import type {
   ClaimVersion,
   ClaimVersionEvidenceRef,
@@ -32,6 +33,21 @@ let f2RaceDelayForTests: ((client: PoolClient) => Promise<void>) | null = null;
 
 export function __setF2RaceDelayForTests(delay: ((client: PoolClient) => Promise<void>) | null): void {
   f2RaceDelayForTests = delay;
+}
+
+/** Test-only race-window widener for the abandon-vs-in-flight-extraction regression test. Distinct
+ *  from `f2RaceDelayForTests` above: that hook fires right before the claim_version INSERT (after
+ *  the fence check already passed) and exists to force a `UNIQUE(claim_id, version_number)`
+ *  collision between two legitimately fenced calls. This hook fires immediately before
+ *  `assertFenceOwnership`'s own `SELECT ... FOR UPDATE` — i.e. before this call takes its row lock
+ *  on the `generation_run` row — so a test can pause an in-flight call here, let a concurrent
+ *  "abandon" mutation land on the row (which would otherwise block on that row lock until this
+ *  transaction commits), and then let this call resume into a fence check that now correctly
+ *  observes the abandonment. Defaults to a no-op in production. */
+let fenceCheckRaceDelayForTests: ((client: PoolClient) => Promise<void>) | null = null;
+
+export function __setFenceCheckRaceDelayForTests(delay: ((client: PoolClient) => Promise<void>) | null): void {
+  fenceCheckRaceDelayForTests = delay;
 }
 
 const EVIDENCE_LABELS: EvidenceLabel[] = [
@@ -77,16 +93,53 @@ interface RawExtraction {
   problemStatements: RawProblemStatement[];
 }
 
+/** C2-S3 fix — typed outcome discriminator. `generationFailed`/`generationFailureReason` below are
+ *  kept unchanged (other consumers — `landscapeResearcher.ts`, `provenanceRecorder.ts`'s
+ *  structural `ModeledFailureCarrier` duck-type check — still read only those two fields), but
+ *  `generateBriefVersion.ts`'s correction-attempt disposition now branches on `outcome` instead of
+ *  the old `isCorrection && !generationFailed && evidenceItems.length === 0` predicate, which was
+ *  dead code (zero evidence items structurally implies `generationFailed: true` under this file's
+ *  own fail-closed rules — see `generationFailed` derivation at each return site below) and, even
+ *  if reachable, checked evidence over the WHOLE run rather than the correction's own scoped
+ *  extraction call.
+ *  - `completed-with-evidence`: clean run, >=1 ProblemStatementCandidate established.
+ *  - `completed-zero-evidence`: clean run, but zero valid EvidenceItem rows resulted from the
+ *    scoped source set — either because no source in the scope had retrieved content, or because
+ *    the LLM call returned/validated but every evidenceItem/claim it proposed was filtered out.
+ *    This is the case a correction attempt's "no new usable evidence" disposition must check.
+ *  - `no-problem-statement-established`: evidence WAS extracted, but no surviving claim supported
+ *    any problemStatements candidate — distinct from zero-evidence; not "no new usable evidence"
+ *    for a correction, since the candidate source did contribute evidence.
+ *  - `llm-validation-failed`: the forced-tool-use call failed schema validation after bounded
+ *    repair (`LlmValidationError`).
+ *  - `infra-error`: any other error escaping the LLM call or the persistence transaction (DB
+ *    errors, transient connection failures, unexpected exceptions). */
+export type ExtractionOutcome =
+  | 'completed-with-evidence'
+  | 'completed-zero-evidence'
+  | 'no-problem-statement-established'
+  | 'llm-validation-failed'
+  | 'infra-error';
+
 export interface ExtractionResult {
   claimVersions: ClaimVersion[];
   evidenceItems: EvidenceItem[];
   problemStatementCandidates: ProblemStatementCandidate[];
+  /** Typed discriminator — see this interface's doc comment above. */
+  outcome: ExtractionOutcome;
   /** Explicit generation-failure signal (roadmap Slice 4 note) — 'problem-statement' is
    *  non-negatable (Q-2), so an inability to establish any specific problem statement is surfaced
    *  here rather than as a NegativeFinding. Slice 9 is the consumer that maps this to
-   *  `Investigation.status = 'generation-failed'`. */
+   *  `Investigation.status = 'generation-failed'`. Derived as `outcome !== 'completed-with-evidence'`
+   *  at every return site — kept for existing consumers, not a second source of truth. */
   generationFailed: boolean;
   generationFailureReason?: string;
+  /** §4.8 — the exact set of `content-retrieved` SourceArtifact ids this call actually read
+   *  (`knownSourceIds`/`usableSources`), including any input from which zero valid EvidenceItem
+   *  rows resulted. NOT `usableSourceIds` — named `extractionInputSourceIds` per §4.8's exact
+   *  contract. `generateBriefVersion` ledgers this set (unioned with Landscape Research's own) into
+   *  `generation_run_consumed_source`. */
+  extractionInputSourceIds: string[];
 }
 
 const TOOL_NAME = 'extract_claims_and_evidence';
@@ -369,13 +422,16 @@ function buildUserPrompt(
  *  F-2 fix — single-writer enforcement per Investigation: the existing-claims lookup used to run
  *  outside the transaction, so two concurrent extraction runs on the SAME Investigation could both
  *  read `latestVersionNumber = N` and both attempt to insert version `N+1`, racing on the
- *  `UNIQUE(claim_id, version_number)` constraint. Concurrent extraction runs on one Investigation
- *  are not a legitimate concurrent-write scenario by this app's design (extraction is triggered at
- *  one specific point in the flow, not something two simultaneous user actions can fan out into),
- *  so this is enforced as an explicit single-writer constraint: a `pg_advisory_xact_lock` keyed on
- *  `investigationId` is acquired as the first statement inside the transaction, so a second
- *  concurrent call blocks until the first commits/rolls back, and the lock is released
- *  automatically at transaction end (no separate unlock bookkeeping needed).
+ *  `UNIQUE(claim_id, version_number)` constraint. Two concurrent 'in-progress' GenerationRuns on one
+ *  Investigation are now impossible in the first place — migration 009's partial unique index
+ *  enforces this at the database level — and a stale run's writes after a retry has taken over the
+ *  fence are rejected by `assertFenceOwnership` (the fence-token check, §1.6), not by this advisory
+ *  lock. This lock's remaining real job is guarding same-run/same-fence-token concurrent extraction
+ *  calls (e.g. if a future change ever parallelized extraction over sub-scopes of the same run), and
+ *  serving as defense-in-depth should migration 009's index or the fence guard ever be weakened: a
+ *  `pg_advisory_xact_lock` keyed on `investigationId` is acquired as the first statement inside the
+ *  transaction, so a second concurrent call blocks until the first commits/rolls back, and the lock
+ *  is released automatically at transaction end (no separate unlock bookkeeping needed).
  *
  *  F-3 fix — comprehensive `generationFailed` conversion: any error that escapes the LLM call or
  *  the persistence transaction (DB errors, transient connection failures, unexpected exceptions —
@@ -387,7 +443,11 @@ function buildUserPrompt(
  *  content-retrieved `SourceArtifact` id set and delegates to
  *  `extractClaimsAndEvidenceForSourceArtifacts` (below), which holds the actual pipeline body.
  *  Behavior-preserving: no change to this function's contract or its existing tests. */
-export async function extractClaimsAndEvidence(investigationId: string): Promise<ExtractionResult> {
+export async function extractClaimsAndEvidence(
+  investigationId: string,
+  generationRunId: string,
+  fenceToken: number,
+): Promise<ExtractionResult> {
   const { sourceArtifacts } = await getInvestigation(investigationId);
   const usableSourceIds = sourceArtifacts
     .filter(
@@ -395,7 +455,7 @@ export async function extractClaimsAndEvidence(investigationId: string): Promise
         s.resolution.status === 'content-retrieved' && typeof s.resolvedContent === 'string',
     )
     .map((s) => s.id);
-  return extractClaimsAndEvidenceForSourceArtifacts(investigationId, usableSourceIds);
+  return extractClaimsAndEvidenceForSourceArtifacts(investigationId, usableSourceIds, generationRunId, fenceToken);
 }
 
 /** Extracts and persists `EvidenceItem`/`Claim`/`ClaimVersion` rows from EXACTLY the given
@@ -410,6 +470,8 @@ export async function extractClaimsAndEvidence(investigationId: string): Promise
 export async function extractClaimsAndEvidenceForSourceArtifacts(
   investigationId: string,
   sourceArtifactIds: string[],
+  generationRunId: string,
+  fenceToken: number,
 ): Promise<ExtractionResult> {
   const { sourceArtifacts } = await getInvestigation(investigationId);
   const scopedIds = new Set(sourceArtifactIds);
@@ -425,13 +487,16 @@ export async function extractClaimsAndEvidenceForSourceArtifacts(
       claimVersions: [],
       evidenceItems: [],
       problemStatementCandidates: [],
+      outcome: 'completed-zero-evidence',
       generationFailed: true,
       generationFailureReason:
         'No source with retrieved content is available for this Investigation — extraction cannot run.',
+      extractionInputSourceIds: [],
     };
   }
 
   const knownSourceIds = new Set(usableSources.map((s) => s.id));
+  const extractionInputSourceIds = Array.from(knownSourceIds);
 
   const client = await pool.connect();
   let transactionOpen = false;
@@ -472,12 +537,22 @@ export async function extractClaimsAndEvidenceForSourceArtifacts(
           claimVersions: [],
           evidenceItems: [],
           problemStatementCandidates: [],
+          outcome: 'llm-validation-failed',
           generationFailed: true,
           generationFailureReason: `Extraction failed schema validation after bounded repair: ${err.message}`,
+          extractionInputSourceIds,
         };
       }
       throw err;
     }
+
+    // §1.6 SOL-HIGH-2/SELF-3 — the guard is called here, immediately after the LLM call returns and
+    // immediately before the first INSERT, NOT at BEGIN and NOT in a second transaction (see this
+    // file's own doc comment on the F-2 advisory lock's scope, and 02-ARCHITECTURE.md §1.6). This
+    // keeps the generation_run row lock's window to milliseconds (guard query + insert batch),
+    // never spanning the LLM call, so a concurrent abandon is never blocked by an in-flight call.
+    if (fenceCheckRaceDelayForTests) await fenceCheckRaceDelayForTests(client);
+    await assertFenceOwnership(client, generationRunId, fenceToken);
 
     // Drop evidence items citing a source outside this Investigation's usable set — referential
     // integrity, not a literal-union/enum validity concern, so filtered here rather than causing a
@@ -657,10 +732,14 @@ export async function extractClaimsAndEvidenceForSourceArtifacts(
         claimVersions: persistedClaimVersions,
         evidenceItems: persistedEvidenceItems,
         problemStatementCandidates: [],
+        outcome: persistedEvidenceItems.length === 0 ? 'completed-zero-evidence' : 'no-problem-statement-established',
         generationFailed: true,
         generationFailureReason:
-          'The Extraction & Clustering Engine could not establish any specific, evidence-supported ' +
-          'problem statement from the reachable source material.',
+          persistedEvidenceItems.length === 0
+            ? 'The Extraction & Clustering Engine found no valid evidence in the reachable source material.'
+            : 'The Extraction & Clustering Engine could not establish any specific, evidence-supported ' +
+              'problem statement from the reachable source material.',
+        extractionInputSourceIds,
       };
     }
 
@@ -668,7 +747,9 @@ export async function extractClaimsAndEvidenceForSourceArtifacts(
       claimVersions: persistedClaimVersions,
       evidenceItems: persistedEvidenceItems,
       problemStatementCandidates,
+      outcome: 'completed-with-evidence',
       generationFailed: false,
+      extractionInputSourceIds,
     };
   } catch (err) {
     // F-3: convert ANY escaping error (DB errors, transient connection failures, unexpected
@@ -685,10 +766,12 @@ export async function extractClaimsAndEvidenceForSourceArtifacts(
       claimVersions: [],
       evidenceItems: [],
       problemStatementCandidates: [],
+      outcome: 'infra-error',
       generationFailed: true,
       generationFailureReason: `Extraction failed with an unexpected error: ${
         err instanceof Error ? err.message : String(err)
       }`,
+      extractionInputSourceIds,
     };
   } finally {
     client.release();

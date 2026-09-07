@@ -377,6 +377,9 @@ export interface GenerationRun {
   // SchemaValidationRecord.toolName + every ToolInvocationRecord.toolName across stepLog
   stepLog: GenerationStep[]; // ordered, one entry per component in Section 2 — appended to by
   // recordGenerationStep, in order, as each step completes or fails
+  fenceToken: number; // §1.6 — the authorization token this run's own pipeline invocation must
+  // pass to every subsequent generation_run/generation_step write; captured once, in-memory, from
+  // createGenerationRun's RETURNING fence_token. Starts at 1 for every new run.
 }
 
 /** One entry per component step in a GenerationRun's pipeline. `outcome` (§1.9 point 3) is

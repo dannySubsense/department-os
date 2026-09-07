@@ -37,32 +37,78 @@ async function insertGenerationRun(
 describe('computeLivenessState', () => {
   it('returns terminal with a null lastProgressAt for a succeeded run', () => {
     const result = computeLivenessState(
-      { outcome: 'succeeded', leaseHeartbeatAt: new Date().toISOString() },
-      5000,
+      {
+        outcome: 'succeeded',
+        leaseHeartbeatAt: new Date().toISOString(),
+        startedAt: new Date().toISOString(),
+      },
+      [],
     );
     expect(result).toEqual({ livenessState: 'terminal', lastProgressAt: null });
   });
 
   it('returns terminal with a null lastProgressAt for a failed run', () => {
     const result = computeLivenessState(
-      { outcome: 'failed', leaseHeartbeatAt: new Date().toISOString() },
-      5000,
+      {
+        outcome: 'failed',
+        leaseHeartbeatAt: new Date().toISOString(),
+        startedAt: new Date().toISOString(),
+      },
+      [],
     );
     expect(result).toEqual({ livenessState: 'terminal', lastProgressAt: null });
   });
 
-  it('returns active for an in-progress run whose heartbeat is within the stale threshold', () => {
-    const heartbeat = new Date().toISOString();
-    const result = computeLivenessState({ outcome: 'in-progress', leaseHeartbeatAt: heartbeat }, 5000);
+  it('returns active on cold start (fewer than 2 recorded step-completion timestamps) regardless of silence length', () => {
+    const startedAt = new Date(Date.now() - 100_000).toISOString();
+    const heartbeat = new Date(Date.now() - 100_000).toISOString();
+    const result = computeLivenessState(
+      { outcome: 'in-progress', leaseHeartbeatAt: heartbeat, startedAt },
+      [],
+    );
     expect(result.livenessState).toBe('active');
     expect(result.lastProgressAt).toBe(heartbeat);
+
+    const resultOneStep = computeLivenessState(
+      { outcome: 'in-progress', leaseHeartbeatAt: heartbeat, startedAt },
+      [new Date(Date.now() - 90_000).toISOString()],
+    );
+    expect(resultOneStep.livenessState).toBe('active');
   });
 
-  it('returns stale-or-interrupted for an in-progress run whose heartbeat exceeds the stale threshold', () => {
-    const heartbeat = new Date(Date.now() - 10_000).toISOString();
-    const result = computeLivenessState({ outcome: 'in-progress', leaseHeartbeatAt: heartbeat }, 5000);
+  it('returns active when current silence is within the observed cadence (relative, not a fixed threshold)', () => {
+    const startedAt = new Date(Date.now() - 30_000).toISOString();
+    const step1 = new Date(Date.now() - 20_000).toISOString(); // gap from start: 10s
+    const step2 = new Date(Date.now() - 5_000).toISOString(); // gap: 15s, largest observed
+    // current silence since step2 (heartbeat) is ~5s, well under 4x the 15s observed gap.
+    const result = computeLivenessState(
+      { outcome: 'in-progress', leaseHeartbeatAt: step2, startedAt },
+      [step1, step2],
+    );
+    expect(result.livenessState).toBe('active');
+    expect(result.lastProgressAt).toBe(step2);
+  });
+
+  it('returns stale-or-interrupted when current silence exceeds 4x the largest observed gap for this run', () => {
+    const startedAt = new Date(Date.now() - 100_000).toISOString();
+    const step1 = new Date(Date.now() - 95_000).toISOString(); // gap from start: 5s
+    const step2 = new Date(Date.now() - 90_000).toISOString(); // gap: 5s, largest observed
+    // heartbeat frozen at step2, so current silence is ~90s >> 4 * 5s = 20s.
+    const result = computeLivenessState(
+      { outcome: 'in-progress', leaseHeartbeatAt: step2, startedAt },
+      [step1, step2],
+    );
     expect(result.livenessState).toBe('stale-or-interrupted');
-    expect(result.lastProgressAt).toBe(heartbeat);
+    expect(result.lastProgressAt).toBe(step2);
+  });
+
+  it('returns active for a degenerate zero-max-gap case (identical timestamps) rather than flagging stale', () => {
+    const same = new Date(Date.now() - 50_000).toISOString();
+    const result = computeLivenessState(
+      { outcome: 'in-progress', leaseHeartbeatAt: same, startedAt: same },
+      [same, same],
+    );
+    expect(result.livenessState).toBe('active');
   });
 });
 

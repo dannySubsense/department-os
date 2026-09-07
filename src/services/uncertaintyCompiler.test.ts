@@ -61,6 +61,7 @@ function okUpstream() {
       existingSolutionCandidates: [],
       landscapeEvidenceItems: [],
       generationFailed: false,
+      extractionInputSourceIds: [],
     },
     gapHypothesisGeneration: {
       gapHypothesisCandidates: [],
@@ -93,6 +94,7 @@ describe('compileUncertainty — deterministic pre-LLM seeding', () => {
         landscapeEvidenceItems: [],
         generationFailed: true,
         generationFailureReason: 'simulated landscape failure',
+        extractionInputSourceIds: [],
       },
       gapHypothesisGeneration: {
         gapHypothesisCandidates: [],
@@ -262,6 +264,7 @@ describe('compileUncertainty — deterministic pre-LLM seeding', () => {
         existingSolutionCandidates: [],
         landscapeEvidenceItems: [],
         generationFailed: false,
+        extractionInputSourceIds: [],
       },
       gapHypothesisGeneration: { gapHypothesisCandidates: [], generationFailed: false },
     });

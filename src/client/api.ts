@@ -97,6 +97,76 @@ export async function addSourcesToInvestigation(
   return createInvestigation({ investigationId, artifacts });
 }
 
+// ---- Generation Run Connector (§4.2) ----
+
+export interface CreateGenerationRunIneligibleBody {
+  outcome: 'ineligible';
+  currentStatus: InvestigationStatus;
+  reason: string;
+}
+export interface CreateGenerationRunConflictBody {
+  error: 'generation-run-conflict';
+  existingGenerationRunId: string;
+  stillInProgress: boolean;
+  message: string;
+}
+
+/** Typed error thrown by `createGenerationRun` on a non-2xx response — callers branch on `.kind`
+ *  and `.body` rather than string-matching a message. */
+export class CreateGenerationRunApiError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly body: CreateGenerationRunIneligibleBody | CreateGenerationRunConflictBody | { error: string; message?: string },
+  ) {
+    super('reason' in body ? body.reason : 'message' in body && body.message ? body.message : 'createGenerationRun failed');
+    this.name = 'CreateGenerationRunApiError';
+  }
+}
+
+/** Thin `fetch` wrapper for `POST /api/investigations/:id/generation-runs` (§4.2). Resolves
+ *  `202 { generationRunId }` the instant the concurrency-guarding row exists — never awaits the
+ *  full pipeline. */
+export async function createGenerationRun(investigationId: string): Promise<{ generationRunId: string }> {
+  const response = await fetch(`/api/investigations/${investigationId}/generation-runs`, {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    let body: CreateGenerationRunIneligibleBody | CreateGenerationRunConflictBody | { error: string; message?: string } = {
+      error: 'unknown-error',
+    };
+    try {
+      body = await response.json();
+    } catch {
+      // response body was not JSON — fall back to the generic body above
+    }
+    throw new CreateGenerationRunApiError(response.status, body);
+  }
+  return (await response.json()) as { generationRunId: string };
+}
+
+/** Thin `fetch` wrapper for `POST /api/investigations/:id/generation-runs/:runId/abandon`
+ *  (§1.6/§3.1c). */
+export async function abandonGenerationRun(
+  investigationId: string,
+  generationRunId: string,
+): Promise<{ generationRunId: string; outcome: 'failed' }> {
+  const response = await fetch(
+    `/api/investigations/${investigationId}/generation-runs/${generationRunId}/abandon`,
+    { method: 'POST' },
+  );
+  if (!response.ok) {
+    let message = `abandonGenerationRun: request failed with status ${response.status}`;
+    try {
+      const errorBody = (await response.json()) as { message?: string; error?: string };
+      message = errorBody.message ?? errorBody.error ?? message;
+    } catch {
+      // response body was not JSON — fall back to the generic message above
+    }
+    throw new Error(message);
+  }
+  return (await response.json()) as { generationRunId: string; outcome: 'failed' };
+}
+
 /** Thin `fetch` wrapper for `POST /api/source-artifacts/:id/recheck` (§1.4a). */
 export async function recheckSourceArtifact(sourceArtifactId: string): Promise<{
   sourceArtifactId: string;

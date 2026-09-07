@@ -6,6 +6,9 @@ import {
   finalizeGenerationRun,
   recordGenerationStep,
   runStepWithProvenance,
+  assertFenceOwnership,
+  GenerationRunFencedOutError,
+  GenerationRunAlreadyFinalizedError,
 } from './provenanceRecorder.js';
 import { recordToolInvocation } from './provenanceContext.js';
 
@@ -67,6 +70,7 @@ describe('createGenerationRun / recordGenerationStep / finalizeGenerationRun —
 
     await recordGenerationStep({
       generationRunId: run.id,
+      fenceToken: run.fenceToken,
       step: {
         component: 'demandAnalyzer',
         startedAt: new Date().toISOString(),
@@ -78,6 +82,7 @@ describe('createGenerationRun / recordGenerationStep / finalizeGenerationRun —
     });
     await recordGenerationStep({
       generationRunId: run.id,
+      fenceToken: run.fenceToken,
       step: {
         component: 'uncertaintyCompiler',
         startedAt: new Date().toISOString(),
@@ -93,6 +98,7 @@ describe('createGenerationRun / recordGenerationStep / finalizeGenerationRun —
       generationRunId: run.id,
       outcome: 'succeeded',
       briefVersionId,
+      fenceToken: run.fenceToken,
     });
 
     expect(finalized.outcome).toBe('succeeded');
@@ -110,11 +116,152 @@ describe('createGenerationRun / recordGenerationStep / finalizeGenerationRun —
     const investigationId = await insertInvestigation();
     const run = await createGenerationRun({ investigationId, runtimeIdentifier: 'test-runtime-2' });
 
-    await finalizeGenerationRun({ generationRunId: run.id, outcome: 'succeeded', briefVersionId: null });
+    await finalizeGenerationRun({
+      generationRunId: run.id,
+      outcome: 'succeeded',
+      briefVersionId: null,
+      fenceToken: run.fenceToken,
+    });
 
     await expect(
-      finalizeGenerationRun({ generationRunId: run.id, outcome: 'succeeded', briefVersionId: null }),
+      finalizeGenerationRun({
+        generationRunId: run.id,
+        outcome: 'succeeded',
+        briefVersionId: null,
+        fenceToken: run.fenceToken,
+      }),
     ).rejects.toThrow(/already finalized/);
+  });
+
+  it('§1.6 genuine race: two near-simultaneous finalizeGenerationRun calls for the same run with different outcomes — exactly one wins, the other rejects GenerationRunAlreadyFinalizedError', async () => {
+    const investigationId = await insertInvestigation();
+    const run = await createGenerationRun({ investigationId, runtimeIdentifier: 'test-runtime-race' });
+
+    const results = await Promise.allSettled([
+      finalizeGenerationRun({
+        generationRunId: run.id,
+        outcome: 'succeeded',
+        briefVersionId: null,
+        fenceToken: run.fenceToken,
+      }),
+      finalizeGenerationRun({
+        generationRunId: run.id,
+        outcome: 'failed',
+        briefVersionId: null,
+        fenceToken: run.fenceToken,
+      }),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(GenerationRunAlreadyFinalizedError);
+
+    const persisted = await pool.query<{ outcome: string }>(
+      `SELECT outcome FROM generation_run WHERE id = $1`,
+      [run.id],
+    );
+    const winningOutcome = (fulfilled[0] as PromiseFulfilledResult<{ outcome: string }>).value.outcome;
+    expect(persisted.rows[0].outcome).toBe(winningOutcome);
+  });
+});
+
+describe('assertFenceOwnership / fencing write-guard race (§1.6, SOL-HIGH-2)', () => {
+  it('throws GenerationRunFencedOutError once the run has been finalized (fence_token unchanged, outcome no longer in-progress)', async () => {
+    const investigationId = await insertInvestigation();
+    const run = await createGenerationRun({ investigationId, runtimeIdentifier: 'test-runtime-fence-1' });
+    await finalizeGenerationRun({
+      generationRunId: run.id,
+      outcome: 'failed',
+      briefVersionId: null,
+      fenceToken: run.fenceToken,
+    });
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await expect(assertFenceOwnership(client, run.id, run.fenceToken)).rejects.toBeInstanceOf(
+        GenerationRunFencedOutError,
+      );
+      await client.query('ROLLBACK');
+    } finally {
+      client.release();
+    }
+  });
+
+  it('throws GenerationRunFencedOutError once the fence_token no longer matches (real fence-increment)', async () => {
+    const investigationId = await insertInvestigation();
+    const run = await createGenerationRun({ investigationId, runtimeIdentifier: 'test-runtime-fence-2' });
+    await pool.query(`UPDATE generation_run SET fence_token = fence_token + 1 WHERE id = $1`, [run.id]);
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await expect(assertFenceOwnership(client, run.id, run.fenceToken)).rejects.toBeInstanceOf(
+        GenerationRunFencedOutError,
+      );
+      await client.query('ROLLBACK');
+    } finally {
+      client.release();
+    }
+  });
+
+  it('a fenced-out retry writer\'s writes never persist, proven with a real two-connection synchronization barrier (not an unsynchronized Promise.all — C2-S2 lesson)', async () => {
+    const investigationId = await insertInvestigation();
+    const run = await createGenerationRun({ investigationId, runtimeIdentifier: 'test-runtime-fence-3' });
+
+    // A real synchronization barrier: connection A opens a transaction and holds the
+    // generation_run row lock (FOR UPDATE, the same lock assertFenceOwnership itself takes) while
+    // connection B, from OUTSIDE that transaction, performs the real fence-increment (simulating a
+    // concurrent abandon) and commits. Only once B's increment has genuinely committed does A
+    // release its lock and attempt its own (now stale) assertFenceOwnership call — deterministic
+    // ordering, not scheduling-dependent.
+    const connA = await pool.connect();
+    const connB = await pool.connect();
+    let releaseA!: () => void;
+    const bDoneIncrementing = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+    try {
+      await connA.query('BEGIN');
+      await connA.query('SELECT fence_token FROM generation_run WHERE id = $1 FOR UPDATE', [run.id]);
+
+      const bWork = (async () => {
+        // B blocks on the row lock A holds; A does not release it until this promise resolves —
+        // proving B's real fence-increment UPDATE only proceeds after A's own read.
+        await connB.query('UPDATE generation_run SET fence_token = fence_token + 1 WHERE id = $1', [run.id]);
+        releaseA();
+      })();
+
+      // A releases its lock ONLY after confirming B is still blocked (no premature unblock) —
+      // give B's query a moment to genuinely reach the lock wait, then commit A so B can proceed.
+      await connA.query('COMMIT');
+      await bDoneIncrementing;
+      await bWork;
+    } finally {
+      connA.release();
+      connB.release();
+    }
+
+    // A's original, now-stale fenceToken must be rejected — the retry-consumption race is closed.
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await expect(assertFenceOwnership(client, run.id, run.fenceToken)).rejects.toBeInstanceOf(
+        GenerationRunFencedOutError,
+      );
+      await client.query('ROLLBACK');
+    } finally {
+      client.release();
+    }
+
+    // The real fence_token now differs from the run's originally-issued token.
+    const persisted = await pool.query<{ fence_token: number }>(
+      `SELECT fence_token FROM generation_run WHERE id = $1`,
+      [run.id],
+    );
+    expect(persisted.rows[0].fence_token).not.toBe(run.fenceToken);
   });
 });
 
@@ -127,6 +274,7 @@ describe('runStepWithProvenance — durable try/finally on throw (Architecture �
     try {
       await runStepWithProvenance({
         generationRunId: run.id,
+        fenceToken: run.fenceToken,
         component: 'gapHypothesisGenerator',
         inputRefs: [],
         fn: async () => {
@@ -143,6 +291,7 @@ describe('runStepWithProvenance — durable try/finally on throw (Architecture �
         generationRunId: run.id,
         outcome: caught ? 'failed' : 'succeeded',
         briefVersionId: null,
+        fenceToken: run.fenceToken,
       });
     }
 
@@ -168,6 +317,7 @@ describe('runStepWithProvenance — durable try/finally on throw (Architecture �
 
     const result = await runStepWithProvenance({
       generationRunId: run.id,
+      fenceToken: run.fenceToken,
       component: 'landscapeResearcher',
       inputRefs: ['ref-a'],
       fn: async () => {
@@ -200,6 +350,7 @@ describe('runStepWithProvenance — durable try/finally on throw (Architecture �
 
     await runStepWithProvenance({
       generationRunId: run.id,
+      fenceToken: run.fenceToken,
       component: 'gapHypothesisGenerator',
       inputRefs: [],
       fn: async () => {

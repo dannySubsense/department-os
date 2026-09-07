@@ -75,7 +75,7 @@ describe('researchLandscape — real validateRawProposedQueries/validateRawExist
       .mockResolvedValueOnce(toolUseResponse('propose_landscape_queries', badInput))
       .mockResolvedValueOnce(toolUseResponse('propose_landscape_queries', badInput));
 
-    const result = await researchLandscape(investigationId, 'run-1');
+    const result = await researchLandscape(investigationId, 'run-1', 1);
 
     expect(result.generationFailed).toBe(true);
     expect(result.generationFailureReason).toMatch(/queries must be a non-empty array/);
@@ -90,7 +90,7 @@ describe('researchLandscape — real validateRawProposedQueries/validateRawExist
       .mockResolvedValueOnce(toolUseResponse('propose_landscape_queries', badInput))
       .mockResolvedValueOnce(toolUseResponse('propose_landscape_queries', badInput));
 
-    const result = await researchLandscape(investigationId, 'run-1');
+    const result = await researchLandscape(investigationId, 'run-1', 1);
 
     expect(result.generationFailed).toBe(true);
     expect(result.generationFailureReason).toMatch(/queries\[0\] is missing\/invalid/);
@@ -117,7 +117,7 @@ describe('researchLandscape — real validateRawProposedQueries/validateRawExist
       .mockResolvedValueOnce(toolUseResponse('identify_existing_solutions', badSolution))
       .mockResolvedValueOnce(toolUseResponse('identify_existing_solutions', badSolution));
 
-    const result = await researchLandscape(investigationId, 'run-1');
+    const result = await researchLandscape(investigationId, 'run-1', 1);
 
     expect(result.generationFailed).toBe(true);
     expect(result.generationFailureReason).toMatch(
@@ -147,7 +147,7 @@ describe('researchLandscape — real validateRawProposedQueries/validateRawExist
       .mockResolvedValueOnce(toolUseResponse('identify_existing_solutions', badSolution))
       .mockResolvedValueOnce(toolUseResponse('identify_existing_solutions', badSolution));
 
-    const result = await researchLandscape(investigationId, 'run-1');
+    const result = await researchLandscape(investigationId, 'run-1', 1);
 
     expect(result.generationFailed).toBe(true);
     expect(result.generationFailureReason).toMatch(
@@ -161,7 +161,7 @@ describe('researchLandscape — real validateRawProposedQueries/validateRawExist
       .mockResolvedValueOnce(toolUseResponse('propose_landscape_queries', { queries: [] }))
       .mockResolvedValueOnce(toolUseResponse('propose_landscape_queries', { queries: [] }));
 
-    const result = await researchLandscape(investigationId, 'run-1');
+    const result = await researchLandscape(investigationId, 'run-1', 1);
 
     expect(createMock).toHaveBeenCalledTimes(2);
     expect(result.generationFailed).toBe(true);

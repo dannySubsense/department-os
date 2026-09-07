@@ -31,7 +31,38 @@
       demonstration.** Backend+build verification is real end-to-end evidence but is not the
       full "real clicks, rendered screen" claim the roadmap's Browser Demonstration technically
       asks for; flagging honestly rather than overclaiming.
-- [ ] C2-S3: Generation Run Connector — PENDING
+- [x] C2-S3: Generation Run Connector — COMPLETE (2026-09-07). Migration 012, fencing write-guards
+      threaded through evidence/claim/landscape/searchWeb writes and the consumed-source ledger,
+      non-blocking two-catch Generation Run Connector, abandonGenerationRun (full lock-ordering +
+      heartbeat-revision race coverage), correction-scoped extraction, redesigned relative liveness
+      detection (STALE_THRESHOLD_MS deleted entirely, no fixed threshold anywhere).
+      Real, substantive defects found and fixed via the loop, not deferred:
+      - Frank verdict: correction-attempt extraction ran whole-Investigation instead of
+        candidate-scoped, producing the wrong disposition when old sources would yield evidence a
+        candidate itself didn't — fixed to call the already-existing
+        `extractClaimsAndEvidenceForSourceArtifacts`, typed `ExtractionOutcome` discriminator added.
+      - benchmark audit: `POLL_INTERVAL_MS`/`STALE_THRESHOLD_MS` were unsourced (wrong-instrument
+        DB-latency proxy; a self-disclosed engineering guess). `POLL_INTERVAL_MS` re-measured
+        against the real endpoint (2000ms). `STALE_THRESHOLD_MS` — orchestrator declined to spend
+        real LLM API cost to measure it (a cost decision, not a technical judgment call) and chose
+        branch (c) redesign instead: `computeLivenessState` now derives staleness relative to each
+        run's own observed step cadence (`maxObservedGapMs × STALENESS_MULTIPLIER=4`, dimensionless
+        ratio), cold-start always 'active'.
+      - Frank verdict: migration 009 (C2-S2) made F-2's old two-concurrent-runs fixture impossible;
+        rewritten to same-run/same-fence concurrency (the lock's real remaining job); new
+        abandon-then-retry test proves the fence (not the lock) rejects stale writes — both
+        destructively verified.
+      - 3 rounds of QC FAIL → fix on test coverage completeness (11 initially-missing roadmap Tests
+        items closed, including the entire previously-untested abandonGenerationRun flow) and one
+        vacuous test (heartbeat-vs-abandon race test passed under the wrong code branch on its first
+        two attempts; a real production test seam — `__setAbandonHeartbeatRaceDelayForTests`,
+        no-op by default — was added and the test destructively re-verified).
+      437/442 tests passing; 4 confirmed pre-existing failures (extractClaimsAndEvidence.test.ts
+      real-LLM suite, generateBriefVersion.test.ts real-concurrency block) — QC's final review
+      noted these sit in the same generation_run uniqueness/error-mapping area this slice touches
+      and should be tracked as a real defect, not dismissed as unrelated noise. Not fixed this
+      slice (predates it, out of C2-S3's own scope) — flagging for a future slice/ticket.
+      QC PASS (3rd pass), all points independently re-verified against live diff/test execution.
 - [ ] C2-S4: Brief Review — PENDING
 - [ ] C2-S5: Decision Recording and History — PENDING
 - [ ] **Frank binding forge-gate** — PENDING. Runs once, only after every slice above is checked
@@ -39,7 +70,7 @@
       transcribed into this file's `## Forge Gate` section.
 
 ## Current
-Slice: C2-S3
+Slice: C2-S4
 Step: not yet started
 Last updated: 2026-09-07
 

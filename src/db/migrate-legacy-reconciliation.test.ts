@@ -94,6 +94,7 @@ describe('008 legacy-path reconciliation (real quarantined-007 fixture required)
           '007_problem_brief_and_versioning.sql',
           '008_reconcile_brief_versioning_constraints.sql',
           '009_generation_run_investigation_in_progress_unique.sql',
+          '012_generation_run_consumed_source.sql',
           '013_source_artifact_canonical_identity.sql',
         ]);
 
@@ -141,6 +142,7 @@ describe('008 legacy-path reconciliation (real quarantined-007 fixture required)
         expect(legacyApplied).toEqual([
           '008_reconcile_brief_versioning_constraints.sql',
           '009_generation_run_investigation_in_progress_unique.sql',
+          '012_generation_run_consumed_source.sql',
           '013_source_artifact_canonical_identity.sql',
         ]);
 

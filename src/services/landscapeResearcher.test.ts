@@ -132,15 +132,19 @@ describe('researchLandscape', () => {
       claimVersions: [],
       evidenceItems: [landscapeEvidenceItem],
       problemStatementCandidates: [],
+      outcome: 'completed-with-evidence',
       generationFailed: false,
+      extractionInputSourceIds: [landscapeSourceArtifactId],
     });
 
-    const result = await researchLandscape(investigationId, 'run-1');
+    const result = await researchLandscape(investigationId, 'run-1', 1);
 
     expect(vi.mocked(searchWeb)).toHaveBeenCalledTimes(2);
     expect(vi.mocked(extractClaimsAndEvidenceForSourceArtifacts)).toHaveBeenCalledWith(
       investigationId,
       [landscapeSourceArtifactId],
+      'run-1',
+      1,
     );
     expect(result.generationFailed).toBe(false);
     expect(result.webSearchQueries).toHaveLength(2);
@@ -168,7 +172,7 @@ describe('researchLandscape', () => {
       fakeWebSearchQuery({ query: 'a query with no hits', results: [] }),
     );
 
-    const result = await researchLandscape(investigationId, 'run-1');
+    const result = await researchLandscape(investigationId, 'run-1', 1);
 
     expect(vi.mocked(extractClaimsAndEvidenceForSourceArtifacts)).not.toHaveBeenCalled();
     expect(result.generationFailed).toBe(false);
@@ -181,7 +185,7 @@ describe('researchLandscape', () => {
   it('returns generationFailed:true with no negativeFindingSignal when no evidence exists for the Investigation, without calling searchWeb', async () => {
     const submission = await submitSources({ origin: 'human', artifacts: [{ type: 'text', raw: 'no evidence yet' }] });
 
-    const result = await researchLandscape(submission.investigationId, 'run-1');
+    const result = await researchLandscape(submission.investigationId, 'run-1', 1);
 
     expect(result.generationFailed).toBe(true);
     expect(result.negativeFindingSignal).toBeUndefined();
@@ -203,11 +207,13 @@ describe('researchLandscape', () => {
       claimVersions: [],
       evidenceItems: [],
       problemStatementCandidates: [],
+      outcome: 'completed-zero-evidence',
       generationFailed: true,
       generationFailureReason: 'simulated extraction failure',
+      extractionInputSourceIds: ['sa-x'],
     });
 
-    const result = await researchLandscape(investigationId, 'run-1');
+    const result = await researchLandscape(investigationId, 'run-1', 1);
 
     expect(result.generationFailed).toBe(true);
     expect(result.generationFailureReason).toMatch(/Landscape evidence extraction failed/);
@@ -239,12 +245,14 @@ describe('researchLandscape', () => {
       claimVersions: [],
       evidenceItems: [landscapeEvidenceItem],
       problemStatementCandidates: [],
+      outcome: 'no-problem-statement-established',
       generationFailed: true,
       generationFailureReason:
         'The Extraction & Clustering Engine could not establish any specific, evidence-supported problem statement from the reachable source material.',
+      extractionInputSourceIds: ['sa-x'],
     });
 
-    const result = await researchLandscape(investigationId, 'run-1');
+    const result = await researchLandscape(investigationId, 'run-1', 1);
 
     expect(result.generationFailed).toBe(false);
     expect(result.landscapeEvidenceItems).toEqual([landscapeEvidenceItem]);
@@ -265,7 +273,7 @@ describe('researchLandscape', () => {
       });
     vi.mocked(searchWeb).mockResolvedValueOnce(fakeWebSearchQuery({ query: 'a query', results: [] }));
 
-    const result = await researchLandscape(investigationId, 'run-1');
+    const result = await researchLandscape(investigationId, 'run-1', 1);
 
     expect(result.generationFailed).toBe(true);
     expect(result.existingSolutionCandidates).toEqual([]);
@@ -280,7 +288,7 @@ describe('researchLandscape', () => {
 
     vi.mocked(callForcedTool).mockRejectedValueOnce(new Error('simulated Anthropic API outage'));
 
-    const result = await researchLandscape(investigationId, 'run-1');
+    const result = await researchLandscape(investigationId, 'run-1', 1);
 
     expect(result.generationFailed).toBe(true);
     expect(result.generationFailureReason).toMatch(
@@ -304,7 +312,7 @@ describe('researchLandscape', () => {
       .mockResolvedValueOnce(query2)
       .mockRejectedValueOnce(new Error('simulated DB error on query 3'));
 
-    const result = await researchLandscape(investigationId, 'run-1');
+    const result = await researchLandscape(investigationId, 'run-1', 1);
 
     expect(result.generationFailed).toBe(true);
     expect(result.webSearchQueries).toEqual([query1, query2]);

@@ -8,30 +8,76 @@ import type {
   WorkspaceWebSearchQuerySummary,
 } from '../types/readModels.js';
 
-/** Stale/Interrupted Run Detection (02-ARCHITECTURE.md §4.9). Computed at read time, never a
- *  stored column — `staleThresholdMs` is a PARAMETER, not a closed-over module constant, so this
- *  slice can build and unit-test this function's pure branching logic against an arbitrary
- *  injected value before the real, engineering-derived `STALE_THRESHOLD_MS` exists (C2-S3's own
- *  scope — wiring the real constant into this function's one call site below). */
+// ---- §4.9 REDESIGN (2026-09-07, benchmark-audit fix) ----
+//
+// The prior design compared elapsed silence to a fixed `STALE_THRESHOLD_MS` constant. No real
+// generation-run data exists in the dev DB (0 rows in generation_run/generation_step at audit
+// time) and producing one requires a live, costly LLM API call this fix does not authorize itself
+// — so any fixed millisecond figure here would be an unsourced number, not a measured fact
+// (per this repo's Research Data Integrity rule 1). §4.9's actual behavioral contract does not
+// depend on an absolute magnitude — only on "stop automatic polling and honestly disclose
+// possible staleness once silence has gone on for meaningfully longer than anything this run has
+// shown so far." That contract can be satisfied with NO fixed constant: staleness is derived
+// relative to THIS RUN's own observed step-to-step cadence instead of an absolute threshold.
+//
+// Method: build the list of this run's own progress-event timestamps (run start, then each
+// recorded GenerationStep's completion, in order — the same heartbeat-renewal points §1.6's
+// fencing design already renews `lease_heartbeat_at` at). The largest gap between two
+// consecutive events in that list is this run's own observed worst-case legitimate silence so
+// far. Current silence (now vs. `lease_heartbeat_at`) is compared against that OBSERVED gap, not
+// a constant.
+//
+// STALENESS_MULTIPLIER = 4 — a dimensionless structural ratio, not a data/research-path timing
+// fact under this repo's Research Data Integrity rule 1 (which governs claimed real-world
+// quantities, not scale-invariant multipliers): "meaningfully longer than anything observed from
+// this run so far" needs to be a multiple bigger than 1x to tolerate ordinary variance between two
+// legitimately-similar steps (a 4x multiple of the largest gap already seen is generous headroom
+// against that variance), while still being small enough to flag a genuinely stuck run within a
+// bounded, non-huge number of step-lengths of silence rather than never. This is an engineering
+// judgment about ratio shape, not a claim about how many milliseconds a step takes.
+//
+// COLD START (fewer than 2 recorded steps): there is no prior gap yet to compare current silence
+// against — honest disclosure here is "no signal available," not "definitely fine" or "definitely
+// stale." The current `livenessState` enum (`'active' | 'stale-or-interrupted' | 'terminal'`) and
+// the UI that renders it (`GenerationProgressPanel`) have no third "no signal yet" state to render
+// distinctly from "actively progressing" — inventing one would be a UI redesign outside this fix's
+// scope. Chosen disposition: cold start renders as `'active'` (never flags stale before 2 steps
+// exist) — this is the same choice as disposition (b) in the fix contract (time-since-start
+// compared against nothing never triggers the flag), applied uniformly to the 0- and 1-step case,
+// and it is honest: a freshly-started run genuinely has produced no evidence either way, and
+// "still shown as active, not yet flagged as possibly stale" is the more conservative of the two
+// honest renderings available in the existing enum (it never asserts a false positive on a run
+// that just hasn't had time to establish a cadence).
 export function computeLivenessState(
-  run: { outcome: 'in-progress' | 'succeeded' | 'failed'; leaseHeartbeatAt: string },
-  staleThresholdMs: number,
+  run: { outcome: 'in-progress' | 'succeeded' | 'failed'; leaseHeartbeatAt: string; startedAt: string },
+  stepCompletionTimestamps: string[], // this run's GenerationStep.completedAt values, ascending
 ): { livenessState: 'active' | 'stale-or-interrupted' | 'terminal'; lastProgressAt: string | null } {
   if (run.outcome !== 'in-progress') {
     return { livenessState: 'terminal', lastProgressAt: null };
   }
   const lastProgressAt = run.leaseHeartbeatAt;
-  const elapsedMs = Date.now() - new Date(lastProgressAt).getTime();
+  if (stepCompletionTimestamps.length < 2) {
+    // Cold start — no observed cadence to compare against yet (see comment above).
+    return { livenessState: 'active', lastProgressAt };
+  }
+  const events = [run.startedAt, ...stepCompletionTimestamps].map((t) => new Date(t).getTime());
+  let maxObservedGapMs = 0;
+  for (let i = 1; i < events.length; i++) {
+    const gap = events[i] - events[i - 1];
+    if (gap > maxObservedGapMs) maxObservedGapMs = gap;
+  }
+  if (maxObservedGapMs <= 0) {
+    // Degenerate case (e.g. duplicate/identical timestamps) — no meaningful cadence signal.
+    return { livenessState: 'active', lastProgressAt };
+  }
+  const STALENESS_MULTIPLIER = 4;
+  const currentSilenceMs = Date.now() - new Date(lastProgressAt).getTime();
   return {
-    livenessState: elapsedMs > staleThresholdMs ? 'stale-or-interrupted' : 'active',
+    livenessState:
+      currentSilenceMs > maxObservedGapMs * STALENESS_MULTIPLIER ? 'stale-or-interrupted' : 'active',
     lastProgressAt,
   };
 }
-
-// test-only threshold, not STALE_THRESHOLD_MS — see 02-ARCHITECTURE.md §4.9. C2-S3 wires the
-// real, engineering-derived constant (measured from real generation timing) into this call site;
-// this slice's own Done-When does not require that derivation to exist yet.
-const PLACEHOLDER_STALE_THRESHOLD_MS = 5 * 60 * 1000;
 
 interface GenerationRunRow {
   id: string;
@@ -73,6 +119,71 @@ interface WebSearchResultRow {
 interface QueryLimitationRow {
   web_search_query_id: string;
   reason: string;
+}
+
+/** §4.8 (US-13) — shared candidate-source-id query backing both `hasUnattemptedCorrectionSnapshot`
+ *  (eligibility check) and `generateBriefVersion`'s correction-attempt extraction scoping (C2-S3
+ *  fix): a new operator-submitted, non-empty resolved-content hash exists outside the current
+ *  BriefVersion's full-lineage attempt ledger. Resolves the current BriefVersion, then traverses
+ *  its complete ancestry via `brief_version.supersedes_version_id`. Excludes hashes ledgered by
+ *  every generation run that produced a lineage version AND every correction attempt whose
+ *  `correction_target_brief_version_id` is any lineage version. No timestamp boundary, no
+ *  `canonical_url` anti-join — equal hash means already-attempted, regardless of row id, URL
+ *  spelling, redirect alias, or source type; same canonical URL with a DIFFERENT hash may still be
+ *  attempted (changed content). Never calls `assignValidityState`, appends no `StatusEvent`.
+ *  Returns the actual candidate `SourceArtifact` id set — NOT just a boolean — so a correction
+ *  attempt's extraction call can be scoped to exactly these ids rather than re-reading the whole
+ *  Investigation (this is the single copy of this predicate's logic; `hasUnattemptedCorrectionSnapshot`
+ *  below is a thin `.length > 0` wrapper over it, not a second copy). */
+export async function getCandidateCorrectionSourceIds(investigationId: string): Promise<string[]> {
+  const pbResult = await pool.query<{ current_version_id: string | null }>(
+    `SELECT current_version_id FROM problem_brief WHERE investigation_id = $1`,
+    [investigationId],
+  );
+  const currentVersionId = pbResult.rows[0]?.current_version_id ?? null;
+  if (currentVersionId === null) {
+    return [];
+  }
+
+  const result = await pool.query<{ id: string }>(
+    `WITH RECURSIVE current_lineage AS (
+       SELECT id, supersedes_version_id, generation_run_id
+         FROM brief_version
+        WHERE id = $2
+
+       UNION ALL
+
+       SELECT prior.id, prior.supersedes_version_id, prior.generation_run_id
+         FROM brief_version prior
+         JOIN current_lineage newer ON newer.supersedes_version_id = prior.id
+     )
+     SELECT candidate.id
+       FROM source_artifact candidate
+      WHERE candidate.investigation_id = $1
+        AND candidate.origin = 'submitted'
+        AND candidate.resolution_status = 'content-retrieved'
+        AND candidate.resolved_content_hash IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1
+            FROM generation_run_consumed_source grcs
+            JOIN source_artifact prior_source ON prior_source.id = grcs.source_artifact_id
+           WHERE prior_source.resolved_content_hash = candidate.resolved_content_hash
+             AND (
+               grcs.generation_run_id IN (SELECT generation_run_id FROM current_lineage)
+               OR grcs.correction_target_brief_version_id IN (SELECT id FROM current_lineage)
+             )
+        )`,
+    [investigationId, currentVersionId],
+  );
+  return result.rows.map((r) => r.id);
+}
+
+/** Thin boolean wrapper over `getCandidateCorrectionSourceIds` — kept as a separate export because
+ *  existing callers (the workspace read model, the eligibility API route) only need eligibility,
+ *  not the id set. Same predicate, one query, no duplicated logic. */
+export async function hasUnattemptedCorrectionSnapshot(investigationId: string): Promise<boolean> {
+  const candidateSourceIds = await getCandidateCorrectionSourceIds(investigationId);
+  return candidateSourceIds.length > 0;
 }
 
 /** Investigation Workspace read model — 02-ARCHITECTURE.md §4.4. Read-only assembly, no writes.
@@ -191,9 +302,14 @@ export async function getInvestigationWorkspace(
   }
 
   const generationRuns: WorkspaceGenerationRunSummary[] = runsResult.rows.map((row) => {
+    const stepCompletionTimestamps = (stepsByRun.get(row.id) ?? []).map((s) => s.completedAt);
     const { livenessState } = computeLivenessState(
-      { outcome: row.outcome, leaseHeartbeatAt: row.lease_heartbeat_at.toISOString() },
-      PLACEHOLDER_STALE_THRESHOLD_MS,
+      {
+        outcome: row.outcome,
+        leaseHeartbeatAt: row.lease_heartbeat_at.toISOString(),
+        startedAt: row.started_at.toISOString(),
+      },
+      stepCompletionTimestamps,
     );
     return {
       id: row.id,
@@ -207,18 +323,31 @@ export async function getInvestigationWorkspace(
     };
   });
 
-  // Steps 3-4 (briefs/decisions) — no ProblemBrief/Decision row can exist yet in this slice.
+  // Steps 3-4 (briefs/decisions) — rendering the actual BriefVersion/Decision content is C2-S4's
+  // own scope (03-UI-SPEC.md's BriefReviewPanel etc.); this slice needs only the service-level
+  // eligibility mechanism below, which reads problem_brief/brief_version directly, not via these
+  // arrays.
   const briefs: InvestigationWorkspaceView['briefs'] = [];
   const decisionLineage: InvestigationWorkspaceView['decisionLineage'] = [];
 
-  // Step 5 (§4.8, US-13) — hasUnattemptedCorrectionSnapshot is C2-S3's own scope; honestly false
-  // until that mechanism exists.
-  const newSourceSnapshotSinceCurrentBriefVersion = false;
+  // Step 5 (§4.8, US-13) — the real, resolved-content-hash/attempt-ledger check.
+  const newSourceSnapshotSinceCurrentBriefVersion = await hasUnattemptedCorrectionSnapshot(investigationId);
 
-  // Step 6 — Generation Eligibility Rule (§4.2), for this slice's reachable statuses ('open',
-  // 'blocked'): status === 'open' AND no run has outcome === 'in-progress'.
+  // Step 6 — Generation Eligibility Rule (§4.2, the single definition):
+  // - 'open' or 'generation-failed' with no ProblemBrief yet: always eligible (initial
+  //   generation / retry of a failed initial generation).
+  // - any status with a ProblemBrief already existing: eligible iff
+  //   newSourceSnapshotSinceCurrentBriefVersion (a correction attempt, gated on the snapshot).
+  // - 'blocked': never eligible, regardless of evidence state.
+  // - in every case above: only when no GenerationRun currently has outcome === 'in-progress'.
   const hasInProgressRun = generationRuns.some((r) => r.outcome === 'in-progress');
-  const generationEligible = investigation.status === 'open' && !hasInProgressRun;
+  const hasProblemBrief = investigation.problemBriefId !== null;
+  const generationEligible =
+    !hasInProgressRun &&
+    investigation.status !== 'blocked' &&
+    (hasProblemBrief
+      ? newSourceSnapshotSinceCurrentBriefVersion
+      : investigation.status === 'open' || investigation.status === 'generation-failed');
 
   const view: InvestigationWorkspaceView = {
     investigation: {

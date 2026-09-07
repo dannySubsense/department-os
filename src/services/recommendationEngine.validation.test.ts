@@ -46,6 +46,7 @@ const landscapeResearch = {
   existingSolutionCandidates: [],
   landscapeEvidenceItems: [],
   generationFailed: false,
+  extractionInputSourceIds: [],
 };
 const gapHypothesisGeneration = { gapHypothesisCandidates: [], generationFailed: false };
 const uncertaintyStatementCandidate = {

@@ -2,6 +2,8 @@ import { beforeEach, afterAll, describe, expect, it } from 'vitest';
 import { pool } from '../db/pool.js';
 import { getProblemDepartmentOverview } from './getProblemDepartmentOverview.js';
 import { DEPARTMENTS } from '../config/departments.js';
+import { createGenerationRun } from './provenanceRecorder.js';
+import { attemptGenerationFailedTransition } from './generateBriefVersion.js';
 
 // Integration coverage for getProblemDepartmentOverview (04-ROADMAP.md Slice 2 Tests list) — run
 // against the real dev Postgres (DDR-0001), no mocking of the database.
@@ -116,5 +118,43 @@ describe('getProblemDepartmentOverview', () => {
     expect(view.evidenceCount).toBe(1);
     expect(view.recentRuns.length).toBe(1);
     expect(view.recentRuns[0].investigationId).toBe(investigationA);
+  });
+
+  it('a fenced-out attemptGenerationFailedTransition never corrupts status, and this read model reports it honestly (04-ROADMAP.md fencing-in-both-read-models test)', async () => {
+    // C2-S3 04-ROADMAP.md: "seed an in-progress run, abandon it (real fence_token increment)...
+    // then invoke attemptGenerationFailedTransition directly with the original run's stale
+    // fenceToken; assert it throws/no-ops, investigation.status is unchanged... AND
+    // getProblemDepartmentOverview's own investigations[] row independently reports the real
+    // status — proven against both read models, not merely one and inferred for the other."
+    const investigationId = await insertInvestigation('brief-generated');
+    const run = await createGenerationRun({ investigationId, runtimeIdentifier: 'test-runtime' });
+    const staleFenceToken = run.fenceToken;
+
+    // Simulate the run having been abandoned/superseded (real fence_token advance), same
+    // abandon-simulation pattern already used elsewhere this checkpoint.
+    await pool.query(`UPDATE generation_run SET fence_token = fence_token + 1 WHERE id = $1`, [run.id]);
+
+    // Fenced-out: no-ops rather than throwing, per attemptGenerationFailedTransition's own
+    // GenerationRunFencedOutError-catch contract, and reports the Investigation's real status.
+    const resultingStatus = await attemptGenerationFailedTransition({
+      investigationId,
+      generationRunId: run.id,
+      fenceToken: staleFenceToken,
+      isCorrection: false,
+      reason: 'stale write attempt for fencing test',
+    });
+    expect(resultingStatus).toBe('brief-generated');
+
+    const directRow = await pool.query<{ status: string }>(
+      `SELECT status FROM investigation WHERE id = $1`,
+      [investigationId],
+    );
+    expect(directRow.rows[0].status).toBe('brief-generated');
+
+    // Independent read model — this is the second read model the requirement demands be proven
+    // separately, not inferred from the direct row read above.
+    const view = await getProblemDepartmentOverview();
+    const row = view.investigations.find((i) => i.id === investigationId)!;
+    expect(row.status).toBe('brief-generated');
   });
 });

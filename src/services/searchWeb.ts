@@ -1,15 +1,18 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { pool } from '../db/pool.js';
 import { searchWebAdapter } from './searchWebAdapter.js';
 import { fetchWithGuards } from './ssrfGuardedFetch.js';
 import { classifyRetrievalOutcome, type RetrievalOutcome } from './classifyRetrievalOutcome.js';
 import { recordToolInvocation } from './provenanceContext.js';
 import { MODEL } from './llmClient.js';
+import { assertFenceOwnership } from './provenanceRecorder.js';
+import { canonicalizeUrl } from './sourceCanonicalization.js';
 import type { QueryLimitation, WebSearchQuery, WebSearchResult } from '../types/domain.js';
 
 export interface SearchWebInput {
   investigationId: string;
   generationRunId: string;
+  fenceToken: number;
   query: string;
 }
 
@@ -88,6 +91,8 @@ export interface RetrievedClassification {
   status: WebSearchResult['status'];
   failureReason?: string;
   resolvedContent?: string; // set only when status === 'retrieved'
+  finalUrl?: string; // §4.8 SOL-MEDIUM-1 — fetchWithGuards's own finalUrl, set only when
+  // status === 'retrieved'; used to compute canonical_url on the source_artifact insert
 }
 
 async function retrieveAndClassify(rawUrl: string): Promise<RetrievedClassification> {
@@ -120,7 +125,7 @@ async function retrieveAndClassify(rawUrl: string): Promise<RetrievedClassificat
   }
 
   try {
-    const { statusCode, statusMessage, body } = await fetchWithGuards(url);
+    const { statusCode, statusMessage, body, finalUrl } = await fetchWithGuards(url);
     const { status, failureReason } = classifyRetrievalOutcome({
       kind: 'http-response',
       statusCode,
@@ -130,7 +135,7 @@ async function retrieveAndClassify(rawUrl: string): Promise<RetrievedClassificat
 
     record(status, failureReason);
     if (status === 'retrieved') {
-      return { url: rawUrl, retrievedAt: startedAt, status, resolvedContent: body };
+      return { url: rawUrl, retrievedAt: startedAt, status, resolvedContent: body, finalUrl };
     }
     return { url: rawUrl, retrievedAt: startedAt, status, failureReason };
   } catch (err) {
@@ -155,6 +160,8 @@ async function persistQueryLimited(
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    await assertFenceOwnership(client, input.generationRunId, input.fenceToken);
 
     await client.query(
       `INSERT INTO web_search_query
@@ -213,6 +220,11 @@ export async function persistSucceeded(
   try {
     await client.query('BEGIN');
 
+    // §1.6 — one shared guard-checked transaction covering all four writes this call makes
+    // (web_search_query, query_limitation, source_artifact, web_search_result), guard called once
+    // at the top, before any of the four INSERTs.
+    await assertFenceOwnership(client, input.generationRunId, input.fenceToken);
+
     await client.query(
       `INSERT INTO web_search_query
          (id, investigation_id, generation_run_id, query, performed_at, limitations, query_limitation_id)
@@ -243,13 +255,20 @@ export async function persistSucceeded(
       // SourceArtifact with no corresponding WebSearchResult.
       let sourceArtifactId: string | undefined;
       if (result.status === 'retrieved' && result.resolvedContent !== undefined) {
+        // §4.8 SOL-MEDIUM-1 — the third of the three write paths that persist canonical_url/
+        // resolved_content_hash (resolveSourceArtifact's persistResolution and
+        // recheckSourceArtifact's UPDATE are the other two); prior to this fix, landscape-research-
+        // origin rows were left with permanently NULL canonical identity.
+        const canonicalUrl = result.finalUrl ? canonicalizeUrl(result.finalUrl) : null;
+        const resolvedContentHash = createHash('sha256').update(result.resolvedContent, 'utf8').digest('hex');
         const artifactResult = await client.query<{ id: string }>(
           `INSERT INTO source_artifact
              (investigation_id, submission_id, type, raw, origin,
-              resolution_status, resolution_resolved_at, resolved_content)
-           VALUES ($1, NULL, 'url', $2, 'landscape-research', 'content-retrieved', now(), $3)
+              resolution_status, resolution_resolved_at, resolved_content,
+              canonical_url, resolved_content_hash)
+           VALUES ($1, NULL, 'url', $2, 'landscape-research', 'content-retrieved', now(), $3, $4, $5)
            RETURNING id`,
-          [input.investigationId, result.url, result.resolvedContent],
+          [input.investigationId, result.url, result.resolvedContent, canonicalUrl, resolvedContentHash],
         );
         sourceArtifactId = artifactResult.rows[0].id;
       }

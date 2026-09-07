@@ -1,12 +1,37 @@
+import { useState } from 'react';
 import type { InvestigationWorkspaceView } from '../../../types/readModels.js';
+import { GenerateButton } from '../GenerateButton.js';
+import { createGenerationRun, CreateGenerationRunApiError } from '../../api.js';
 
 interface OpenEligiblePanelProps {
   workspace: InvestigationWorkspaceView;
+  onWorkspaceChanged: () => void;
 }
 
-/** Identity/eligibility fact display only (02-ARCHITECTURE.md §5.3) — `GenerateButton` itself is
- *  built and wired in C2-S3, which owns this file's completion. */
-export function OpenEligiblePanel({ workspace }: OpenEligiblePanelProps) {
+/** Identity/eligibility fact display (02-ARCHITECTURE.md §5.3) plus the real, clickable
+ *  `GenerateButton` (C2-S3) — enabled iff `workspace.generationEligible === true`, labeled "Start
+ *  generation" when hosted here. */
+export function OpenEligiblePanel({ workspace, onWorkspaceChanged }: OpenEligiblePanelProps) {
+  const [error, setError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+
+  async function handleStart() {
+    setStarting(true);
+    setError(null);
+    try {
+      await createGenerationRun(workspace.investigation.id);
+      onWorkspaceChanged();
+    } catch (err) {
+      if (err instanceof CreateGenerationRunApiError) {
+        setError(err.message);
+      } else {
+        setError((err as Error).message);
+      }
+    } finally {
+      setStarting(false);
+    }
+  }
+
   return (
     <section className="outcome-status-panel outcome-status-panel--open" aria-label="Status: Open">
       <h2 className="outcome-status-panel__title">Open</h2>
@@ -16,6 +41,16 @@ export function OpenEligiblePanel({ workspace }: OpenEligiblePanelProps) {
       <p className="data-value outcome-status-panel__eligibility">
         Generation eligible: {workspace.generationEligible ? 'yes' : 'no'}
       </p>
+      <GenerateButton
+        label="Start generation"
+        enabled={workspace.generationEligible && !starting}
+        onClick={handleStart}
+      />
+      {error ? (
+        <p className="outcome-status-panel__error" role="alert">
+          {error}
+        </p>
+      ) : null}
     </section>
   );
 }
