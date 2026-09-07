@@ -39,3 +39,6 @@ venv/
 # Scratch / local-only
 .scratch/
 *.local
+
+# First-turn contract probe track record (session-local log, not repo content)
+docs/tooling/first-turn-contract-track-record.jsonl
