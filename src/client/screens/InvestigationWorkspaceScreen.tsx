@@ -4,6 +4,8 @@ import {
   fetchInvestigationWorkspace,
   fetchBriefForReviewByVersionNumber,
   FetchBriefForReviewApiError,
+  submitDecision,
+  SubmitDecisionApiError,
 } from '../api.js';
 import type { InvestigationWorkspaceView } from '../../types/readModels.js';
 import type { GetBriefForReviewResult } from '../../services/getBriefForReview.js';
@@ -17,6 +19,9 @@ import { BriefGeneratedSummaryPanel } from '../components/OutcomeStatusPanel/Bri
 import { ViewingPriorVersionPanel } from '../components/OutcomeStatusPanel/ViewingPriorVersionPanel.js';
 import { BriefReviewPanel } from '../components/BriefReviewPanel/index.js';
 import { ProvenanceRail } from '../components/ProvenanceRail/index.js';
+import { DecisionForm, type DecisionFormSubmission } from '../components/DecisionSection/DecisionForm.js';
+import { DecisionConfirmationPanel } from '../components/DecisionSection/DecisionConfirmationPanel.js';
+import { DecisionHistoryBanner } from '../components/DecisionSection/DecisionHistoryBanner.js';
 
 interface FetchState {
   workspace: InvestigationWorkspaceView | null;
@@ -27,6 +32,12 @@ interface FetchState {
 interface BriefFetchState {
   brief: GetBriefForReviewResult | null;
   briefVersionNotFound: boolean;
+}
+
+interface DecisionSubmissionState {
+  pending: boolean;
+  error: string | null;
+  confirmedDecisionId: string | null;
 }
 
 // ---- §4.9/§5.2 POLL_INTERVAL_MS — engineering-owned, derived this slice.
@@ -69,6 +80,11 @@ export function InvestigationWorkspaceScreen() {
   const [briefState, setBriefState] = useState<BriefFetchState>({
     brief: null,
     briefVersionNotFound: false,
+  });
+  const [decisionSubmission, setDecisionSubmission] = useState<DecisionSubmissionState>({
+    pending: false,
+    error: null,
+    confirmedDecisionId: null,
   });
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -119,6 +135,46 @@ export function InvestigationWorkspaceScreen() {
   useEffect(() => {
     loadBrief();
   }, [loadBrief]);
+
+  // SOL-MEDIUM-4 fix — exact refetch mechanism (03-UI-SPEC.md "SOL-MEDIUM-4 fix"): on the 201
+  // decision-submit response, issue BOTH a real GET.../workspace refetch (updates
+  // decisionLineage) AND a real GET.../brief-versions/by-version/:versionNumber refetch for the
+  // exact versionNumber currently on screen (updates priorDecisions), synchronously from this
+  // handler, before either list re-renders — never a client-side optimistic append.
+  const handleDecisionSubmit = useCallback(
+    async (submission: DecisionFormSubmission) => {
+      if (!investigationId || !briefState.brief) return;
+      const briefVersionId = briefState.brief.version.id;
+      setDecisionSubmission({ pending: true, error: null, confirmedDecisionId: null });
+      try {
+        const decision = await submitDecision(briefVersionId, submission);
+        const [refreshedWorkspace, refreshedBrief] = await Promise.all([
+          fetchInvestigationWorkspace(investigationId),
+          targetVersionNumber !== undefined
+            ? fetchBriefForReviewByVersionNumber(investigationId, targetVersionNumber)
+            : Promise.resolve(null),
+        ]);
+        setState({ workspace: refreshedWorkspace, notFound: false, error: null });
+        if (refreshedBrief) {
+          setBriefState({ brief: refreshedBrief, briefVersionNotFound: false });
+        }
+        setDecisionSubmission({ pending: false, error: null, confirmedDecisionId: decision.id });
+      } catch (err) {
+        let message = (err as Error).message;
+        if (err instanceof SubmitDecisionApiError) {
+          if (err.code === 'watch-requires-condition') {
+            message = 'Watch requires at least one named reconsideration condition.';
+          } else if (err.code === 'brief-version-not-found') {
+            message = 'This Brief version could not be found. Reload the workspace and try again.';
+          } else if (err.code === 'invalid-request') {
+            message = 'This decision could not be submitted.';
+          }
+        }
+        setDecisionSubmission({ pending: false, error: message, confirmedDecisionId: null });
+      }
+    },
+    [investigationId, briefState.brief, targetVersionNumber],
+  );
 
   // Polling (US-4 AC2, §5.2) — keyed on livenessState === 'active', NOT the bare
   // outcome === 'in-progress' check, so a stale/interrupted run does not poll forever. Clears on
@@ -240,6 +296,26 @@ export function InvestigationWorkspaceScreen() {
       {!versionNotFound && briefState.brief ? <BriefReviewPanel brief={briefState.brief} /> : null}
       {!versionNotFound && workspace.generationRuns.length > 0 ? (
         <ProvenanceRail brief={briefState.brief} workspace={workspace} />
+      ) : null}
+
+      {/* Region 5 — Decision Area, once >=1 BriefVersion exists (§5.3). Decision controls act on
+          whichever version (current or prior) is currently on screen. */}
+      {!versionNotFound && workspace.briefs.length > 0 && briefState.brief ? (
+        <section className="decision-area">
+          <DecisionForm
+            pending={decisionSubmission.pending}
+            error={decisionSubmission.error}
+            onSubmit={handleDecisionSubmit}
+          />
+          {decisionSubmission.confirmedDecisionId ? (
+            <DecisionConfirmationPanel confirmedDecisionId={decisionSubmission.confirmedDecisionId} />
+          ) : null}
+          <DecisionHistoryBanner
+            investigationId={workspace.investigation.id}
+            priorDecisions={briefState.brief.priorDecisions}
+            decisionLineage={workspace.decisionLineage}
+          />
+        </section>
       ) : null}
     </div>
   );

@@ -1,5 +1,6 @@
 import { pool } from '../db/pool.js';
 import { getAssignedState } from './validityState.js';
+import { getDecisionsForBriefVersion, type DecisionWithResolvedConditions } from './getDecisionsForBriefVersion.js';
 import type {
   BriefVersion,
   ClaimVersion,
@@ -15,30 +16,13 @@ import type {
   PersonalPullNote,
   ProblemStatement,
   Recommendation,
-  RecommendationDecision,
-  ReconsiderationConditionType,
   UncertaintyStatement,
   AssignedValidityState,
 } from '../types/domain.js';
 
-/** Mirrors `02-ARCHITECTURE.md` §4.5's revised `getDecisionsForBriefVersion` return shape —
- *  `DecisionWithResolvedConditions`, restated here rather than imported because
- *  `getDecisionsForBriefVersion.ts` (and migration 010's `decision`/`reconsideration_condition`
- *  tables it reads) do not exist until C2-S5. This slice's own `priorDecisions` is always `[]`
- *  (see doc comment below); C2-S5 replaces this local restatement with a real import when it
- *  wires the real query in, per its own Files entry. */
-export interface DecisionWithResolvedConditions {
-  id: string;
-  briefVersionId: string;
-  decision: RecommendationDecision;
-  decidedAt: string;
-  rationale?: string;
-  reconsiderationConditions: Array<{
-    type: ReconsiderationConditionType;
-    otherTypeLabel?: string;
-    description: string;
-  }>;
-}
+/** Re-exported for callers that imported this type from `getBriefForReview.ts` before C2-S5 wired
+ *  the real `getDecisionsForBriefVersion.ts` query in — the shape is identical, not redefined. */
+export type { DecisionWithResolvedConditions };
 
 /** Thrown only when no `brief_version` row exists for the given id — never for a database,
  *  connection, or query failure, which propagates unchanged. */
@@ -93,11 +77,9 @@ interface BriefVersionRow {
  *  `problem-department-mvp/02-ARCHITECTURE.md` §4, per `02-ARCHITECTURE.md` §3.3's pointer.
  *  `assignedState`/`isSuperseded` resolve via real, unconditional calls to `getAssignedState`/the
  *  structural supersession check (§3.3 "No narrowing" — US-12 restored to full scope this
- *  checkpoint). `priorDecisions` returns `[]` unconditionally this slice — `decision`/
- *  `reconsideration_condition` (migration 010) and `getDecisionsForBriefVersion` do not exist
- *  until C2-S5; `[]` is a real, correct answer ("no Decision has ever been recorded, because the
- *  table doesn't exist yet"), not a placeholder masquerading as data. C2-S5 edits this function to
- *  wire the real query in. */
+ *  checkpoint). `priorDecisions` (C2-S5) is a real `getDecisionsForBriefVersion` call, scoped to
+ *  exactly this `briefVersionId` — distinct from `getInvestigationWorkspace`'s whole-Investigation
+ *  `decisionLineage`, never a substitute for it. */
 export async function getBriefForReview(briefVersionId: string): Promise<GetBriefForReviewResult> {
   const briefVersionResult = await pool.query<BriefVersionRow>(
     `SELECT id, problem_brief_id, version_number, created_at, supersedes_version_id,
@@ -156,6 +138,10 @@ export async function getBriefForReview(briefVersionId: string): Promise<GetBrie
     [row.problem_brief_id, briefVersionId],
   );
   const isSuperseded = (supersededResult.rowCount ?? 0) > 0;
+
+  // priorDecisions (C2-S5) — this version's own Decisions, scoped to exactly briefVersionId,
+  // decidedAt ASC, with resolved reconsideration-condition content.
+  const priorDecisions = await getDecisionsForBriefVersion(briefVersionId);
 
   const problemStatementsResult = await pool.query<{
     id: string;
@@ -352,6 +338,6 @@ export async function getBriefForReview(briefVersionId: string): Promise<GetBrie
     uncertainty: row.uncertainty_statement,
     recommendation: row.recommendation,
     personalPullNotes,
-    priorDecisions: [],
+    priorDecisions,
   };
 }

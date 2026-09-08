@@ -1,5 +1,12 @@
 import type { MissionControlView, ProblemDepartmentOverview } from '../types/readModels.js';
-import type { InvestigationStatus, SourceArtifactType, SourceResolution } from '../types/domain.js';
+import type {
+  Decision,
+  InvestigationStatus,
+  RecommendationDecision,
+  ReconsiderationConditionType,
+  SourceArtifactType,
+  SourceResolution,
+} from '../types/domain.js';
 import type { InvestigationWorkspaceView } from '../types/readModels.js';
 import type { GetBriefForReviewResult } from '../services/getBriefForReview.js';
 
@@ -202,6 +209,58 @@ export async function fetchBriefForReviewByVersionNumber(
     throw new FetchBriefForReviewApiError(response.status, code);
   }
   return (await response.json()) as GetBriefForReviewResult;
+}
+
+export interface ReconsiderationConditionInput {
+  type: ReconsiderationConditionType;
+  otherTypeLabel?: string;
+  description: string;
+}
+
+/** Typed error thrown by `submitDecision` on a non-2xx response — carries the server's real
+ *  `error` code so callers (`DecisionForm`) can branch on `watch-requires-condition` /
+ *  `brief-version-not-found` / `invalid-request` rather than string-matching a message
+ *  (02-ARCHITECTURE.md §3.1a). */
+export class SubmitDecisionApiError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly code: string,
+    message?: string,
+  ) {
+    super(message ?? code);
+    this.name = 'SubmitDecisionApiError';
+  }
+}
+
+/** Thin `fetch` wrapper for `POST /api/brief-versions/:briefVersionId/decisions` (§3.1a, §4.1).
+ *  Deliberately NOT nested under `/investigations/:id` — a Decision is scoped to one
+ *  BriefVersion. Response body IS the persisted `Decision` verbatim. */
+export async function submitDecision(
+  briefVersionId: string,
+  body: {
+    decision: RecommendationDecision;
+    rationale?: string;
+    reconsiderationConditions?: ReconsiderationConditionInput[];
+  },
+): Promise<Decision> {
+  const response = await fetch(`/api/brief-versions/${briefVersionId}/decisions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    let code = 'unknown-error';
+    let message: string | undefined;
+    try {
+      const errorBody = (await response.json()) as { error?: string; message?: string };
+      code = errorBody.error ?? code;
+      message = errorBody.message;
+    } catch {
+      // response body was not JSON — fall back to the generic code above
+    }
+    throw new SubmitDecisionApiError(response.status, code, message);
+  }
+  return (await response.json()) as Decision;
 }
 
 /** Thin `fetch` wrapper for `POST /api/source-artifacts/:id/recheck` (§1.4a). */

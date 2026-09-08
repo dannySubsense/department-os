@@ -20,6 +20,11 @@ import {
 } from '../services/recheckSourceArtifact.js';
 import { generateBriefVersion } from '../services/generateBriefVersion.js';
 import { getBriefForReview, BriefVersionNotFoundError } from '../services/getBriefForReview.js';
+import {
+  recordDecision,
+  WatchRequiresConditionError,
+  BriefVersionNotFoundError as RecordDecisionBriefVersionNotFoundError,
+} from '../services/recordDecision.js';
 import { pool } from '../db/pool.js';
 import {
   recordGenerationStep,
@@ -28,7 +33,13 @@ import {
   GenerationRunAlreadyFinalizedError,
   GenerationRunFencedOutError,
 } from '../services/provenanceRecorder.js';
-import type { GenerationRun, InvestigationStatus, SourceArtifactType } from '../types/domain.js';
+import type {
+  GenerationRun,
+  InvestigationStatus,
+  RecommendationDecision,
+  ReconsiderationConditionType,
+  SourceArtifactType,
+} from '../types/domain.js';
 
 export const apiRoutes = express.Router();
 
@@ -705,6 +716,109 @@ apiRoutes.post(
         return;
       }
       throw err;
+    }
+  },
+);
+
+const VALID_RECOMMENDATION_DECISIONS: RecommendationDecision[] = ['Approve', 'Reject', 'Watch'];
+const VALID_RECONSIDERATION_CONDITION_TYPES: ReconsiderationConditionType[] = [
+  'new-evidence',
+  'product-change',
+  'stronger-demand-signal',
+  'feasibility-shift',
+  'price-change',
+  'market-event',
+  'other',
+];
+
+// POST /api/brief-versions/:briefVersionId/decisions — 02-ARCHITECTURE.md §3.1a/§4.3.
+// Deliberately NOT nested under /investigations/:id — a Decision is scoped to one BriefVersion.
+apiRoutes.post(
+  '/api/brief-versions/:briefVersionId/decisions',
+  async (req: Request, res: Response): Promise<void> => {
+    const body = req.body as {
+      decision?: unknown;
+      rationale?: unknown;
+      reconsiderationConditions?: unknown;
+    };
+
+    // 400 — malformed body, a request-shape defect, checked before any service call and entirely
+    // outside any transaction.
+    if (
+      typeof body.decision !== 'string' ||
+      !VALID_RECOMMENDATION_DECISIONS.includes(body.decision as RecommendationDecision)
+    ) {
+      res.status(400).json({ error: 'invalid-request', message: 'decision must be one of Approve, Reject, Watch.' });
+      return;
+    }
+    if (body.rationale !== undefined && typeof body.rationale !== 'string') {
+      res.status(400).json({ error: 'invalid-request', message: 'rationale must be a string when supplied.' });
+      return;
+    }
+
+    let reconsiderationConditions: Array<{
+      type: ReconsiderationConditionType;
+      otherTypeLabel?: string;
+      description: string;
+    }> = [];
+    if (body.reconsiderationConditions !== undefined) {
+      if (!Array.isArray(body.reconsiderationConditions)) {
+        res.status(400).json({ error: 'invalid-request', message: 'reconsiderationConditions must be an array when supplied.' });
+        return;
+      }
+      for (const raw of body.reconsiderationConditions as unknown[]) {
+        const condition = raw as { type?: unknown; otherTypeLabel?: unknown; description?: unknown };
+        if (
+          typeof condition.type !== 'string' ||
+          !VALID_RECONSIDERATION_CONDITION_TYPES.includes(condition.type as ReconsiderationConditionType)
+        ) {
+          res.status(400).json({ error: 'invalid-request', message: 'Each reconsideration condition must have a valid type.' });
+          return;
+        }
+        if (typeof condition.description !== 'string') {
+          res.status(400).json({ error: 'invalid-request', message: 'Each reconsideration condition must have a description.' });
+          return;
+        }
+        if (condition.otherTypeLabel !== undefined && typeof condition.otherTypeLabel !== 'string') {
+          res.status(400).json({ error: 'invalid-request', message: 'otherTypeLabel must be a string when supplied.' });
+          return;
+        }
+        if (
+          condition.type === 'other' &&
+          (condition.otherTypeLabel === undefined || (condition.otherTypeLabel as string).trim().length === 0)
+        ) {
+          res.status(400).json({ error: 'invalid-request', message: "otherTypeLabel is required when type is 'other'." });
+          return;
+        }
+        reconsiderationConditions.push({
+          type: condition.type as ReconsiderationConditionType,
+          otherTypeLabel: condition.otherTypeLabel as string | undefined,
+          description: condition.description,
+        });
+      }
+    }
+
+    try {
+      const decision = await recordDecision({
+        briefVersionId: req.params.briefVersionId,
+        decision: body.decision as RecommendationDecision,
+        rationale: body.rationale as string | undefined,
+        reconsiderationConditions,
+      });
+      res.status(201).json(decision);
+    } catch (err) {
+      if (err instanceof RecordDecisionBriefVersionNotFoundError) {
+        res.status(404).json({ error: 'brief-version-not-found' });
+        return;
+      }
+      if (err instanceof WatchRequiresConditionError) {
+        res.status(422).json({
+          error: 'watch-requires-condition',
+          message: 'Watch requires at least one non-whitespace reconsideration condition.',
+        });
+        return;
+      }
+      res.status(500).json({ error: 'decision-submission-failed', message: (err as Error).message });
     }
   },
 );

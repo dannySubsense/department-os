@@ -82,14 +82,41 @@
       C2-S3, unrelated, tracked separately). QC PASS on first full pass, all 9 review points
       verified against live diff/test execution.
       Outstanding (not code-verifiable): the roadmap's browser demonstration bullets.
-- [ ] C2-S5: Decision Recording and History — PENDING
+- [ ] C2-S5: Decision Recording and History — CODE/TESTS/QC COMPLETE, BROWSER DEMONSTRATION
+      PENDING (2026-09-08). Migration 010
+      (decision/reconsideration_condition, reject_update_or_delete immutability triggers),
+      recordDecision (BriefVersionNotFoundError before Watch-condition validation, all inside one
+      transaction), getDecisionsForBriefVersion (resolved-condition content, one-query aggregation),
+      decisionLineage wired into getInvestigationWorkspace (distinct from getBriefForReview's
+      per-version priorDecisions, never conflated), assignValidityState writer with in-transaction
+      Step-0 target-existence/type validation (InvalidValidityTargetError, zero writes on miss),
+      DecisionForm/DecisionConfirmationPanel/DecisionHistoryBanner (two never-merged lists),
+      SOL-MEDIUM-4 dual-refetch mechanism (both GETs synchronous from the 201 handler, no
+      optimistic append). One additional edit beyond the roadmap's own Files enumeration:
+      getBriefForReview.ts wired to the real query (that file's own pre-existing code comment
+      already named this as C2-S5's job; orchestrator verified the diff directly before accepting
+      it, not a scope guess).
+      Two orchestrator-diagnosed test-fixture defects fixed (not implementation bugs): a test
+      violated the migration 010 immutability trigger via UPDATE instead of seeding a backdated
+      INSERT; the US-13 five-item regression test's mocked extraction result lacked the real
+      claim_version_evidence rows the ownership-verification check correctly requires — fixed per
+      this repo's own established generateBriefVersion.test.ts seeding convention.
+      QC FAIL (1st pass) on one gap: 04-ROADMAP.md:1983-1986's binding isolation requirement (no
+      status_event write during a US-13 correction path; no eligibility check inside
+      assignValidityState) had no test — code was already correct, the test was missing. Fixed,
+      re-verified with file:line evidence, QC PASS (2nd pass).
+      522/527 tests passing (1 skipped); 4 confirmed pre-existing baseline failures (same as
+      C2-S3/C2-S4, unrelated, tracked separately).
+      Browser demonstration: NOT YET PERFORMED this session — pending before Done-When can be
+      checked complete; tracked separately, see Notes.
 - [ ] **Frank binding forge-gate** — PENDING. Runs once, only after every slice above is checked
       off. Do not set `Status: COMPLETE` before this line is checked and its verdict is
       transcribed into this file's `## Forge Gate` section.
 
 ## Current
 Slice: C2-S5
-Step: not yet started
+Step: Code/tests/QC APPROVED — commit pending @github-ops, then browser demonstration required
+before Done-When is satisfied and this slice can be checked complete.
 Last updated: 2026-09-08
 
 ## Fix Attempts

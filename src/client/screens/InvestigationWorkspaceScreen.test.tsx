@@ -16,11 +16,17 @@ vi.mock('../api.js', () => ({
   addSourcesToInvestigation: vi.fn(),
   createGenerationRun: vi.fn(),
   abandonGenerationRun: vi.fn(),
+  submitDecision: vi.fn(),
   CreateGenerationRunApiError: class CreateGenerationRunApiError extends Error {},
   CreateInvestigationApiError: class CreateInvestigationApiError extends Error {},
   FetchBriefForReviewApiError: class FetchBriefForReviewApiError extends Error {
     constructor(public status: number, public code: string) {
       super(code);
+    }
+  },
+  SubmitDecisionApiError: class SubmitDecisionApiError extends Error {
+    constructor(public status: number, public code: string, message?: string) {
+      super(message ?? code);
     }
   },
 }));
@@ -447,5 +453,129 @@ describe('InvestigationWorkspaceScreen — version-numbered navigation (US-1 AC5
     await waitFor(() => expect(screen.getByText('CURRENT statement text')).toBeInTheDocument());
     expect(screen.getByRole('region', { name: 'Status: Brief Generated' })).toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Status: Viewing Prior Version' })).not.toBeInTheDocument();
+  });
+});
+
+describe('InvestigationWorkspaceScreen — decision recording (C2-S5)', () => {
+  it('after a real Reject decision, no Reopen affordance renders anywhere in the tree', async () => {
+    const brief = buildBriefForReview({ version: { ...buildBriefForReview().version, id: 'bv-1', versionNumber: 1 } });
+    const workspace = buildWorkspace({
+      investigation: { ...buildWorkspace().investigation, status: 'brief-generated' },
+      briefs: [
+        { briefVersionId: 'bv-1', versionNumber: 1, createdAt: '2026-01-01T00:00:00.000Z', isCurrent: true, assignedState: 'valid', isSuperseded: false, forwardSupersededByVersionNumber: null },
+      ],
+    });
+    vi.mocked(api.fetchInvestigationWorkspace).mockResolvedValue(workspace);
+    vi.mocked(api.fetchBriefForReviewByVersionNumber).mockResolvedValue(brief);
+    const rejectedDecision = {
+      id: 'decision-1',
+      briefVersionId: 'bv-1',
+      decision: 'Reject' as const,
+      decidedAt: '2026-01-03T00:00:00.000Z',
+      reconsiderationConditionIds: [],
+    };
+    vi.mocked(api.submitDecision).mockResolvedValue(rejectedDecision);
+
+    await renderAt('inv-1');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Reject' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Submit Reject' }));
+
+    await waitFor(() => expect(screen.getByText('Your decision was recorded.')).toBeInTheDocument());
+    expect(screen.queryByText(/Reopen/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Reopen/i })).not.toBeInTheDocument();
+  });
+
+  it('SOL-MEDIUM-4 fix: both a GET.../workspace refetch AND a GET.../brief-versions/by-version/:versionNumber refetch happen immediately after the 201, without navigation or reload — the new Decision only renders once each real GET has returned, never via client-side optimistic append', async () => {
+    const brief = buildBriefForReview({ version: { ...buildBriefForReview().version, id: 'bv-1', versionNumber: 1 } });
+    const workspace = buildWorkspace({
+      investigation: { ...buildWorkspace().investigation, status: 'brief-generated' },
+      briefs: [
+        { briefVersionId: 'bv-1', versionNumber: 1, createdAt: '2026-01-01T00:00:00.000Z', isCurrent: true, assignedState: 'valid', isSuperseded: false, forwardSupersededByVersionNumber: null },
+      ],
+      decisionLineage: [],
+    });
+    vi.mocked(api.fetchInvestigationWorkspace).mockReset();
+    vi.mocked(api.fetchBriefForReviewByVersionNumber).mockReset();
+    vi.mocked(api.fetchInvestigationWorkspace).mockResolvedValueOnce(workspace); // initial mount
+    vi.mocked(api.fetchBriefForReviewByVersionNumber).mockResolvedValueOnce(brief); // initial mount
+
+    const submittedDecision = {
+      id: 'decision-approve-1',
+      briefVersionId: 'bv-1',
+      decision: 'Approve' as const,
+      decidedAt: '2026-01-03T00:00:00.000Z',
+      reconsiderationConditionIds: [],
+    };
+
+    // Deferred promises — control exactly when each refetch "returns," to prove nothing renders
+    // the new decision before its own real GET resolves.
+    let resolveWorkspaceRefetch!: (v: typeof workspace) => void;
+    const workspaceRefetchPromise = new Promise<typeof workspace>((resolve) => {
+      resolveWorkspaceRefetch = resolve;
+    });
+    let resolveBriefRefetch!: (v: typeof brief) => void;
+    const briefRefetchPromise = new Promise<typeof brief>((resolve) => {
+      resolveBriefRefetch = resolve;
+    });
+    vi.mocked(api.fetchInvestigationWorkspace).mockReturnValueOnce(workspaceRefetchPromise);
+    vi.mocked(api.fetchBriefForReviewByVersionNumber).mockReturnValueOnce(briefRefetchPromise);
+    vi.mocked(api.submitDecision).mockResolvedValue(submittedDecision);
+
+    await renderAt('inv-1');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Submit Approve' }));
+
+    await waitFor(() => expect(api.submitDecision).toHaveBeenCalledWith('bv-1', expect.any(Object)));
+    // Both real refetches must have been triggered synchronously from the same handler, before
+    // either resolves.
+    await waitFor(() => expect(api.fetchInvestigationWorkspace).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(api.fetchBriefForReviewByVersionNumber).toHaveBeenCalledTimes(2));
+
+    // Neither GET has resolved yet — no optimistic append; confirmation must not render yet.
+    expect(screen.queryByText('Your decision was recorded.')).not.toBeInTheDocument();
+
+    const workspaceWithDecision = buildWorkspace({
+      investigation: { ...buildWorkspace().investigation, status: 'brief-generated' },
+      briefs: workspace.briefs,
+      decisionLineage: [
+        {
+          id: submittedDecision.id,
+          briefVersionId: 'bv-1',
+          versionNumber: 1,
+          decision: 'Approve',
+          decidedAt: submittedDecision.decidedAt,
+          reconsiderationConditions: [],
+        },
+      ],
+    });
+    const briefWithDecision = buildBriefForReview({
+      version: { ...buildBriefForReview().version, id: 'bv-1', versionNumber: 1 },
+      priorDecisions: [
+        {
+          id: submittedDecision.id,
+          briefVersionId: 'bv-1',
+          decision: 'Approve',
+          decidedAt: submittedDecision.decidedAt,
+          reconsiderationConditions: [],
+        },
+      ],
+    });
+
+    // Only the workspace GET resolves first — the confirmation (gated on the handler's own
+    // Promise.all of BOTH real GETs) must still not render yet.
+    resolveWorkspaceRefetch(workspaceWithDecision);
+    await Promise.resolve();
+    expect(screen.queryByText('Your decision was recorded.')).not.toBeInTheDocument();
+
+    // Now the second real GET resolves — both have returned, the confirmation and both real,
+    // GET-sourced decisions may render.
+    resolveBriefRefetch(briefWithDecision);
+
+    await waitFor(() => expect(screen.getByText('Your decision was recorded.')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getAllByText('Approve').length).toBeGreaterThanOrEqual(1),
+    );
   });
 });

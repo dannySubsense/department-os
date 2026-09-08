@@ -1,10 +1,12 @@
 import { pool } from '../db/pool.js';
 import { getInvestigation, InvestigationNotFoundError } from './getInvestigation.js';
 import { getAssignedState } from './validityState.js';
+import { getDecisionsForBriefVersion } from './getDecisionsForBriefVersion.js';
 import type { SchemaValidationRecord, ToolInvocationRecord } from '../types/domain.js';
 import type {
   InvestigationWorkspaceView,
   WorkspaceBriefSummary,
+  WorkspaceDecisionSummary,
   WorkspaceGenerationRunSummary,
   WorkspaceGenerationStepSummary,
   WorkspaceWebSearchQuerySummary,
@@ -381,9 +383,32 @@ export async function getInvestigationWorkspace(
     }),
   );
 
-  // Step 4 (decisionLineage) remains C2-S5's scope — decision/reconsideration_condition
-  // (migration 010) and getDecisionsForBriefVersion do not exist until then.
-  const decisionLineage: InvestigationWorkspaceView['decisionLineage'] = [];
+  // Step 4 (§4.4, C2-S5) — real getDecisionsForBriefVersion union across all `briefs`, populating
+  // `decisionLineage` (the whole-Investigation chronological view, `decidedAt` ASC, each entry
+  // labeled with its owning BriefVersion's `versionNumber` from the `briefs` array already
+  // assembled in step 3) — a distinct, requirements-distinct surface from getBriefForReview's
+  // per-version `priorDecisions`, never a substitute presentation of it and never merged into one
+  // undifferentiated list.
+  let decisionLineage: WorkspaceDecisionSummary[] = [];
+  if (briefs.length > 0) {
+    const decisionsPerBrief = await Promise.all(
+      briefs.map(async (brief) => {
+        const decisions = await getDecisionsForBriefVersion(brief.briefVersionId);
+        return decisions.map((d) => ({
+          id: d.id,
+          briefVersionId: d.briefVersionId,
+          versionNumber: brief.versionNumber,
+          decision: d.decision,
+          decidedAt: d.decidedAt,
+          rationale: d.rationale,
+          reconsiderationConditions: d.reconsiderationConditions,
+        }));
+      }),
+    );
+    decisionLineage = decisionsPerBrief
+      .flat()
+      .sort((a, b) => new Date(a.decidedAt).getTime() - new Date(b.decidedAt).getTime());
+  }
 
   // Step 5 (§4.8, US-13) — the real, resolved-content-hash/attempt-ledger check.
   const newSourceSnapshotSinceCurrentBriefVersion = await hasUnattemptedCorrectionSnapshot(investigationId);
