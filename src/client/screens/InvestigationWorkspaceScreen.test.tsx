@@ -11,12 +11,18 @@ import type { InvestigationWorkspaceView } from '../../types/readModels.js';
 
 vi.mock('../api.js', () => ({
   fetchInvestigationWorkspace: vi.fn(),
+  fetchBriefForReviewByVersionNumber: vi.fn(),
   recheckSourceArtifact: vi.fn(),
   addSourcesToInvestigation: vi.fn(),
   createGenerationRun: vi.fn(),
   abandonGenerationRun: vi.fn(),
   CreateGenerationRunApiError: class CreateGenerationRunApiError extends Error {},
   CreateInvestigationApiError: class CreateInvestigationApiError extends Error {},
+  FetchBriefForReviewApiError: class FetchBriefForReviewApiError extends Error {
+    constructor(public status: number, public code: string) {
+      super(code);
+    }
+  },
 }));
 
 afterEach(() => cleanup());
@@ -56,6 +62,66 @@ async function renderAt(investigationId: string) {
       </Routes>
     </MemoryRouter>,
   );
+}
+
+async function renderAtVersion(investigationId: string, versionNumber: number | string) {
+  render(
+    <MemoryRouter
+      initialEntries={[
+        `/departments/problem-department/investigations/${investigationId}/versions/${versionNumber}`,
+      ]}
+    >
+      <Routes>
+        <Route
+          path="/departments/problem-department/investigations/:investigationId"
+          element={<InvestigationWorkspaceScreen />}
+        />
+        <Route
+          path="/departments/problem-department/investigations/:investigationId/versions/:versionNumber"
+          element={<InvestigationWorkspaceScreen />}
+        />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+function buildBriefForReview(
+  overrides: Partial<import('../../services/getBriefForReview.js').GetBriefForReviewResult> = {},
+): import('../../services/getBriefForReview.js').GetBriefForReviewResult {
+  return {
+    version: {
+      id: 'bv-1',
+      problemBriefId: 'pb-1',
+      versionNumber: 1,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      supersedesVersionId: null,
+      generationRunId: 'run-1',
+      problemStatementIds: [],
+      claimVersionIds: [],
+      demandSignalIds: [],
+      demandConfidenceClassification: { briefVersionId: 'bv-1', level: 'Emerging', narrative: 'n', citedDemandSignalIds: [] },
+      existingSolutionIds: [],
+      gapHypothesisIds: [],
+      negativeFindings: [],
+      uncertaintyStatement: { briefVersionId: 'bv-1', whatsUnknown: [], whatWouldChangeConclusion: [], whatsUndeterminable: [] },
+      recommendation: { briefVersionId: 'bv-1', decision: 'Approve', rationale: 'because' },
+      personalPullNoteIds: [],
+    },
+    assignedState: 'valid',
+    isSuperseded: false,
+    problemStatements: [],
+    claimVersions: [],
+    demandSignals: [],
+    demandConfidence: { briefVersionId: 'bv-1', level: 'Emerging', narrative: 'n', citedDemandSignalIds: [] },
+    existingSolutions: [],
+    gapHypotheses: [],
+    negativeFindings: [],
+    uncertainty: { briefVersionId: 'bv-1', whatsUnknown: [], whatWouldChangeConclusion: [], whatsUndeterminable: [] },
+    recommendation: { briefVersionId: 'bv-1', decision: 'Approve', rationale: 'because' },
+    personalPullNotes: [],
+    priorDecisions: [],
+    ...overrides,
+  };
 }
 
 describe('InvestigationWorkspaceScreen', () => {
@@ -188,5 +254,198 @@ describe('InvestigationWorkspaceScreen', () => {
       { timeout: 5000 },
     );
     expect(api.fetchInvestigationWorkspace).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe('InvestigationWorkspaceScreen — version-numbered navigation (US-1 AC5, §5.4)', () => {
+  it('renders a routed :versionNumber\'s own prior-version content, distinct from the current version, read-only with ViewingPriorVersionPanel and no current-run-mutating controls', async () => {
+    const priorBrief = buildBriefForReview({
+      version: { ...buildBriefForReview().version, id: 'bv-1', versionNumber: 1 },
+      problemStatements: [
+        { id: 'ps-old', briefVersionId: 'bv-1', whoExperiencesIt: 'OLD statement text', contextOrWorkflow: 'x', consequenceOrFriction: 'y', supportingClaimVersionIds: ['cv-old'] },
+      ],
+    });
+    const workspace = buildWorkspace({
+      investigation: { ...buildWorkspace().investigation, status: 'brief-generated' },
+      generationRuns: [
+        {
+          id: 'run-1',
+          outcome: 'succeeded',
+          livenessState: 'terminal',
+          startedAt: '2026-01-01T00:00:00.000Z',
+          completedAt: '2026-01-01T00:01:00.000Z',
+          runtimeIdentifier: 'r1',
+          steps: [],
+          webSearchQueries: [],
+        },
+      ],
+      briefs: [
+        { briefVersionId: 'bv-1', versionNumber: 1, createdAt: '2026-01-01T00:00:00.000Z', isCurrent: false, assignedState: 'valid', isSuperseded: true, forwardSupersededByVersionNumber: 2 },
+        { briefVersionId: 'bv-2', versionNumber: 2, createdAt: '2026-01-02T00:00:00.000Z', isCurrent: true, assignedState: 'valid', isSuperseded: false, forwardSupersededByVersionNumber: null },
+      ],
+    });
+    vi.mocked(api.fetchInvestigationWorkspace).mockResolvedValue(workspace);
+    vi.mocked(api.fetchBriefForReviewByVersionNumber).mockResolvedValue(priorBrief);
+
+    await renderAtVersion('inv-1', 1);
+
+    await waitFor(() => expect(api.fetchBriefForReviewByVersionNumber).toHaveBeenCalledWith('inv-1', 1));
+    await waitFor(() => expect(screen.getByText('OLD statement text')).toBeInTheDocument());
+
+    expect(screen.getByRole('region', { name: 'Status: Viewing Prior Version' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start generation' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Regenerate with new source snapshot' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Source content')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Abandon and retry' })).not.toBeInTheDocument();
+  });
+
+  it('renders an honest Version Not Found state (no crash, not the current version silently) for a routed :versionNumber that does not resolve', async () => {
+    const workspace = buildWorkspace({
+      investigation: { ...buildWorkspace().investigation, status: 'brief-generated' },
+      briefs: [
+        { briefVersionId: 'bv-1', versionNumber: 1, createdAt: '2026-01-01T00:00:00.000Z', isCurrent: true, assignedState: 'valid', isSuperseded: false, forwardSupersededByVersionNumber: null },
+      ],
+    });
+    vi.mocked(api.fetchInvestigationWorkspace).mockResolvedValue(workspace);
+    vi.mocked(api.fetchBriefForReviewByVersionNumber).mockRejectedValue(
+      new (api.FetchBriefForReviewApiError as unknown as { new (status: number, code: string): Error })(
+        404,
+        'brief-version-not-found',
+      ),
+    );
+
+    await renderAtVersion('inv-1', 99);
+
+    await waitFor(() =>
+      expect(screen.getByText('Version 99 does not exist for this Investigation.')).toBeInTheDocument(),
+    );
+    // Region 1 (Investigation identity) still renders normally.
+    expect(screen.getByText(/Investigation —/)).toBeInTheDocument();
+    // No generation-trigger control and no status-derived Outcome/Status Panel variant mounted.
+    expect(screen.queryByRole('button', { name: 'Start generation' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Regenerate with new source snapshot' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Source content')).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Status: Brief Generated' })).not.toBeInTheDocument();
+  });
+
+  it('does not render the Version Not Found state on the ordinary non-versioned route for a freshly-submitted Open Investigation with no BriefVersion yet — renders the normal Open/Eligible panel instead', async () => {
+    const workspace = buildWorkspace({
+      investigation: { ...buildWorkspace().investigation, status: 'open' },
+      briefs: [],
+      generationEligible: true,
+    });
+    vi.mocked(api.fetchInvestigationWorkspace).mockResolvedValue(workspace);
+
+    await renderAt('inv-1');
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Start generation' })).toBeInTheDocument());
+    expect(screen.queryByText(/does not exist for this Investigation/)).not.toBeInTheDocument();
+  });
+
+  it('ViewingPriorVersionPanel negative assertion: a prior version renders no current-run-mutating control even while the CURRENT version has an in-progress run (active liveness)', async () => {
+    const priorBrief = buildBriefForReview({ version: { ...buildBriefForReview().version, id: 'bv-1', versionNumber: 1 } });
+    const activeRun: InvestigationWorkspaceView['latestGenerationRun'] = {
+      id: 'run-2',
+      outcome: 'in-progress',
+      livenessState: 'active',
+      startedAt: '2026-01-03T00:00:00.000Z',
+      completedAt: null,
+      runtimeIdentifier: 'r2',
+      steps: [],
+      webSearchQueries: [],
+    };
+    const workspace = buildWorkspace({
+      investigation: { ...buildWorkspace().investigation, status: 'open' },
+      latestGenerationRun: activeRun,
+      generationRuns: [activeRun],
+      briefs: [
+        { briefVersionId: 'bv-1', versionNumber: 1, createdAt: '2026-01-01T00:00:00.000Z', isCurrent: false, assignedState: 'valid', isSuperseded: true, forwardSupersededByVersionNumber: 2 },
+      ],
+    });
+    vi.mocked(api.fetchInvestigationWorkspace).mockResolvedValue(workspace);
+    vi.mocked(api.fetchBriefForReviewByVersionNumber).mockResolvedValue(priorBrief);
+
+    await renderAtVersion('inv-1', 1);
+
+    await waitFor(() =>
+      expect(screen.getByRole('region', { name: 'Status: Viewing Prior Version' })).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/A generation run is currently active\/stalled on the current version/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Abandon and retry' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start generation' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Regenerate with new source snapshot' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Source content')).not.toBeInTheDocument();
+  });
+
+  it('ViewingPriorVersionPanel negative assertion: same, with stale-or-interrupted liveness on the current run', async () => {
+    const priorBrief = buildBriefForReview({ version: { ...buildBriefForReview().version, id: 'bv-1', versionNumber: 1 } });
+    const staleRun: InvestigationWorkspaceView['latestGenerationRun'] = {
+      id: 'run-2',
+      outcome: 'in-progress',
+      livenessState: 'stale-or-interrupted',
+      startedAt: '2026-01-03T00:00:00.000Z',
+      completedAt: null,
+      runtimeIdentifier: 'r2',
+      steps: [],
+      webSearchQueries: [],
+    };
+    const workspace = buildWorkspace({
+      investigation: { ...buildWorkspace().investigation, status: 'open' },
+      latestGenerationRun: staleRun,
+      generationRuns: [staleRun],
+      briefs: [
+        { briefVersionId: 'bv-1', versionNumber: 1, createdAt: '2026-01-01T00:00:00.000Z', isCurrent: false, assignedState: 'valid', isSuperseded: true, forwardSupersededByVersionNumber: 2 },
+      ],
+    });
+    vi.mocked(api.fetchInvestigationWorkspace).mockResolvedValue(workspace);
+    vi.mocked(api.fetchBriefForReviewByVersionNumber).mockResolvedValue(priorBrief);
+
+    await renderAtVersion('inv-1', 1);
+
+    await waitFor(() =>
+      expect(screen.getByRole('region', { name: 'Status: Viewing Prior Version' })).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/A generation run is currently active\/stalled on the current version/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Abandon and retry' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start generation' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Regenerate with new source snapshot' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Source content')).not.toBeInTheDocument();
+  });
+
+  it('the ordinary non-versioned route still works unaffected (renders the current version normally)', async () => {
+    const currentBrief = buildBriefForReview({
+      version: { ...buildBriefForReview().version, id: 'bv-2', versionNumber: 2 },
+      problemStatements: [
+        { id: 'ps-cur', briefVersionId: 'bv-2', whoExperiencesIt: 'CURRENT statement text', contextOrWorkflow: 'x', consequenceOrFriction: 'y', supportingClaimVersionIds: ['cv-cur'] },
+      ],
+    });
+    const workspace = buildWorkspace({
+      investigation: { ...buildWorkspace().investigation, status: 'brief-generated' },
+      generationRuns: [
+        {
+          id: 'run-2',
+          outcome: 'succeeded',
+          livenessState: 'terminal',
+          startedAt: '2026-01-02T00:00:00.000Z',
+          completedAt: '2026-01-02T00:01:00.000Z',
+          runtimeIdentifier: 'r2',
+          steps: [],
+          webSearchQueries: [],
+        },
+      ],
+      briefs: [
+        { briefVersionId: 'bv-1', versionNumber: 1, createdAt: '2026-01-01T00:00:00.000Z', isCurrent: false, assignedState: 'valid', isSuperseded: true, forwardSupersededByVersionNumber: 2 },
+        { briefVersionId: 'bv-2', versionNumber: 2, createdAt: '2026-01-02T00:00:00.000Z', isCurrent: true, assignedState: 'valid', isSuperseded: false, forwardSupersededByVersionNumber: null },
+      ],
+    });
+    vi.mocked(api.fetchInvestigationWorkspace).mockResolvedValue(workspace);
+    vi.mocked(api.fetchBriefForReviewByVersionNumber).mockResolvedValue(currentBrief);
+
+    await renderAt('inv-1');
+
+    await waitFor(() => expect(api.fetchBriefForReviewByVersionNumber).toHaveBeenCalledWith('inv-1', 2));
+    await waitFor(() => expect(screen.getByText('CURRENT statement text')).toBeInTheDocument());
+    expect(screen.getByRole('region', { name: 'Status: Brief Generated' })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Status: Viewing Prior Version' })).not.toBeInTheDocument();
   });
 });

@@ -1,8 +1,10 @@
 import { pool } from '../db/pool.js';
 import { getInvestigation, InvestigationNotFoundError } from './getInvestigation.js';
+import { getAssignedState } from './validityState.js';
 import type { SchemaValidationRecord, ToolInvocationRecord } from '../types/domain.js';
 import type {
   InvestigationWorkspaceView,
+  WorkspaceBriefSummary,
   WorkspaceGenerationRunSummary,
   WorkspaceGenerationStepSummary,
   WorkspaceWebSearchQuerySummary,
@@ -323,11 +325,64 @@ export async function getInvestigationWorkspace(
     };
   });
 
-  // Steps 3-4 (briefs/decisions) — rendering the actual BriefVersion/Decision content is C2-S4's
-  // own scope (03-UI-SPEC.md's BriefReviewPanel etc.); this slice needs only the service-level
-  // eligibility mechanism below, which reads problem_brief/brief_version directly, not via these
-  // arrays.
-  const briefs: InvestigationWorkspaceView['briefs'] = [];
+  // Step 3 (§4.4, C2-S4) — real brief_version rows for this Investigation's ProblemBrief lineage,
+  // newest first, each shaped into a WorkspaceBriefSummary with assignedState (getAssignedState),
+  // isSuperseded (structural — some other row in this lineage names this one via
+  // supersedes_version_id), and forwardSupersededByVersionNumber (same-loop lookup over the
+  // already-fetched raw row set, no second query).
+  interface RawBriefVersionRow {
+    id: string;
+    versionNumber: number;
+    createdAt: string;
+    supersedesVersionId: string | null;
+  }
+  let rawBriefVersionRows: RawBriefVersionRow[] = [];
+  if (investigation.problemBriefId !== null) {
+    const briefVersionsResult = await pool.query<{
+      id: string;
+      version_number: number;
+      created_at: Date;
+      supersedes_version_id: string | null;
+    }>(
+      `SELECT id, version_number, created_at, supersedes_version_id
+         FROM brief_version WHERE problem_brief_id = $1 ORDER BY version_number DESC`,
+      [investigation.problemBriefId],
+    );
+    rawBriefVersionRows = briefVersionsResult.rows.map((r) => ({
+      id: r.id,
+      versionNumber: r.version_number,
+      createdAt: r.created_at.toISOString(),
+      supersedesVersionId: r.supersedes_version_id,
+    }));
+  }
+
+  const problemBriefCurrentVersionResult =
+    investigation.problemBriefId !== null
+      ? await pool.query<{ current_version_id: string | null }>(
+          `SELECT current_version_id FROM problem_brief WHERE id = $1`,
+          [investigation.problemBriefId],
+        )
+      : null;
+  const currentVersionId = problemBriefCurrentVersionResult?.rows[0]?.current_version_id ?? null;
+
+  const briefs: WorkspaceBriefSummary[] = await Promise.all(
+    rawBriefVersionRows.map(async (raw) => {
+      const assignedState = await getAssignedState({ targetType: 'brief-version', targetId: raw.id });
+      const successor = rawBriefVersionRows.find((other) => other.supersedesVersionId === raw.id);
+      return {
+        briefVersionId: raw.id,
+        versionNumber: raw.versionNumber,
+        createdAt: raw.createdAt,
+        isCurrent: raw.id === currentVersionId,
+        assignedState,
+        isSuperseded: successor !== undefined,
+        forwardSupersededByVersionNumber: successor?.versionNumber ?? null,
+      };
+    }),
+  );
+
+  // Step 4 (decisionLineage) remains C2-S5's scope — decision/reconsideration_condition
+  // (migration 010) and getDecisionsForBriefVersion do not exist until then.
   const decisionLineage: InvestigationWorkspaceView['decisionLineage'] = [];
 
   // Step 5 (§4.8, US-13) — the real, resolved-content-hash/attempt-ledger check.

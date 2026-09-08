@@ -634,3 +634,29 @@ export interface Decision {
 /** Answers "what validity state did Department OS assign to this item at time T" — never "was
  *  this item objectively valid at time T." */
 export type AssignedValidityState = 'valid' | 'challenged' | 'invalidated';
+
+// ---- StatusEvent (Product Surface Checkpoint 2, §3.6, US-12) — schema and semantics reused
+// verbatim from problem-department-mvp/02-ARCHITECTURE.md §3 ("Bitemporal validity (Q-3)") and
+// §4's assignValidityState/getAssignedState/getAssignedStateAsRecorded — restated here (not
+// merely pointed to) because C2-S4 is the first slice to actually build it. ----
+
+/** Answers "what validity state did Department OS assign to this item at time T" — never "was
+ *  this item objectively valid at time T." Append-only; a correction is a new StatusEvent with a
+ *  later recordedAt (and possibly an earlier effectiveAt, for a late-discovered correction), never
+ *  an edit to an existing event. */
+export interface StatusEvent {
+  id: string;
+  sequence: number; // DB-assigned monotonic insertion order (BIGSERIAL), the deterministic
+  // tiebreak when two events share the same (effectiveAt, recordedAt); never caller-supplied,
+  // never reused
+  targetType: 'claim-version' | 'brief-version';
+  targetId: string; // ClaimVersion.id or BriefVersion.id — validated to exist as a row of this
+  // targetType BEFORE this row is ever inserted
+  assignedState: AssignedValidityState;
+  effectiveAt: string; // when this state became true in the represented world
+  recordedAt: string; // when Department OS learned/recorded it
+  recordedBy: string; // which service/process recorded it (e.g. 'forge-verification',
+  // 'test-harness') — not a human-actor identity field; this sprint has no browser-reachable
+  // caller (Out of Scope, US-12), so no UI ever populates this from a person
+  reason: string;
+}

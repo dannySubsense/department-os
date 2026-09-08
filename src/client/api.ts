@@ -1,6 +1,7 @@
 import type { MissionControlView, ProblemDepartmentOverview } from '../types/readModels.js';
 import type { InvestigationStatus, SourceArtifactType, SourceResolution } from '../types/domain.js';
 import type { InvestigationWorkspaceView } from '../types/readModels.js';
+import type { GetBriefForReviewResult } from '../services/getBriefForReview.js';
 
 /** Thin `fetch` wrapper for `GET /api/mission-control`. */
 export async function fetchMissionControl(): Promise<MissionControlView> {
@@ -165,6 +166,42 @@ export async function abandonGenerationRun(
     throw new Error(message);
   }
   return (await response.json()) as { generationRunId: string; outcome: 'failed' };
+}
+
+/** Typed error thrown by `fetchBriefForReviewByVersionNumber` on a non-2xx response — carries the
+ *  server's real `error` code and HTTP `status` so callers (`InvestigationWorkspaceScreen`) can
+ *  distinguish `brief-version-not-found` (§5.4 rule 0 — Version Not Found) from
+ *  `investigation-not-found` or `invalid-version-number`, rather than string-matching a message. */
+export class FetchBriefForReviewApiError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly code: string,
+  ) {
+    super(code);
+    this.name = 'FetchBriefForReviewApiError';
+  }
+}
+
+/** Thin `fetch` wrapper for `GET.../brief-versions/by-version/:versionNumber` (§3.1a). Response
+ *  body IS `GetBriefForReviewResult` verbatim — no wrapper object. */
+export async function fetchBriefForReviewByVersionNumber(
+  investigationId: string,
+  versionNumber: number,
+): Promise<GetBriefForReviewResult> {
+  const response = await fetch(
+    `/api/investigations/${investigationId}/brief-versions/by-version/${versionNumber}`,
+  );
+  if (!response.ok) {
+    let code = 'unknown-error';
+    try {
+      const errorBody = (await response.json()) as { error?: string };
+      code = errorBody.error ?? code;
+    } catch {
+      // response body was not JSON — fall back to the generic code above
+    }
+    throw new FetchBriefForReviewApiError(response.status, code);
+  }
+  return (await response.json()) as GetBriefForReviewResult;
 }
 
 /** Thin `fetch` wrapper for `POST /api/source-artifacts/:id/recheck` (§1.4a). */

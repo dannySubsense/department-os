@@ -38,6 +38,7 @@ describe('runMigrations', () => {
         '007_problem_brief_and_versioning.sql',
         '008_reconcile_brief_versioning_constraints.sql',
         '009_generation_run_investigation_in_progress_unique.sql',
+        '011_status_event.sql',
         '012_generation_run_consumed_source.sql',
         '013_source_artifact_canonical_identity.sql',
       ]);
@@ -126,6 +127,7 @@ describe('runMigrations', () => {
         '007_problem_brief_and_versioning.sql',
         '008_reconcile_brief_versioning_constraints.sql',
         '009_generation_run_investigation_in_progress_unique.sql',
+        '011_status_event.sql',
         '012_generation_run_consumed_source.sql',
         '013_source_artifact_canonical_identity.sql',
       ]);
@@ -192,6 +194,7 @@ describe('runMigrations', () => {
         '007_problem_brief_and_versioning.sql',
         '008_reconcile_brief_versioning_constraints.sql',
         '009_generation_run_investigation_in_progress_unique.sql',
+        '011_status_event.sql',
         '012_generation_run_consumed_source.sql',
         '013_source_artifact_canonical_identity.sql',
       ]);
@@ -286,6 +289,7 @@ describe('runMigrations', () => {
         '007_problem_brief_and_versioning.sql',
         '008_reconcile_brief_versioning_constraints.sql',
         '009_generation_run_investigation_in_progress_unique.sql',
+        '011_status_event.sql',
         '012_generation_run_consumed_source.sql',
         '013_source_artifact_canonical_identity.sql',
       ]);

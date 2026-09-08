@@ -63,16 +63,34 @@
       and should be tracked as a real defect, not dismissed as unrelated noise. Not fixed this
       slice (predates it, out of C2-S3's own scope) — flagging for a future slice/ticket.
       QC PASS (3rd pass), all points independently re-verified against live diff/test execution.
-- [ ] C2-S4: Brief Review — PENDING
+- [x] C2-S4: Brief Review — COMPLETE (2026-09-08). Migration 011 (status_event, sequence tiebreak),
+      getBriefForReview read service, BriefReviewPanel (7 sections + NegativeFindingNotice),
+      ProvenanceRail (evidence provenance, SearchScopeNotice/CitationScopeNotice, RunHistoryList,
+      TechnicalDisclosurePanel), version-numbered Brief navigation (route resolves versionNumber
+      before calling the service, per roadmap's own discipline), ViewingPriorVersionPanel
+      (structurally no mutating controls — imports neither AddSourceInline nor GenerateButton),
+      correction-attempt UI wired to real eligibility. Sol's original SearchScopeNotice
+      version-scoping finding closed at the data source (producingRun resolved from the displayed
+      version's own generationRunId, not latestGenerationRun).
+      One real bug found and fixed during the review loop: 3 new C2-S4 tests found 0 briefs/404
+      where they expected real data — root cause was the tests only seeding
+      `problem_brief.investigation_id`, never `investigation.problem_brief_id` (two independent
+      link columns). QC specifically double-checked this against production code
+      (generateBriefVersion.ts's real Phase 4 commit) and confirmed both are correctly set together
+      in one transaction there — test-fixture gap only, no production exposure.
+      477/482 tests passing, stable across 2 runs; 4 confirmed pre-existing failures (same as
+      C2-S3, unrelated, tracked separately). QC PASS on first full pass, all 9 review points
+      verified against live diff/test execution.
+      Outstanding (not code-verifiable): the roadmap's browser demonstration bullets.
 - [ ] C2-S5: Decision Recording and History — PENDING
 - [ ] **Frank binding forge-gate** — PENDING. Runs once, only after every slice above is checked
       off. Do not set `Status: COMPLETE` before this line is checked and its verdict is
       transcribed into this file's `## Forge Gate` section.
 
 ## Current
-Slice: C2-S4
+Slice: C2-S5
 Step: not yet started
-Last updated: 2026-09-07
+Last updated: 2026-09-08
 
 ## Fix Attempts
 | Test/File | Attempts | Last Error |

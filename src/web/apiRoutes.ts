@@ -19,6 +19,7 @@ import {
   RecheckNotEligibleError,
 } from '../services/recheckSourceArtifact.js';
 import { generateBriefVersion } from '../services/generateBriefVersion.js';
+import { getBriefForReview, BriefVersionNotFoundError } from '../services/getBriefForReview.js';
 import { pool } from '../db/pool.js';
 import {
   recordGenerationStep,
@@ -629,6 +630,55 @@ apiRoutes.get(
       res.status(200).json(view);
     } catch (err) {
       res.status(500).json({ error: 'workspace-read-failed', message: (err as Error).message });
+    }
+  },
+);
+
+// GET /api/investigations/:id/brief-versions/by-version/:versionNumber — 02-ARCHITECTURE.md §3.1a.
+apiRoutes.get(
+  '/api/investigations/:id/brief-versions/by-version/:versionNumber',
+  async (req: Request, res: Response): Promise<void> => {
+    const versionNumberRaw = req.params.versionNumber;
+    const versionNumber = Number(versionNumberRaw);
+    if (!Number.isInteger(versionNumber) || versionNumber <= 0) {
+      res.status(400).json({ error: 'invalid-version-number' });
+      return;
+    }
+
+    try {
+      let investigation;
+      try {
+        ({ investigation } = await getInvestigation(req.params.id));
+      } catch (err) {
+        if (err instanceof InvestigationNotFoundError) {
+          res.status(404).json({ error: 'investigation-not-found' });
+          return;
+        }
+        throw err;
+      }
+
+      if (investigation.problemBriefId === null) {
+        res.status(404).json({ error: 'brief-version-not-found' });
+        return;
+      }
+
+      const briefVersionResult = await pool.query<{ id: string }>(
+        `SELECT id FROM brief_version WHERE problem_brief_id = $1 AND version_number = $2`,
+        [investigation.problemBriefId, versionNumber],
+      );
+      if (briefVersionResult.rowCount === 0) {
+        res.status(404).json({ error: 'brief-version-not-found' });
+        return;
+      }
+
+      const result = await getBriefForReview(briefVersionResult.rows[0].id);
+      res.status(200).json(result);
+    } catch (err) {
+      if (err instanceof BriefVersionNotFoundError) {
+        res.status(404).json({ error: 'brief-version-not-found' });
+        return;
+      }
+      res.status(500).json({ error: 'brief-review-read-failed', message: (err as Error).message });
     }
   },
 );

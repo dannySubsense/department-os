@@ -1,4 +1,5 @@
 import { beforeEach, afterAll, describe, expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { pool } from '../db/pool.js';
 import { submitSources } from './submitSources.js';
 import {
@@ -11,11 +12,95 @@ import {
 
 beforeEach(async () => {
   await pool.query(
-    `TRUNCATE web_search_result, query_limitation, web_search_query, generation_step,
-              generation_run, source_artifact, submission, investigation
+    `TRUNCATE status_event, negative_finding, gap_hypothesis, existing_solution, demand_signal,
+              problem_statement, brief_version, problem_brief,
+              web_search_result, query_limitation, web_search_query, generation_step,
+              generation_run, claim_version_evidence, evidence_item, claim_version, claim,
+              source_artifact, submission, investigation
      CASCADE`,
   );
 });
+
+/** Same minimal direct-seed shape as getBriefForReview.test.ts's own helper — duplicated locally
+ *  (test fixture code, not production surface) so a real `BriefVersion` chain can back
+ *  `briefs[].assignedState`/`isSuperseded`/`forwardSupersededByVersionNumber` assertions. */
+async function seedBriefVersion(options: {
+  investigationId: string;
+  sourceArtifactId: string;
+  versionNumber: number;
+  supersedesVersionId?: string | null;
+}): Promise<string> {
+  const runResult = await pool.query<{ id: string }>(
+    `INSERT INTO generation_run (investigation_id, outcome, started_at, completed_at, runtime_identifier)
+     VALUES ($1, 'succeeded', now(), now(), 'test-runtime') RETURNING id`,
+    [options.investigationId],
+  );
+
+  let problemBriefId: string;
+  const existingBrief = await pool.query<{ id: string }>(
+    `SELECT id FROM problem_brief WHERE investigation_id = $1`,
+    [options.investigationId],
+  );
+  if (existingBrief.rowCount && existingBrief.rowCount > 0) {
+    problemBriefId = existingBrief.rows[0].id;
+  } else {
+    const briefResult = await pool.query<{ id: string }>(
+      `INSERT INTO problem_brief (investigation_id) VALUES ($1) RETURNING id`,
+      [options.investigationId],
+    );
+    problemBriefId = briefResult.rows[0].id;
+  }
+
+  const claimResult = await pool.query<{ id: string }>(`INSERT INTO claim DEFAULT VALUES RETURNING id`);
+  const claimVersionResult = await pool.query<{ id: string }>(
+    `INSERT INTO claim_version (claim_id, version_number, text) VALUES ($1, 1, 'claim text') RETURNING id`,
+    [claimResult.rows[0].id],
+  );
+  const claimVersionId = claimVersionResult.rows[0].id;
+
+  const briefVersionId = randomUUID();
+  const problemStatementId = randomUUID();
+
+  await pool.query(
+    `INSERT INTO brief_version
+       (id, problem_brief_id, version_number, supersedes_version_id, generation_run_id,
+        problem_statement_ids, claim_version_ids, demand_signal_ids,
+        demand_confidence_classification, existing_solution_ids, gap_hypothesis_ids,
+        uncertainty_statement, recommendation, personal_pull_note_ids)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, '{}', $8::jsonb, '{}', '{}', $9::jsonb, $10::jsonb, '{}')`,
+    [
+      briefVersionId,
+      problemBriefId,
+      options.versionNumber,
+      options.supersedesVersionId ?? null,
+      runResult.rows[0].id,
+      [problemStatementId],
+      [claimVersionId],
+      JSON.stringify({ briefVersionId, level: 'Emerging', narrative: 'n', citedDemandSignalIds: [] }),
+      JSON.stringify({ briefVersionId, whatsUnknown: ['x'], whatWouldChangeConclusion: ['y'], whatsUndeterminable: ['z'] }),
+      JSON.stringify({ briefVersionId, decision: 'Approve', rationale: 'Evidence supports the problem.' }),
+    ],
+  );
+
+  await pool.query(
+    `INSERT INTO problem_statement (id, brief_version_id, who_experiences_it, context_or_workflow,
+       consequence_or_friction, supporting_claim_version_ids)
+     VALUES ($1, $2, 'small teams', 'manual reconciliation', 'hours lost weekly', $3)`,
+    [problemStatementId, briefVersionId, [claimVersionId]],
+  );
+
+  await pool.query(`UPDATE problem_brief SET current_version_id = $1 WHERE id = $2`, [
+    briefVersionId,
+    problemBriefId,
+  ]);
+
+  await pool.query(`UPDATE investigation SET problem_brief_id = $1 WHERE id = $2`, [
+    problemBriefId,
+    options.investigationId,
+  ]);
+
+  return briefVersionId;
+}
 
 afterAll(async () => {
   await pool.end();
@@ -241,5 +326,53 @@ describe('getInvestigationWorkspace', () => {
     for (const run of view!.generationRuns) {
       expect(run.livenessState).toBe('terminal');
     }
+  });
+
+  it('briefs[].assignedState reflects a real seeded StatusEvent row (C2-S4)', async () => {
+    const submission = await submitSources({
+      origin: 'human',
+      artifacts: [{ type: 'text', raw: 'content' }],
+    });
+    const briefVersionId = await seedBriefVersion({
+      investigationId: submission.investigationId,
+      sourceArtifactId: submission.sourceArtifactIds[0],
+      versionNumber: 1,
+    });
+    await pool.query(
+      `INSERT INTO status_event (target_type, target_id, assigned_state, effective_at, recorded_by, reason)
+       VALUES ('brief-version', $1, 'challenged', now(), 'test-operator', 'seeded for test')`,
+      [briefVersionId],
+    );
+
+    const view = await getInvestigationWorkspace(submission.investigationId);
+    expect(view!.briefs).toHaveLength(1);
+    expect(view!.briefs[0].assignedState).toBe('challenged');
+  });
+
+  it('briefs[].isSuperseded/forwardSupersededByVersionNumber are null/false for a non-superseded version and reflect the real successor for a superseded one (C2-S4)', async () => {
+    const submission = await submitSources({
+      origin: 'human',
+      artifacts: [{ type: 'text', raw: 'content' }],
+    });
+    const v1 = await seedBriefVersion({
+      investigationId: submission.investigationId,
+      sourceArtifactId: submission.sourceArtifactIds[0],
+      versionNumber: 1,
+    });
+    const v2 = await seedBriefVersion({
+      investigationId: submission.investigationId,
+      sourceArtifactId: submission.sourceArtifactIds[0],
+      versionNumber: 2,
+      supersedesVersionId: v1,
+    });
+
+    const view = await getInvestigationWorkspace(submission.investigationId);
+    expect(view!.briefs).toHaveLength(2);
+    const briefV1 = view!.briefs.find((b) => b.briefVersionId === v1)!;
+    const briefV2 = view!.briefs.find((b) => b.briefVersionId === v2)!;
+    expect(briefV1.isSuperseded).toBe(true);
+    expect(briefV1.forwardSupersededByVersionNumber).toBe(2);
+    expect(briefV2.isSuperseded).toBe(false);
+    expect(briefV2.forwardSupersededByVersionNumber).toBeNull();
   });
 });
