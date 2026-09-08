@@ -37,3 +37,21 @@ this sequence).
 `PROGRESS.md` (or the lite-mode path above) is updated slice-by-slice, not
 at the end — it is ground truth for build state, read first on session
 resume and trusted over any session's own recollection of prior state.
+
+## Decision matrix
+
+When any command or instruction says "decide" without further qualification,
+apply this matrix, in this order of weight: best-practices approach,
+most-correct path forward, YAGNI, risk-averse, repo-safety-first, defensive,
+slow-and-deliberate. Speed is explicitly NOT a measure of progress on this
+project.
+
+### Escalation chain
+
+1. Apply the decision matrix above.
+2. If genuinely undecidable by the matrix, dispatch Cold Frank to decide.
+3. If the orchestrator and Cold Frank agree this is a matter for Danny
+   specifically (not just "hard"), surface it to Danny for discussion and
+   his call.
+
+(Danny, 2026-09-08.)
