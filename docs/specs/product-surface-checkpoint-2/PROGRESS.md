@@ -115,8 +115,16 @@
 
 ## Current
 Slice: C2-S5
-Step: Code/tests/QC APPROVED — commit pending @github-ops, then browser demonstration required
-before Done-When is satisfied and this slice can be checked complete.
+Step: Code/tests/QC APPROVED, committed (8932e41, unpushed). Browser demonstration BLOCKED —
+attempted 2026-09-08: real Investigation c05a0e58… submitted (2 sources: 1 content-retrieved URL,
+1 unreachable), real generation triggered, failed with `invalid_request_error: "Your credit
+balance is too low to access the Anthropic API."` — an Anthropic account billing blocker, not a
+code defect. Confirmed the Generation-Failed disclosure path itself worked correctly (honest
+error, retry control, real technical-disclosure JSON, no fabricated progress) — this incidentally
+satisfies part of the Checkpoint-level closing gate's Generation-Failed demonstration (§5 step 5),
+but does not produce the real Brief C2-S5's own decision-recording demo needs. Danny chose to hold
+off rather than top up credits or swap keys this session. Resume by clicking "Retry generation" on
+Investigation c05a0e58… once credits are available, or submit fresh once ready.
 Last updated: 2026-09-08
 
 ## Fix Attempts
