@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { MissionControlScreen } from './MissionControlScreen.js';
 import * as api from '../api.js';
@@ -193,7 +193,7 @@ describe('MissionControlScreen — recent lists', () => {
     expect(screen.getByText(shortenId('inv-top'))).toBeInTheDocument();
   });
 
-  it("the recent-Investigations top row's last-active link is a plain <a href=\"/investigations/{id}\"> labeled \"Open current view\" (US-4 AC2)", async () => {
+  it("the recent-Investigations top row's link is a router <Link> labeled \"Open current view\" targeting the new workspace route (US-4 AC2, C2-S2-corrected)", async () => {
     await renderWithView(
       buildView({
         recent: {
@@ -207,10 +207,13 @@ describe('MissionControlScreen — recent lists', () => {
     const link = screen.getByRole('link', { name: 'Open current view' });
     expect(link.tagName).toBe('A');
     expect(link).toHaveClass('legacy-view-button');
-    expect(link).toHaveAttribute('href', '/investigations/inv-top');
+    expect(link).toHaveAttribute(
+      'href',
+      '/departments/problem-department/investigations/inv-top',
+    );
   });
 
-  it('the recent-Investigations top row shows plain text (not a link) when status is brief-generated', async () => {
+  it('renders the same "Open current view" link for a brief-generated row (the legacy no-link branch was removed)', async () => {
     await renderWithView(
       buildView({
         recent: {
@@ -222,31 +225,16 @@ describe('MissionControlScreen — recent lists', () => {
     );
 
     expect(
-      screen.getByText('Brief ready — review workspace not yet available.'),
-    ).toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: 'Open current view' })).not.toBeInTheDocument();
-  });
-
-  it('renders no interactive control at all (no link, no button) for a brief-generated row', async () => {
-    await renderWithView(
-      buildView({
-        recent: {
-          investigations: [investigation({ id: 'inv-top', status: 'brief-generated' })],
-          briefs: [],
-          evidence: [],
-        },
-      }),
+      screen.queryByText('Brief ready — review workspace not yet available.'),
+    ).not.toBeInTheDocument();
+    const link = screen.getByRole('link', { name: 'Open current view' });
+    expect(link).toHaveAttribute(
+      'href',
+      '/departments/problem-department/investigations/inv-top',
     );
-
-    const row = screen
-      .getByText('Brief ready — review workspace not yet available.')
-      .closest('li');
-    expect(row).not.toBeNull();
-    expect(within(row!).queryByRole('link')).not.toBeInTheDocument();
-    expect(within(row!).queryByRole('button')).not.toBeInTheDocument();
   });
 
-  it('the affordance is no longer gated to only the first row — a second, non-first row with an actionable status also renders the "Open current view" button', async () => {
+  it('the affordance is not gated to only the first row — a second, non-first row also renders the "Open current view" link, targeting the new workspace route', async () => {
     await renderWithView(
       buildView({
         recent: {
@@ -262,7 +250,10 @@ describe('MissionControlScreen — recent lists', () => {
 
     const links = screen.getAllByRole('link', { name: 'Open current view' });
     expect(links.length).toBe(2);
-    expect(links[1]).toHaveAttribute('href', '/investigations/inv-second');
+    expect(links[1]).toHaveAttribute(
+      'href',
+      '/departments/problem-department/investigations/inv-second',
+    );
   });
 });
 

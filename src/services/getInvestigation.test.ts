@@ -1,4 +1,4 @@
-import { beforeEach, afterAll, describe, expect, it } from 'vitest';
+import { beforeEach, afterAll, describe, expect, it, vi } from 'vitest';
 import { pool } from '../db/pool.js';
 import { submitSources } from './submitSources.js';
 import { resolveSourceArtifact } from './resolveSourceArtifact.js';
@@ -59,5 +59,17 @@ describe('getInvestigation', () => {
     await expect(
       getInvestigation('00000000-0000-0000-0000-000000000000'),
     ).rejects.toThrow('does not exist');
+  });
+
+  it('an injected database/query failure propagates as its original error, never converted to InvestigationNotFoundError', async () => {
+    const submission = await submitSources({
+      origin: 'human',
+      artifacts: [{ type: 'text', raw: 'content' }],
+    });
+    const spy = vi.spyOn(pool, 'query').mockRejectedValueOnce(new Error('connection reset'));
+    await expect(getInvestigation(submission.investigationId)).rejects.toThrow(
+      'connection reset',
+    );
+    spy.mockRestore();
   });
 });

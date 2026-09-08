@@ -24,7 +24,9 @@ const {
   extractClaimsAndEvidence,
   extractClaimsAndEvidenceForSourceArtifacts,
   __setF2RaceDelayForTests,
+  __setFenceCheckRaceDelayForTests,
 } = await import('./extractClaimsAndEvidence.js');
+const { createGenerationRun } = await import('./provenanceRecorder.js');
 
 afterAll(async () => {
   await pool.end();
@@ -32,10 +34,18 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await pool.query(
-    'TRUNCATE claim_version_evidence, evidence_item, claim_version, claim, source_artifact, submission, investigation CASCADE',
+    'TRUNCATE claim_version_evidence, evidence_item, claim_version, claim, generation_step, generation_run, source_artifact, submission, investigation CASCADE',
   );
   vi.mocked(callForcedTool).mockReset();
 });
+
+/** C2-S3: `extractClaimsAndEvidence`/`extractClaimsAndEvidenceForSourceArtifacts` now require a
+ *  real GenerationRun's id + fenceToken (`assertFenceOwnership`, §1.6). Each call needs its own
+ *  fresh, real, in-progress run — a shared/stale run would spuriously fence out a later call. */
+async function seedGenerationRun(investigationId: string): Promise<{ id: string; fenceToken: number }> {
+  const run = await createGenerationRun({ investigationId, runtimeIdentifier: 'test-runtime' });
+  return { id: run.id, fenceToken: run.fenceToken };
+}
 
 /** Seeds a single 'content-retrieved' text source directly (Slice 4 tests exercise extraction
  *  logic against already-resolved sources, not the Slice 3 resolver — matching Slice 3's own test
@@ -88,7 +98,8 @@ describe('extractClaimsAndEvidence (mocked LLM)', () => {
       },
     });
 
-    const result = await extractClaimsAndEvidence(investigationId);
+    const run = await seedGenerationRun(investigationId);
+    const result = await extractClaimsAndEvidence(investigationId, run.id, run.fenceToken);
 
     expect(result.generationFailed).toBe(false);
     expect(result.claimVersions).toHaveLength(1);
@@ -127,7 +138,8 @@ describe('extractClaimsAndEvidence (mocked LLM)', () => {
       },
     });
 
-    const result = await extractClaimsAndEvidence(investigationId);
+    const run = await seedGenerationRun(investigationId);
+    const result = await extractClaimsAndEvidence(investigationId, run.id, run.fenceToken);
 
     expect(result.evidenceItems).toHaveLength(1);
     expect('stance' in result.evidenceItems[0]).toBe(false);
@@ -167,7 +179,8 @@ describe('extractClaimsAndEvidence (mocked LLM)', () => {
       },
     });
 
-    const result = await extractClaimsAndEvidence(investigationId);
+    const run = await seedGenerationRun(investigationId);
+    const result = await extractClaimsAndEvidence(investigationId, run.id, run.fenceToken);
 
     expect(result.evidenceItems).toHaveLength(1);
     expect(result.evidenceItems[0].label).toBeDefined();
@@ -203,7 +216,8 @@ describe('extractClaimsAndEvidence (mocked LLM)', () => {
       },
     });
 
-    const result = await extractClaimsAndEvidence(investigationId);
+    const run = await seedGenerationRun(investigationId);
+    const result = await extractClaimsAndEvidence(investigationId, run.id, run.fenceToken);
 
     expect(result.claimVersions).toHaveLength(1);
     expect(result.claimVersions[0].text).toBe('Supported claim');
@@ -230,7 +244,8 @@ describe('extractClaimsAndEvidence (mocked LLM)', () => {
       },
     });
 
-    const result = await extractClaimsAndEvidence(investigationId);
+    const run = await seedGenerationRun(investigationId);
+    const result = await extractClaimsAndEvidence(investigationId, run.id, run.fenceToken);
 
     expect(result.problemStatementCandidates).toHaveLength(0);
     expect(result.generationFailed).toBe(true);
@@ -258,8 +273,17 @@ describe('extractClaimsAndEvidence (mocked LLM)', () => {
       },
     });
 
-    const first = await extractClaimsAndEvidence(investigationId);
+    const firstRun = await seedGenerationRun(investigationId);
+    const first = await extractClaimsAndEvidence(investigationId, firstRun.id, firstRun.fenceToken);
     const originalClaimVersion = first.claimVersions[0];
+
+    // Migration 009's partial unique index allows at most one 'in-progress' GenerationRun per
+    // Investigation. This test's intent is sequential correction passes (not concurrent runs — that
+    // is F-2's job below), so firstRun must be marked no-longer-in-progress before secondRun is
+    // seeded on the same investigation; extractClaimsAndEvidence itself never finalizes runs.
+    await pool.query(`UPDATE generation_run SET outcome = 'succeeded', completed_at = now() WHERE id = $1`, [
+      firstRun.id,
+    ]);
 
     vi.mocked(callForcedTool).mockResolvedValueOnce({
       attempts: 1,
@@ -283,7 +307,8 @@ describe('extractClaimsAndEvidence (mocked LLM)', () => {
       },
     });
 
-    const second = await extractClaimsAndEvidence(investigationId);
+    const secondRun = await seedGenerationRun(investigationId);
+    const second = await extractClaimsAndEvidence(investigationId, secondRun.id, secondRun.fenceToken);
     const correctedClaimVersion = second.claimVersions[0];
 
     expect(correctedClaimVersion.claimId).toBe(originalClaimVersion.claimId);
@@ -333,7 +358,8 @@ describe('extractClaimsAndEvidence (mocked LLM)', () => {
       },
     });
 
-    const result = await extractClaimsAndEvidence(investigationId);
+    const run = await seedGenerationRun(investigationId);
+    const result = await extractClaimsAndEvidence(investigationId, run.id, run.fenceToken);
 
     expect(result.generationFailed).toBe(false);
     expect(result.claimVersions).toHaveLength(2);
@@ -388,7 +414,8 @@ describe('extractClaimsAndEvidence (mocked LLM)', () => {
       },
     });
 
-    const result = await extractClaimsAndEvidence(investigationId);
+    const run = await seedGenerationRun(investigationId);
+    const result = await extractClaimsAndEvidence(investigationId, run.id, run.fenceToken);
 
     expect(result.generationFailed).toBe(true);
     expect(result.generationFailureReason).toBeTruthy();
@@ -403,7 +430,7 @@ describe('extractClaimsAndEvidence (mocked LLM)', () => {
     expect(Number(evidenceCount.rows[0].count)).toBe(0);
   });
 
-  it('F-2: two concurrent extraction runs superseding the SAME existing Claim do not race/crash — both serialize into distinct, correctly-chained versions', async () => {
+  it('F-2: two concurrent extraction calls under ONE in-progress GenerationRun (same fence) serialize into distinct chained versions — the advisory lock\'s remaining sole-guard case under migration 009 + the fence guard', async () => {
     const { investigationId, sourceArtifactId } = await seedResolvedTextSource(
       'A source that both concurrent runs will re-extract, each correcting the same existing claim.',
     );
@@ -425,9 +452,17 @@ describe('extractClaimsAndEvidence (mocked LLM)', () => {
         ],
       },
     });
-    const seeded = await extractClaimsAndEvidence(investigationId);
+    const seedRun = await seedGenerationRun(investigationId);
+    const seeded = await extractClaimsAndEvidence(investigationId, seedRun.id, seedRun.fenceToken);
     const existingClaimId = seeded.claimVersions[0].claimId;
     expect(seeded.claimVersions[0].versionNumber).toBe(1);
+
+    // Migration 009's partial unique index allows at most one 'in-progress' GenerationRun per
+    // Investigation; seedRun must be finalized before the two genuinely-concurrent runs below are
+    // seeded on the same investigation.
+    await pool.query(`UPDATE generation_run SET outcome = 'succeeded', completed_at = now() WHERE id = $1`, [
+      seedRun.id,
+    ]);
 
     const makeRawExtraction = (claimText: string) => ({
       attempts: 1 as const,
@@ -458,6 +493,18 @@ describe('extractClaimsAndEvidence (mocked LLM)', () => {
       .mockResolvedValueOnce(makeRawExtraction('Concurrent correction A'))
       .mockResolvedValueOnce(makeRawExtraction('Concurrent correction B'));
 
+    // Migration 009's partial unique index makes two concurrent 'in-progress' GenerationRuns on one
+    // Investigation impossible now, so this test no longer seeds two runs (see the doc comment
+    // above `extractClaimsAndEvidence` in extractClaimsAndEvidence.ts: a stale run's writes after a
+    // retry has taken the fence are rejected by `assertFenceOwnership`, NOT by this advisory lock —
+    // that path is exercised separately below). The lock's one remaining real job is
+    // same-run/same-fence-token concurrent extraction calls — e.g. if
+    // `extractClaimsAndEvidenceForSourceArtifacts` were ever called concurrently over sub-scopes of
+    // the same run in a future change — plus defense-in-depth if migration 009's index or the fence
+    // guard are ever weakened. So both concurrent calls below share ONE GenerationRun's id and
+    // fenceToken.
+    const run = await seedGenerationRun(investigationId);
+
     // Force a genuine race window: without this, the two concurrent calls race on real,
     // uncontrolled async timing between the advisory-lock acquire and the existing-claims read,
     // which is too narrow to reliably overlap on normal test-run timing (a client-side `setTimeout`
@@ -476,8 +523,8 @@ describe('extractClaimsAndEvidence (mocked LLM)', () => {
     let resultB: Awaited<ReturnType<typeof extractClaimsAndEvidence>>;
     try {
       [resultA, resultB] = await Promise.all([
-        extractClaimsAndEvidence(investigationId),
-        extractClaimsAndEvidence(investigationId),
+        extractClaimsAndEvidence(investigationId, run.id, run.fenceToken),
+        extractClaimsAndEvidence(investigationId, run.id, run.fenceToken),
       ]);
     } finally {
       __setF2RaceDelayForTests(null);
@@ -517,6 +564,123 @@ describe('extractClaimsAndEvidence (mocked LLM)', () => {
     expect(resultVersionIds).toEqual([v2.id, v3.id].sort());
   });
 
+  it('abandon-then-retry: a stale run paused mid-extraction is fenced out by assertFenceOwnership when a retry run wins, not by the advisory lock — real reachable production path', async () => {
+    const { investigationId, sourceArtifactId } = await seedResolvedTextSource(
+      'A source a stale run A is mid-extracting when it is abandoned in favor of retry run B.',
+    );
+
+    // Step 1: seed a real, already-persisted Claim (version 1) via a genuine prior extraction run,
+    // matching F-2's seeding pattern — this is the existing Claim both A and B below will target.
+    vi.mocked(callForcedTool).mockResolvedValueOnce({
+      attempts: 1,
+      value: {
+        evidenceItems: [{ sourceArtifactId, excerptOrSummary: 'original evidence', label: 'fact' }],
+        claims: [{ text: 'Original claim text', evidenceRefs: [{ evidenceIndex: 0, stance: 'supporting' }] }],
+        problemStatements: [
+          {
+            whoExperiencesIt: 'Someone',
+            contextOrWorkflow: 'Somewhere',
+            consequenceOrFriction: 'Something',
+            supportingClaimIndices: [0],
+          },
+        ],
+      },
+    });
+    const seedRun = await seedGenerationRun(investigationId);
+    const seeded = await extractClaimsAndEvidence(investigationId, seedRun.id, seedRun.fenceToken);
+    const existingClaimId = seeded.claimVersions[0].claimId;
+    expect(seeded.claimVersions[0].versionNumber).toBe(1);
+    await pool.query(`UPDATE generation_run SET outcome = 'succeeded', completed_at = now() WHERE id = $1`, [
+      seedRun.id,
+    ]);
+
+    const makeRawExtraction = (claimText: string) => ({
+      attempts: 1 as const,
+      value: {
+        evidenceItems: [{ sourceArtifactId, excerptOrSummary: `evidence for ${claimText}`, label: 'fact' as const }],
+        claims: [
+          {
+            text: claimText,
+            matchesExistingClaimId: existingClaimId,
+            evidenceRefs: [{ evidenceIndex: 0, stance: 'supporting' as const }],
+          },
+        ],
+        problemStatements: [
+          {
+            whoExperiencesIt: 'Someone',
+            contextOrWorkflow: 'Somewhere',
+            consequenceOrFriction: 'Something',
+            supportingClaimIndices: [0],
+          },
+        ],
+      },
+    });
+    vi.mocked(callForcedTool)
+      .mockResolvedValueOnce(makeRawExtraction('Stale run A correction'))
+      .mockResolvedValueOnce(makeRawExtraction('Retry run B correction'));
+
+    // Run A starts and is genuinely paused after acquiring the advisory lock / mid-transaction,
+    // immediately before its own `assertFenceOwnership` check — via `__setFenceCheckRaceDelayForTests`,
+    // NOT `__setF2RaceDelayForTests` (that hook fires later, right before the claim_version INSERT,
+    // which is AFTER `assertFenceOwnership`'s `SELECT ... FOR UPDATE` has already taken a row lock on
+    // A's `generation_run` row — the abandon UPDATE below would then simply block on that lock until
+    // A's transaction commits, landing too late to be observed). A DB-side hold (not a client-side
+    // `setTimeout`) is required to reliably keep A's transaction open on the server for the window
+    // below, before the row lock is acquired.
+    const runA = await seedGenerationRun(investigationId);
+    __setFenceCheckRaceDelayForTests((client) => client.query('SELECT pg_sleep(1)').then(() => undefined));
+    const resultAPromise = extractClaimsAndEvidence(investigationId, runA.id, runA.fenceToken);
+
+    // While A is paused, simulate the real abandon flow's DB effects (`abandonGenerationRun` in
+    // src/web/apiRoutes.ts, steps 4-6): its guarded fence-increment `UPDATE ... SET fence_token =
+    // fence_token + 1 WHERE ... outcome = 'in-progress'`, followed by `finalizeGenerationRun` setting
+    // `outcome = 'failed'`, `completed_at = now()`. Calling `abandonGenerationRun` itself would
+    // additionally require staging a real stale `lease_heartbeat_at`/`computeLivenessState` gap
+    // unrelated to what this test verifies (fence rejection of an in-flight call, not abandon
+    // eligibility, which has its own coverage) — mirroring the two real column effects directly here
+    // keeps the test focused on the fence-rejection path while remaining faithful to the actual
+    // production mechanism.
+    await new Promise((resolve) => setTimeout(resolve, 100)); // let A reach BEGIN + advisory lock first
+    const bumped = await pool.query<{ fence_token: number }>(
+      `UPDATE generation_run SET outcome = 'failed', completed_at = now(), fence_token = fence_token + 1
+        WHERE id = $1 AND outcome = 'in-progress'
+      RETURNING fence_token`,
+      [runA.id],
+    );
+    expect(bumped.rowCount).toBe(1);
+
+    // Run B is now legitimately in-progress — migration 009's partial unique index allows it since A
+    // is no longer 'in-progress'.
+    const runB = await seedGenerationRun(investigationId);
+    let resultA: Awaited<ReturnType<typeof extractClaimsAndEvidence>>;
+    let resultB: Awaited<ReturnType<typeof extractClaimsAndEvidence>>;
+    try {
+      [resultA, resultB] = await Promise.all([resultAPromise, extractClaimsAndEvidence(investigationId, runB.id, runB.fenceToken)]);
+    } finally {
+      __setFenceCheckRaceDelayForTests(null);
+    }
+
+    // B succeeds and writes version 2.
+    expect(resultB.generationFailed).toBe(false);
+    expect(resultB.claimVersions).toHaveLength(1);
+    expect(resultB.claimVersions[0].claimId).toBe(existingClaimId);
+
+    // A is rejected by `assertFenceOwnership` once it resumes and reaches its own fence check —
+    // NOT by the advisory lock (there is no UNIQUE-constraint crash/throw here, and A wrote nothing).
+    expect(resultA.generationFailed).toBe(true);
+    expect(resultA.outcome).toBe('infra-error');
+    expect(resultA.generationFailureReason).toMatch(/fenced out/i);
+    expect(resultA.claimVersions).toHaveLength(0);
+
+    // Final claim_version rows for this claim are exactly version 1 (seed) and version 2 (B) — no
+    // version 3, no crash.
+    const rows = await pool.query(
+      'SELECT version_number FROM claim_version WHERE claim_id = $1 ORDER BY version_number',
+      [existingClaimId],
+    );
+    expect(rows.rows.map((r) => r.version_number)).toEqual([1, 2]);
+  });
+
   it('rejects an UPDATE or DELETE against every immutable evidence/claim table, not just claim_version', async () => {
     // Slice 2's QC found a migration guard and its own test sharing an unscoped-query blind spot,
     // and a prior version of this test file only exercised the trigger on `claim_version` — leaving
@@ -538,7 +702,8 @@ describe('extractClaimsAndEvidence (mocked LLM)', () => {
         ],
       },
     });
-    const result = await extractClaimsAndEvidence(investigationId);
+    const run = await seedGenerationRun(investigationId);
+    const result = await extractClaimsAndEvidence(investigationId, run.id, run.fenceToken);
     const claimId = result.claimVersions[0].claimId;
     const claimVersionId = result.claimVersions[0].id;
     const evidenceItemId = result.evidenceItems[0].id;
@@ -611,7 +776,13 @@ describe('extractClaimsAndEvidenceForSourceArtifacts (Slice 6 scoping)', () => {
       },
     });
 
-    const result = await extractClaimsAndEvidenceForSourceArtifacts(submission.investigationId, [secondSourceId]);
+    const run = await seedGenerationRun(submission.investigationId);
+    const result = await extractClaimsAndEvidenceForSourceArtifacts(
+      submission.investigationId,
+      [secondSourceId],
+      run.id,
+      run.fenceToken,
+    );
 
     expect(result.generationFailed).toBe(false);
     expect(callForcedTool).toHaveBeenCalledTimes(1);
@@ -631,7 +802,13 @@ describe('extractClaimsAndEvidenceForSourceArtifacts (Slice 6 scoping)', () => {
     const [sourceArtifactId] = submission.sourceArtifactIds;
     // Deliberately left at status 'unresolved' — not 'content-retrieved'.
 
-    const result = await extractClaimsAndEvidenceForSourceArtifacts(submission.investigationId, [sourceArtifactId]);
+    const run = await seedGenerationRun(submission.investigationId);
+    const result = await extractClaimsAndEvidenceForSourceArtifacts(
+      submission.investigationId,
+      [sourceArtifactId],
+      run.id,
+      run.fenceToken,
+    );
 
     expect(result.generationFailed).toBe(true);
     expect(result.generationFailureReason).toMatch(

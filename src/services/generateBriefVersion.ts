@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { pool } from '../db/pool.js';
-import { extractClaimsAndEvidence } from './extractClaimsAndEvidence.js';
+import { extractClaimsAndEvidence, extractClaimsAndEvidenceForSourceArtifacts } from './extractClaimsAndEvidence.js';
+import { getCandidateCorrectionSourceIds } from './getInvestigationWorkspace.js';
 import { analyzeDemand } from './demandAnalyzer.js';
 import { extractPersonalPull } from './personalPullExtractor.js';
 import { researchLandscape } from './landscapeResearcher.js';
@@ -16,9 +17,43 @@ import {
   finalizeGenerationRun,
   recordGenerationStep,
   runStepWithProvenance,
+  assertFenceOwnership,
+  GenerationRunAlreadyFinalizedError,
+  GenerationRunFencedOutError,
 } from './provenanceRecorder.js';
 import { persistBriefVersion } from './persistBriefVersion.js';
-import type { BriefElement, BriefVersion, EvidenceItem, InvestigationStatus } from '../types/domain.js';
+import type { BriefElement, BriefVersion, EvidenceItem, GenerationRun, InvestigationStatus } from '../types/domain.js';
+
+/** §1.6 — thrown when the Phase-4 success-path finalization (`:677`) loses the finalization race
+ *  (mechanism (a)): the transaction that would have committed a BriefVersion is rolled back instead
+ *  of committing one whose own GenerationRun the audit trail simultaneously records as failed. */
+export class GenerationRunLostFinalizationRaceError extends Error {
+  constructor(public readonly generationRunId: string) {
+    super(`GenerationRun ${generationRunId} lost the finalization race — Phase 4 rolled back rather than commit a BriefVersion whose run is recorded as not succeeding`);
+    this.name = 'GenerationRunLostFinalizationRaceError';
+  }
+}
+
+/** §1.6 mechanism (b) — graceful no-op wrapper used at every `finalizeGenerationRun` call site
+ *  EXCEPT the one Phase-4 success call (`:677`, mechanism (a)): none of these call sites is about
+ *  to persist a BriefVersion or advance `ProblemBrief.currentVersionId`, so losing the finalization
+ *  race here is inconsequential — caught, logged, and no error propagates. */
+async function finalizeRunGracefully(input: {
+  generationRunId: string;
+  outcome: 'succeeded' | 'failed';
+  briefVersionId: string | null;
+  fenceToken: number;
+  client?: PoolClient;
+}): Promise<void> {
+  try {
+    await finalizeGenerationRun(input);
+  } catch (err) {
+    if (err instanceof GenerationRunAlreadyFinalizedError) {
+      return;
+    }
+    throw err;
+  }
+}
 
 /** Brief Assembler (SLICE-09-DESIGN.md revision 8; Architecture §4). The single entrypoint
  *  orchestrating Slices 4-8 and producing one assembled, immutable `BriefVersion`, or none. */
@@ -219,58 +254,78 @@ async function readActualInvestigationStatus(investigationId: string): Promise<I
   return result.rows[0].status;
 }
 
-export async function generateBriefVersion(input: {
+/** Attempts the 'generation-failed' transition for an INITIAL generation failure only (finding
+ *  8 — a failed correction never attempts this transition at all, by construction; no DB write
+ *  here for that case). Never retries and never forces the status if the guarded UPDATE declines
+ *  (returns false) — per the design's "leave the Investigation exactly as this concurrent
+ *  observation found it" language (e.g. the row was concurrently observed 'blocked', which
+ *  `ALLOWED_PRIOR_STATUSES['generation-failed']` deliberately excludes — 'blocked' must never be
+ *  silently overwritten, G-13).
+ *
+ *  Composer ruling (round 3): a declined transition's `GenerationStep` must NAME the observed
+ *  status, not merely say "left as observed" — the thrown exception is transient, the
+ *  `GenerationStep` is the durable audit record. So this function reads the Investigation's
+ *  ACTUAL status back exactly ONCE — after the transition attempt (or immediately, for a
+ *  correction, which never attempts one) — and both records that value in the declined-step's
+ *  `error` text (when the transition declined) AND returns it, so every caller reuses the SAME
+ *  observation for whatever it reports/throws next, rather than re-reading and risking a second,
+ *  possibly-different answer. No new provenance concept, no schema change — the existing
+ *  `GenerationStep`/`recordGenerationStep` API (Architecture §1.9; 'Brief Assembler' is an
+ *  existing Section 2 component name, already used for this run's other structural-failure
+ *  steps).
+ *
+ *  ORDERING CONTRACT (Sol review, binding, unchanged): every call site MUST call this BEFORE
+ *  `finalizeGenerationRun` for the same run, never after — `finalizeGenerationRun` computes
+ *  `modelIdentifiers`/`toolsInvoked` from the step log at call time, so a step recorded here
+ *  after finalization already ran would be invisible to those aggregates and the finalized run
+ *  would misrepresent its own contents.
+ *
+ *  Exported as a standalone function (rather than a closure captured over a single run's
+ *  variables) so it can be invoked directly and deterministically from outside this module —
+ *  its real dependencies (investigationId, generationRunId, fenceToken, isCorrection) are made
+ *  explicit parameters instead of closed-over state. Its one production call site
+ *  (`generateBriefVersion`) has all four values on hand already; this changes nothing about what
+ *  runs, only how the parameters arrive. */
+export async function attemptGenerationFailedTransition(params: {
   investigationId: string;
-  supersedesVersionId?: string;
-  runtimeIdentifier: string;
-}): Promise<BriefVersion> {
-  const { investigationId } = input;
-  const isCorrection = input.supersedesVersionId !== undefined;
+  generationRunId: string;
+  fenceToken: number;
+  isCorrection: boolean;
+  reason: string;
+}): Promise<InvestigationStatus> {
+  const { investigationId, generationRunId, fenceToken, isCorrection, reason } = params;
+  // §1.6 SOL-HIGH-2 — this write is NOT exempted from fencing on "idempotency" grounds
+  // (getProblemDepartmentOverview/InvestigationPortfolioTable read investigation.status
+  // directly). Opens its own short-lived transaction: FIRST locks `investigation FOR UPDATE`
+  // (lock-order fix, matching Phase 4's own investigation-before-generation_run order), THEN
+  // calls assertFenceOwnership (locks generation_run FOR UPDATE), THEN performs the
+  // generation_step write and the transitionInvestigationStatus call, both inside that same
+  // transaction, committing together. If the guard throws, the whole transaction rolls back —
+  // neither write happens — and this is treated identically to every other fenced-out write's
+  // disposition: a silent, correctly-discarded no-op.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT id FROM investigation WHERE id = $1 FOR UPDATE', [investigationId]);
+    await assertFenceOwnership(client, generationRunId, fenceToken);
 
-  // ---- Phase 1: run creation ----
-  const generationRun = await createGenerationRun({ investigationId, runtimeIdentifier: input.runtimeIdentifier });
-  const generationRunId = generationRun.id;
-
-  // ---- Phase 2 step 0: preflight validation and snapshot (CALLER-A — the ONLY place
-  // InvalidSupersedeTargetError is ever thrown) ----
-  let preflightCurrentVersionId: string | null;
-  let supersedesRow: BriefVersionRow | null;
-  /** Attempts the 'generation-failed' transition for an INITIAL generation failure only (finding
-   *  8 — a failed correction never attempts this transition at all, by construction; no DB write
-   *  here for that case). Never retries and never forces the status if the guarded UPDATE declines
-   *  (returns false) — per the design's "leave the Investigation exactly as this concurrent
-   *  observation found it" language (e.g. the row was concurrently observed 'blocked', which
-   *  `ALLOWED_PRIOR_STATUSES['generation-failed']` deliberately excludes — 'blocked' must never be
-   *  silently overwritten, G-13).
-   *
-   *  Composer ruling (round 3): a declined transition's `GenerationStep` must NAME the observed
-   *  status, not merely say "left as observed" — the thrown exception is transient, the
-   *  `GenerationStep` is the durable audit record. So this function reads the Investigation's
-   *  ACTUAL status back exactly ONCE — after the transition attempt (or immediately, for a
-   *  correction, which never attempts one) — and both records that value in the declined-step's
-   *  `error` text (when the transition declined) AND returns it, so every caller reuses the SAME
-   *  observation for whatever it reports/throws next, rather than re-reading and risking a second,
-   *  possibly-different answer. No new provenance concept, no schema change — the existing
-   *  `GenerationStep`/`recordGenerationStep` API (Architecture §1.9; 'Brief Assembler' is an
-   *  existing Section 2 component name, already used for this run's other structural-failure
-   *  steps).
-   *
-   *  ORDERING CONTRACT (Sol review, binding, unchanged): every call site MUST call this BEFORE
-   *  `finalizeGenerationRun` for the same run, never after — `finalizeGenerationRun` computes
-   *  `modelIdentifiers`/`toolsInvoked` from the step log at call time, so a step recorded here
-   *  after finalization already ran would be invisible to those aggregates and the finalized run
-   *  would misrepresent its own contents. */
-  async function attemptGenerationFailedTransition(reason: string): Promise<InvestigationStatus> {
     let transitioned = true; // correction case: no transition is attempted at all — not a decline
     if (!isCorrection) {
-      transitioned = await transitionInvestigationStatus(investigationId, 'generation-failed', reason);
+      transitioned = await transitionInvestigationStatus(investigationId, 'generation-failed', reason, { client });
     }
     // Single read-back (Composer ruling: exactly once, reused by both the record below and the
-    // caller) — never re-read separately after this point on this path.
-    const resultingStatus = await readActualInvestigationStatus(investigationId);
+    // caller) — never re-read separately after this point on this path. Read on the SAME client
+    // so it observes this transaction's own (not-yet-committed) write consistently.
+    const statusResult = await client.query<{ status: InvestigationStatus }>(
+      `SELECT status FROM investigation WHERE id = $1`,
+      [investigationId],
+    );
+    const resultingStatus = statusResult.rows[0].status;
     if (!isCorrection && !transitioned) {
       await recordGenerationStep({
         generationRunId,
+        fenceToken,
+        client,
         step: {
           component: 'Brief Assembler',
           outcome: 'failed',
@@ -284,8 +339,53 @@ export async function generateBriefVersion(input: {
         },
       });
     }
+    await client.query('COMMIT');
     return resultingStatus;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {
+      // transaction may already be aborted — safe to ignore
+    });
+    if (err instanceof GenerationRunFencedOutError) {
+      // §1.6 — fenced-out: this run has been superseded, silently discard this write attempt and
+      // report the Investigation's real, current status (read fresh, outside the rolled-back
+      // transaction) rather than throwing.
+      return readActualInvestigationStatus(investigationId);
+    }
+    throw err;
+  } finally {
+    client.release();
   }
+}
+
+export async function generateBriefVersion(input: {
+  investigationId: string;
+  supersedesVersionId?: string;
+  runtimeIdentifier: string;
+  /** §1.3/§4.2 — invoked synchronously immediately after Phase 1's `createGenerationRun` call
+   *  succeeds, before Phase 2 begins. Optional, additive; zero effect on any caller that omits it.
+   *  Lets the Generation Run Connector return to the client the instant the concurrency-guarding
+   *  row exists, without awaiting the full pipeline. */
+  onRunCreated?: (generationRun: GenerationRun) => void;
+}): Promise<BriefVersion> {
+  const { investigationId } = input;
+  const isCorrection = input.supersedesVersionId !== undefined;
+
+  // ---- Phase 1: run creation ----
+  const generationRun = await createGenerationRun({ investigationId, runtimeIdentifier: input.runtimeIdentifier });
+  const generationRunId = generationRun.id;
+  const fenceToken = generationRun.fenceToken;
+  input.onRunCreated?.(generationRun);
+
+  // ---- Phase 2 step 0: preflight validation and snapshot (CALLER-A — the ONLY place
+  // InvalidSupersedeTargetError is ever thrown) ----
+  let preflightCurrentVersionId: string | null;
+  let supersedesRow: BriefVersionRow | null;
+  // Thin local wrapper over the module-level `attemptGenerationFailedTransition` (see its doc
+  // comment above, near its own definition) — keeps every call site in this function unchanged
+  // in shape (still `failGeneration(reason)`) while the real function now takes explicit params
+  // instead of closing over this function's variables.
+  const failGeneration = (reason: string): Promise<InvestigationStatus> =>
+    attemptGenerationFailedTransition({ investigationId, generationRunId, fenceToken, isCorrection, reason });
 
   try {
     const preflight = await preflightValidateSupersedeTarget(investigationId, input.supersedesVersionId, generationRunId);
@@ -294,8 +394,24 @@ export async function generateBriefVersion(input: {
   } catch (err) {
     if (err instanceof InvalidSupersedeTargetError) {
       // CALLER-CONTRACT error — distinct semantics preserved exactly: no BriefGenerationFailedError
-      // conversion, no Investigation status transition. Only the exactly-once finalization applies.
-      await finalizeGenerationRun({ generationRunId, outcome: 'failed', briefVersionId: null });
+      // conversion, no Investigation status transition. §1.3 — this preflight catch gains its own
+      // recordGenerationStep call, BEFORE finalizeGenerationRun (ordering contract), with a
+      // distinctly-named component for this genuinely new preflight check — so `steps: []` no
+      // longer reaches the browser for this error class.
+      await recordGenerationStep({
+        generationRunId,
+        fenceToken,
+        step: {
+          component: 'Preflight: supersede-target validation',
+          outcome: 'failed',
+          error: err.message,
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          inputRefs: [],
+          outputRefs: [],
+        },
+      });
+      await finalizeRunGracefully({ generationRunId, outcome: 'failed', briefVersionId: null, fenceToken });
       throw err;
     }
     // BLOCKING 1 fix: any OTHER error during preflight (DB error, connection failure, unexpected
@@ -309,8 +425,8 @@ export async function generateBriefVersion(input: {
     // the finalized run would misrepresent its own contents. No unconditional `finally`, exactly
     // one finalization on this path.
     const reason = err instanceof Error ? err.message : String(err);
-    const resultingStatus = await attemptGenerationFailedTransition(reason);
-    await finalizeGenerationRun({ generationRunId, outcome: 'failed', briefVersionId: null });
+    const resultingStatus = await failGeneration(reason);
+    await finalizeRunGracefully({ generationRunId, outcome: 'failed', briefVersionId: null, fenceToken });
     throw new BriefGenerationFailedError(reason, generationRunId, resultingStatus);
   }
 
@@ -320,9 +436,47 @@ export async function generateBriefVersion(input: {
    *  the step log finalizeGenerationRun aggregates from, never appended after — then reports the
    *  SAME observed status `attemptGenerationFailedTransition` already read back. Never returns. */
   async function failRun(reason: string): Promise<never> {
-    const resultingStatus = await attemptGenerationFailedTransition(reason);
-    await finalizeGenerationRun({ generationRunId, outcome: 'failed', briefVersionId: null });
+    const resultingStatus = await failGeneration(reason);
+    await finalizeRunGracefully({ generationRunId, outcome: 'failed', briefVersionId: null, fenceToken });
     throw new BriefGenerationFailedError(reason, generationRunId, resultingStatus);
+  }
+
+  /** §4.8/§1.6 — the generation_run_consumed_source ledger INSERT, in its own guard-checked
+   *  transaction, `assertFenceOwnership` called first. A fenced-out run's ledger row is never
+   *  written at all. `correctionTargetBriefVersionId` is null for an initial run, the server-
+   *  resolved `supersedesVersionId` for a correction attempt — durable even when the attempt
+   *  creates no BriefVersion. */
+  async function writeConsumedSourceLedger(
+    sourceArtifactIds: string[],
+    correctionTargetBriefVersionId: string | null,
+  ): Promise<void> {
+    if (sourceArtifactIds.length === 0) return;
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await assertFenceOwnership(client, generationRunId, fenceToken);
+      for (const sourceArtifactId of sourceArtifactIds) {
+        await client.query(
+          `INSERT INTO generation_run_consumed_source
+             (generation_run_id, source_artifact_id, correction_target_brief_version_id)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (generation_run_id, source_artifact_id) DO NOTHING`,
+          [generationRunId, sourceArtifactId, correctionTargetBriefVersionId],
+        );
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {
+        // transaction may already be aborted — safe to ignore
+      });
+      if (err instanceof GenerationRunFencedOutError) {
+        // §1.6 — fenced-out: silently discard, no ledger row written for this run.
+        return;
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   try {
@@ -330,13 +484,62 @@ export async function generateBriefVersion(input: {
     const startSnapshot = await getEvidenceForInvestigation(investigationId);
 
     // ---- Phase 2, step 1: Extraction & Clustering Engine (class 1 — Q-2 precheck) ----
+    // C2-S3 fix: a correction attempt scopes extraction to exactly its own candidate source ids
+    // (the same set `hasUnattemptedCorrectionSnapshot`'s eligibility check resolves), via
+    // `extractClaimsAndEvidenceForSourceArtifacts` — NOT the whole-Investigation
+    // `extractClaimsAndEvidence`, which would also re-read already-extracted old sources that
+    // reliably yield evidence again and mask a correction whose own candidate source contributed
+    // nothing. Initial (non-correction) runs are unaffected — still the whole-Investigation call.
+    const correctionCandidateSourceIds = isCorrection
+      ? await getCandidateCorrectionSourceIds(investigationId)
+      : null;
     const extraction = await runStepWithProvenance({
       generationRunId,
+      fenceToken,
       component: 'Extraction & Clustering Engine',
       inputRefs: [],
       getOutputRefs: (r) => [...r.claimVersions.map((cv) => cv.id), ...r.evidenceItems.map((e) => e.id)],
-      fn: () => extractClaimsAndEvidence(investigationId),
+      fn: () =>
+        correctionCandidateSourceIds !== null
+          ? extractClaimsAndEvidenceForSourceArtifacts(
+              investigationId,
+              correctionCandidateSourceIds,
+              generationRunId,
+              fenceToken,
+            )
+          : extractClaimsAndEvidence(investigationId, generationRunId, fenceToken),
     });
+    // ---- §4.8 correction-attempt no-new-usable-evidence disposition — checked BEFORE the generic
+    // extraction-failure check below, since a correction whose candidate snapshot(s) yielded zero
+    // valid EvidenceItem rows must ledger the attempt and report the specific 'no-new-usable-evidence'
+    // reason, not a generic "no ProblemStatement candidate" failure. Branches on the typed
+    // `outcome` discriminator, not the old `!generationFailed && evidenceItems.length === 0`
+    // predicate (dead code — zero evidence items structurally implies `generationFailed: true`).
+    // Every other non-'completed-zero-evidence' outcome falls through to the generic failRun path
+    // below with its own real reason. ----
+    if (isCorrection && extraction.outcome === 'completed-zero-evidence') {
+      await writeConsumedSourceLedger(extraction.extractionInputSourceIds, input.supersedesVersionId ?? null);
+      await recordGenerationStep({
+        generationRunId,
+        fenceToken,
+        step: {
+          component: 'Extraction: correction evidence validation',
+          outcome: 'failed',
+          error: 'no-new-usable-evidence',
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          inputRefs: extraction.extractionInputSourceIds,
+          outputRefs: [],
+        },
+      });
+      await finalizeRunGracefully({ generationRunId, outcome: 'failed', briefVersionId: null, fenceToken });
+      throw new BriefGenerationFailedError(
+        'no-new-usable-evidence',
+        generationRunId,
+        await readActualInvestigationStatus(investigationId),
+      );
+    }
+
     if (extraction.generationFailed || extraction.problemStatementCandidates.length === 0) {
       await failRun(
         extraction.generationFailureReason ??
@@ -371,6 +574,7 @@ export async function generateBriefVersion(input: {
     // ---- Phase 2, step 2: Demand Analyzer (class 2 — hard stop) ----
     const demand = await runStepWithProvenance({
       generationRunId,
+      fenceToken,
       component: 'Demand Analyzer',
       inputRefs: [],
       getOutputRefs: () => [],
@@ -383,6 +587,7 @@ export async function generateBriefVersion(input: {
     // ---- Phase 2, step 3: Personal Pull Extractor (never blocks) ----
     const personalPull = await runStepWithProvenance({
       generationRunId,
+      fenceToken,
       component: 'Personal Pull Extractor',
       inputRefs: [],
       getOutputRefs: () => [],
@@ -392,10 +597,11 @@ export async function generateBriefVersion(input: {
     // ---- Phase 2, step 4: Landscape Researcher (class 2 — hard stop) ----
     const landscape = await runStepWithProvenance({
       generationRunId,
+      fenceToken,
       component: 'Landscape Researcher',
       inputRefs: [],
       getOutputRefs: (r) => r.webSearchQueries.map((q) => q.id),
-      fn: () => researchLandscape(investigationId, generationRunId),
+      fn: () => researchLandscape(investigationId, generationRunId, fenceToken),
     });
     if (landscape.generationFailed) {
       await failRun(landscape.generationFailureReason ?? 'Landscape Researcher failed');
@@ -410,6 +616,7 @@ export async function generateBriefVersion(input: {
     // ---- Phase 2, step 5: Gap Hypothesis Generator (class 2 — hard stop) ----
     const gap = await runStepWithProvenance({
       generationRunId,
+      fenceToken,
       component: 'Gap Hypothesis Generator',
       inputRefs: [],
       getOutputRefs: () => [],
@@ -430,6 +637,7 @@ export async function generateBriefVersion(input: {
     const claimVersionsForUncertainty = await getClaimVersionsForInvestigation(investigationId);
     const uncertainty = await runStepWithProvenance({
       generationRunId,
+      fenceToken,
       component: 'Uncertainty Compiler',
       inputRefs: [],
       getOutputRefs: () => [],
@@ -451,6 +659,7 @@ export async function generateBriefVersion(input: {
     // ---- Phase 2, step 7: Recommendation Engine (class 3 — own failure only) ----
     const recommendation = await runStepWithProvenance({
       generationRunId,
+      fenceToken,
       component: 'Recommendation Engine',
       inputRefs: [],
       getOutputRefs: () => [],
@@ -507,6 +716,17 @@ export async function generateBriefVersion(input: {
         );
       }
     }
+
+    // ---- §4.8/SOL-HIGH-2/SELF-4 — generation_run_consumed_source ledger write. Input is the
+    // UNION of primary Extraction's own extractionInputSourceIds (captured at Extraction's own
+    // already-executed read) and Landscape Research's own extractionInputSourceIds — not the
+    // primary set alone; both origins must be ledgered. Never re-derived from the current
+    // content-retrieved set at this later point — a source resolved after Extraction's own read
+    // must NOT be recorded consumed by this run, even though it may be visible by now. ----
+    const consideredSourceArtifactIds = Array.from(
+      new Set([...extraction.extractionInputSourceIds, ...landscape.extractionInputSourceIds]),
+    );
+    await writeConsumedSourceLedger(consideredSourceArtifactIds, input.supersedesVersionId ?? null);
 
     // ---- Phase 3, check 2: four-element negativeFindings fail-closed rule — TERMINAL-FAIL DIRECTLY ----
     const negativeFindingRows: Array<{ element: BriefElement; statement: string }> = [];
@@ -572,6 +792,7 @@ export async function generateBriefVersion(input: {
             : `StaleCorrectionConflict: expected current version ${preflightCurrentVersionId}, actual ${currentVersionIdAtLock}`;
         await recordGenerationStep({
           generationRunId,
+          fenceToken,
           step: {
             component: 'Brief Assembler',
             outcome: 'failed',
@@ -582,7 +803,7 @@ export async function generateBriefVersion(input: {
             outputRefs: [],
           },
         });
-        await finalizeGenerationRun({ generationRunId, outcome: 'failed', briefVersionId: null });
+        await finalizeRunGracefully({ generationRunId, outcome: 'failed', briefVersionId: null, fenceToken });
         throw new StaleCorrectionConflictError(
           problemBriefRow.id,
           preflightCurrentVersionId,
@@ -648,6 +869,7 @@ export async function generateBriefVersion(input: {
         const startedAt = new Date().toISOString();
         await recordGenerationStep({
           generationRunId,
+          fenceToken,
           step: {
             component: 'Brief Assembler',
             outcome: 'failed',
@@ -660,7 +882,7 @@ export async function generateBriefVersion(input: {
             outputRefs: [],
           },
         });
-        await finalizeGenerationRun({ generationRunId, outcome: 'failed', briefVersionId: null });
+        await finalizeRunGracefully({ generationRunId, outcome: 'failed', briefVersionId: null, fenceToken });
         // BLOCKING 1's return-value check, applied to what gets REPORTED too: this UPDATE targeted
         // 'brief-generated' and declined — do not assume 'generation-failed' as the resulting
         // status (this is not a generic initial-failure path, and no transitionInvestigationStatus
@@ -674,12 +896,28 @@ export async function generateBriefVersion(input: {
         );
       }
 
-      await finalizeGenerationRun({ generationRunId, outcome: 'succeeded', briefVersionId, client });
+      // §1.6 mechanism (a) — the one finalizeGenerationRun call site that must NOT gracefully
+      // swallow GenerationRunAlreadyFinalizedError: if it loses the race here, COMMIT must not
+      // proceed (that would persist a BriefVersion whose own GenerationRun is recorded 'failed').
+      try {
+        await finalizeGenerationRun({ generationRunId, outcome: 'succeeded', briefVersionId, fenceToken, client });
+      } catch (err) {
+        if (err instanceof GenerationRunAlreadyFinalizedError) {
+          await client.query('ROLLBACK');
+          throw new GenerationRunLostFinalizationRaceError(generationRunId);
+        }
+        throw err;
+      }
 
       await client.query('COMMIT');
       return briefVersion;
     } catch (err) {
-      if (err instanceof StaleCorrectionConflictError || err instanceof BriefGenerationFailedError) {
+      if (
+        err instanceof StaleCorrectionConflictError ||
+        err instanceof BriefGenerationFailedError ||
+        err instanceof GenerationRunLostFinalizationRaceError ||
+        err instanceof GenerationRunFencedOutError
+      ) {
         throw err;
       }
       try {
@@ -691,8 +929,8 @@ export async function generateBriefVersion(input: {
       // finalizeGenerationRun, never after — finalize computes modelIdentifiers/toolsInvoked from
       // the step log at call time.
       const reason = err instanceof Error ? err.message : String(err);
-      const resultingStatus = await attemptGenerationFailedTransition(reason);
-      await finalizeGenerationRun({ generationRunId, outcome: 'failed', briefVersionId: null });
+      const resultingStatus = await failGeneration(reason);
+      await finalizeRunGracefully({ generationRunId, outcome: 'failed', briefVersionId: null, fenceToken });
       throw new BriefGenerationFailedError(reason, generationRunId, resultingStatus);
     } finally {
       client.release();
@@ -701,7 +939,9 @@ export async function generateBriefVersion(input: {
     if (
       err instanceof InvalidSupersedeTargetError ||
       err instanceof StaleCorrectionConflictError ||
-      err instanceof BriefGenerationFailedError
+      err instanceof BriefGenerationFailedError ||
+      err instanceof GenerationRunLostFinalizationRaceError ||
+      err instanceof GenerationRunFencedOutError
     ) {
       throw err;
     }
@@ -709,8 +949,8 @@ export async function generateBriefVersion(input: {
     // generationFailed field — transition-attempt-and-record (initial only) BEFORE finalizing
     // exactly once (Sol review: ordering constraint, same reasoning as above), then rethrow.
     const reason = err instanceof Error ? err.message : String(err);
-    const resultingStatus = await attemptGenerationFailedTransition(reason);
-    await finalizeGenerationRun({ generationRunId, outcome: 'failed', briefVersionId: null });
+    const resultingStatus = await failGeneration(reason);
+    await finalizeRunGracefully({ generationRunId, outcome: 'failed', briefVersionId: null, fenceToken });
     throw new BriefGenerationFailedError(reason, generationRunId, resultingStatus);
   }
 }

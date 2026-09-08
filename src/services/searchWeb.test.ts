@@ -82,18 +82,18 @@ async function insertInvestigation(): Promise<string> {
 
 // migration 006 added web_search_query.generation_run_id -> generation_run(id) FK: every
 // generationRunId used below must reference a real generation_run row, not a bare randomUUID().
-async function insertGenerationRun(investigationId: string): Promise<string> {
+async function insertGenerationRun(investigationId: string): Promise<{ id: string; fenceToken: number }> {
   const run = await createGenerationRun({
     investigationId,
     runtimeIdentifier: 'test-runtime',
   });
-  return run.id;
+  return { id: run.id, fenceToken: run.fenceToken };
 }
 
 describe('searchWeb — query-limited short-circuit', () => {
   it('persists a WebSearchQuery with results: [] and a QueryLimitation, and never attempts retrieval', async () => {
     const investigationId = await insertInvestigation();
-    const generationRunId = await insertGenerationRun(investigationId);
+    const { id: generationRunId, fenceToken } = await insertGenerationRun(investigationId);
 
     searchWebAdapterMock.mockResolvedValueOnce({
       outcome: 'query-limited',
@@ -108,7 +108,7 @@ describe('searchWeb — query-limited short-circuit', () => {
       },
     });
 
-    const result = await searchWeb({ investigationId, generationRunId, query: 'limited query' });
+    const result = await searchWeb({ investigationId, generationRunId, fenceToken, query: 'limited query' });
 
     expect(result.results).toEqual([]);
     expect(result.queryLimitation).toBeDefined();
@@ -139,7 +139,7 @@ describe('searchWeb — query-limited short-circuit', () => {
 describe('searchWeb — controlled retrieval, classification, and not-dropped persistence', () => {
   it('persists exactly one WebSearchResult per selected URL, classifying retrieved/blocked/failed via deterministic fixtures, and creates a SourceArtifact (origin: landscape-research) only for the retrieved one', async () => {
     const investigationId = await insertInvestigation();
-    const generationRunId = await insertGenerationRun(investigationId);
+    const { id: generationRunId, fenceToken } = await insertGenerationRun(investigationId);
 
     const retrievedUrl = `${fixtureBaseUrl}/ok`;
     const blockedUrl = `${fixtureBaseUrl}/forbidden`; // deterministic 403 -> blocked
@@ -155,6 +155,7 @@ describe('searchWeb — controlled retrieval, classification, and not-dropped pe
     const result = await searchWeb({
       investigationId,
       generationRunId,
+      fenceToken,
       query: 'mixed outcomes query',
     });
 
@@ -193,7 +194,7 @@ describe('searchWeb — controlled retrieval, classification, and not-dropped pe
 
   it('persists zero WebSearchResult rows when the adapter succeeds with zero selected URLs (legitimate empty result set, not a limitation)', async () => {
     const investigationId = await insertInvestigation();
-    const generationRunId = await insertGenerationRun(investigationId);
+    const { id: generationRunId, fenceToken } = await insertGenerationRun(investigationId);
 
     searchWebAdapterMock.mockResolvedValueOnce({
       outcome: 'succeeded',
@@ -202,7 +203,7 @@ describe('searchWeb — controlled retrieval, classification, and not-dropped pe
       selectedResultUrls: [],
     });
 
-    const result = await searchWeb({ investigationId, generationRunId, query: 'zero results query' });
+    const result = await searchWeb({ investigationId, generationRunId, fenceToken, query: 'zero results query' });
 
     expect(result.results).toEqual([]);
     expect(result.queryLimitation).toBeUndefined();
@@ -227,7 +228,7 @@ describe('persistSucceeded — transaction rollback / not-dropped invariant (QC 
   // never a partial/truncated WebSearchResult set.
   it('rolls back the entire transaction and persists zero rows when a duplicate URL in `results` violates the UNIQUE(web_search_query_id, url) constraint mid-loop', async () => {
     const investigationId = await insertInvestigation();
-    const generationRunId = await insertGenerationRun(investigationId);
+    const { id: generationRunId, fenceToken } = await insertGenerationRun(investigationId);
     const performedAt = new Date().toISOString();
 
     const duplicateUrl = 'https://example.com/duplicate-forced-for-test';
@@ -250,7 +251,7 @@ describe('persistSucceeded — transaction rollback / not-dropped invariant (QC 
 
     await expect(
       persistSucceeded(
-        { investigationId, generationRunId, query: 'duplicate url forced' },
+        { investigationId, generationRunId, fenceToken, query: 'duplicate url forced' },
         performedAt,
         results,
         undefined,
@@ -271,7 +272,7 @@ describe('persistSucceeded — transaction rollback / not-dropped invariant (QC 
 describe('searchWeb — partial-success queryLimitation (finding 1)', () => {
   it('persists BOTH retrieved results AND a query_limitation row in the same transaction when one web_search_tool_result block succeeds and another errors, and outcome stays succeeded with URLs present', async () => {
     const investigationId = await insertInvestigation();
-    const generationRunId = await insertGenerationRun(investigationId);
+    const { id: generationRunId, fenceToken } = await insertGenerationRun(investigationId);
     const retrievedUrl = `${fixtureBaseUrl}/ok`;
 
     searchWebAdapterMock.mockResolvedValueOnce({
@@ -290,6 +291,7 @@ describe('searchWeb — partial-success queryLimitation (finding 1)', () => {
     const result = await searchWeb({
       investigationId,
       generationRunId,
+      fenceToken,
       query: 'partial success query',
     });
 
@@ -317,7 +319,7 @@ describe('searchWeb — partial-success queryLimitation (finding 1)', () => {
 describe('searchWeb — dedup of duplicate selectedResultUrls (finding 3)', () => {
   it('persists exactly one WebSearchResult per unique URL and does not lose the WebSearchQuery when selectedResultUrls contains an exact duplicate', async () => {
     const investigationId = await insertInvestigation();
-    const generationRunId = await insertGenerationRun(investigationId);
+    const { id: generationRunId, fenceToken } = await insertGenerationRun(investigationId);
     const retrievedUrl = `${fixtureBaseUrl}/ok`;
 
     searchWebAdapterMock.mockResolvedValueOnce({
@@ -330,6 +332,7 @@ describe('searchWeb — dedup of duplicate selectedResultUrls (finding 3)', () =
     const result = await searchWeb({
       investigationId,
       generationRunId,
+      fenceToken,
       query: 'duplicate url query',
     });
 
@@ -352,7 +355,7 @@ describe('searchWeb — dedup of duplicate selectedResultUrls (finding 3)', () =
 describe('searchWeb — provenance telemetry (Architecture §1.9 "searchWeb telemetry")', () => {
   it('records "web_search" and "url-fetch" recordToolInvocation calls with correct outcomes when a collector scope is open, without changing searchWeb\'s own return value or persistence', async () => {
     const investigationId = await insertInvestigation();
-    const generationRunId = await insertGenerationRun(investigationId);
+    const { id: generationRunId, fenceToken } = await insertGenerationRun(investigationId);
 
     const retrievedUrl = `${fixtureBaseUrl}/ok`;
     const blockedUrl = `${fixtureBaseUrl}/forbidden`;
@@ -369,7 +372,7 @@ describe('searchWeb — provenance telemetry (Architecture §1.9 "searchWeb tele
     const collector = { record: (inv: CapturedToolInvocation) => captured.push(inv) };
 
     const result = await withProvenanceCollector(collector, () =>
-      searchWeb({ investigationId, generationRunId, query: 'provenance scoped query' }),
+      searchWeb({ investigationId, generationRunId, fenceToken, query: 'provenance scoped query' }),
     );
 
     // Instrumentation does not alter searchWeb's own behavior — same shape/assertions as the
@@ -393,7 +396,7 @@ describe('searchWeb — provenance telemetry (Architecture §1.9 "searchWeb tele
 
   it('records a "web_search" invocation with outcome "query-limited" when the adapter reports query-limited, with a scope open', async () => {
     const investigationId = await insertInvestigation();
-    const generationRunId = await insertGenerationRun(investigationId);
+    const { id: generationRunId, fenceToken } = await insertGenerationRun(investigationId);
 
     searchWebAdapterMock.mockResolvedValueOnce({
       outcome: 'query-limited',
@@ -412,7 +415,7 @@ describe('searchWeb — provenance telemetry (Architecture §1.9 "searchWeb tele
     const collector = { record: (inv: CapturedToolInvocation) => captured.push(inv) };
 
     const result = await withProvenanceCollector(collector, () =>
-      searchWeb({ investigationId, generationRunId, query: 'provenance limited query' }),
+      searchWeb({ investigationId, generationRunId, fenceToken, query: 'provenance limited query' }),
     );
 
     expect(result.results).toEqual([]);
@@ -423,7 +426,7 @@ describe('searchWeb — provenance telemetry (Architecture §1.9 "searchWeb tele
 
   it('is a no-op that does not throw or alter behavior when searchWeb runs with no provenance collector scope open (all prior describe blocks in this file already exercise this — this test asserts it explicitly)', async () => {
     const investigationId = await insertInvestigation();
-    const generationRunId = await insertGenerationRun(investigationId);
+    const { id: generationRunId, fenceToken } = await insertGenerationRun(investigationId);
 
     searchWebAdapterMock.mockResolvedValueOnce({
       outcome: 'succeeded',
@@ -433,7 +436,7 @@ describe('searchWeb — provenance telemetry (Architecture §1.9 "searchWeb tele
     });
 
     await expect(
-      searchWeb({ investigationId, generationRunId, query: 'no scope query' }),
+      searchWeb({ investigationId, generationRunId, fenceToken, query: 'no scope query' }),
     ).resolves.toMatchObject({ results: [] });
   });
 });
@@ -441,7 +444,7 @@ describe('searchWeb — provenance telemetry (Architecture §1.9 "searchWeb tele
 describe('persistSucceeded — atomicity, no orphan SourceArtifact on rollback (finding 4)', () => {
   it('leaves no orphan source_artifact row when the transaction fails after the source_artifact insert but before commit', async () => {
     const investigationId = await insertInvestigation();
-    const generationRunId = await insertGenerationRun(investigationId);
+    const { id: generationRunId, fenceToken } = await insertGenerationRun(investigationId);
     const performedAt = new Date().toISOString();
 
     const retrievedUrl = 'https://example.com/atomicity-forced-for-test';
@@ -468,7 +471,7 @@ describe('persistSucceeded — atomicity, no orphan SourceArtifact on rollback (
 
     await expect(
       persistSucceeded(
-        { investigationId, generationRunId, query: 'atomicity forced' },
+        { investigationId, generationRunId, fenceToken, query: 'atomicity forced' },
         performedAt,
         results,
         undefined,

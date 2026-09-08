@@ -43,6 +43,7 @@ function okUpstream() {
       existingSolutionCandidates: [],
       landscapeEvidenceItems: [],
       generationFailed: false,
+      extractionInputSourceIds: [],
     },
     gapHypothesisGeneration: {
       gapHypothesisCandidates: [],
@@ -110,6 +111,7 @@ describe('generateRecommendation', () => {
         existingSolutionCandidates: [],
         landscapeEvidenceItems: [],
         generationFailed: false,
+        extractionInputSourceIds: [],
       },
       gapHypothesisGeneration: { gapHypothesisCandidates: [], generationFailed: false },
       uncertaintyStatementCandidate: {

@@ -187,6 +187,10 @@ export interface LandscapeResearchResult {
    *  what Slice 9 needs to construct a NegativeFinding row with element: 'existing-solution'
    *  (roadmap Slice 6 Implementation Notes). Unset on every generationFailed: true path. */
   negativeFindingSignal?: { statement: string };
+  /** §4.8 — this run's own second extraction pass's `extractionInputSourceIds` (empty when no
+   *  landscape source was retrieved/extracted this run), unioned by `generateBriefVersion` with
+   *  primary Extraction's own set before writing the `generation_run_consumed_source` ledger. */
+  extractionInputSourceIds: string[];
 }
 
 /** Landscape Researcher (Architecture §1.7, Roadmap Slice 6). Reads an Investigation's
@@ -206,6 +210,7 @@ export interface LandscapeResearchResult {
 export async function researchLandscape(
   investigationId: string,
   generationRunId: string,
+  fenceToken: number,
 ): Promise<LandscapeResearchResult> {
   // Declared here (outside the try) so the outer catch can see what was ACTUALLY issued so far —
   // searchWeb() commits each WebSearchQuery/WebSearchResult/QueryLimitation to the DB per call, so
@@ -224,6 +229,7 @@ export async function researchLandscape(
         generationFailed: true,
         generationFailureReason:
           'No EvidenceItem is available for this Investigation — landscape research cannot run.',
+        extractionInputSourceIds: [],
       };
     }
 
@@ -250,6 +256,7 @@ export async function researchLandscape(
           landscapeEvidenceItems: [],
           generationFailed: true,
           generationFailureReason: `Landscape query proposal failed schema validation after bounded repair: ${err.message}`,
+          extractionInputSourceIds: [],
         };
       }
       throw err;
@@ -257,7 +264,7 @@ export async function researchLandscape(
 
     for (const query of rawQueries.queries) {
       // eslint-disable-next-line no-await-in-loop -- sequential by design, see doc comment
-      const webSearchQuery = await searchWeb({ investigationId, generationRunId, query });
+      const webSearchQuery = await searchWeb({ investigationId, generationRunId, fenceToken, query });
       issuedWebSearchQueries.push(webSearchQuery);
     }
     const webSearchQueries: WebSearchQuery[] = issuedWebSearchQueries;
@@ -268,11 +275,15 @@ export async function researchLandscape(
       .map((r) => r.sourceArtifactId as string);
 
     let landscapeEvidenceItems: EvidenceItem[] = [];
+    let landscapeExtractionInputSourceIds: string[] = [];
     if (retrievedSourceArtifactIds.length > 0) {
       const extractionResult = await extractClaimsAndEvidenceForSourceArtifacts(
         investigationId,
         retrievedSourceArtifactIds,
+        generationRunId,
+        fenceToken,
       );
+      landscapeExtractionInputSourceIds = extractionResult.extractionInputSourceIds;
       // extractionResult.generationFailed answers "was a problem statement established?" — not
       // relevant to landscape research, where zero problem-statement candidates from competitor
       // pages is the expected normal outcome, not a failure. Evidence/claims are already committed
@@ -286,6 +297,7 @@ export async function researchLandscape(
           landscapeEvidenceItems: [],
           generationFailed: true,
           generationFailureReason: `Landscape evidence extraction failed: ${extractionResult.generationFailureReason ?? 'unknown reason'}`,
+          extractionInputSourceIds: landscapeExtractionInputSourceIds,
         };
       }
       landscapeEvidenceItems = extractionResult.evidenceItems;
@@ -315,6 +327,7 @@ export async function researchLandscape(
           landscapeEvidenceItems,
           generationFailed: true,
           generationFailureReason: `Existing-solution identification failed schema validation after bounded repair: ${err.message}`,
+          extractionInputSourceIds: landscapeExtractionInputSourceIds,
         };
       }
       throw err;
@@ -351,6 +364,7 @@ export async function researchLandscape(
         generationFailureReason:
           'All proposed existing solutions were dropped by fail-closed per-entity evidence ' +
           'validation (every solution cited only invalid/unresolvable evidenceIndices).',
+        extractionInputSourceIds: landscapeExtractionInputSourceIds,
       };
     }
 
@@ -367,6 +381,7 @@ export async function researchLandscape(
                 'evidence (original + landscape web research) for this Investigation.',
             }
           : undefined,
+      extractionInputSourceIds: landscapeExtractionInputSourceIds,
     };
   } catch (err) {
     return {
@@ -381,6 +396,7 @@ export async function researchLandscape(
       generationFailureReason: `Landscape research failed with an unexpected error: ${
         err instanceof Error ? err.message : String(err)
       }`,
+      extractionInputSourceIds: [],
     };
   }
 }

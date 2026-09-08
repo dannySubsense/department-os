@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
+import { MemoryRouter } from 'react-router-dom';
 import { ProblemDepartmentScreen } from './ProblemDepartmentScreen.js';
 import * as api from '../api.js';
 import {
@@ -15,18 +16,33 @@ import type {
   GenerationRunSummary,
 } from '../../types/readModels.js';
 
-// Render/behavior coverage for ProblemDepartmentScreen (04-ROADMAP.md Slice 2 Tests list).
-// The last-active-Investigation link is asserted to be a plain <a>, not a router <Link> — this
-// file renders with NO Router wrapper anywhere, so a successful render is itself evidence of that
-// (matching MissionControlScreen.test.tsx's established convention, though that file needs a
-// MemoryRouter for an unrelated component — ProblemDepartmentScreen has no such dependency).
+// Render/behavior coverage for ProblemDepartmentScreen (04-ROADMAP.md Slice 2 Tests list,
+// C2-S2-corrected per 04-ROADMAP.md's Files list for InvestigationPortfolioTable's per-row
+// navigation retarget: every row's affordance is now a router <Link> to the new durable workspace
+// route, rendered for all four InvestigationStatus values including 'brief-generated' — the
+// legacy "Brief ready — review workspace not yet available." plain-text branch was removed. This
+// file now wraps every render in a MemoryRouter, since InvestigationPortfolioTable renders a real
+// react-router <Link>.
 
 vi.mock('../api.js', () => ({
   fetchProblemDepartmentOverview: vi.fn(),
   createInvestigation: vi.fn(),
 }));
 
-afterEach(() => cleanup());
+// handleSubmitted (ProblemDepartmentScreen.tsx) navigates into the new durable workspace route on
+// a successful submission instead of refetching this same-page overview (US-2 AC1) — mock
+// useNavigate (keeping the real MemoryRouter/Link machinery via importActual) so that behavior is
+// observable without a full <Routes> table.
+const mockNavigate = vi.fn();
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
+  return { ...actual, useNavigate: () => mockNavigate };
+});
+
+afterEach(() => {
+  cleanup();
+  mockNavigate.mockClear();
+});
 
 function investigation(overrides: Partial<InvestigationSummary>): InvestigationSummary {
   return {
@@ -69,7 +85,11 @@ function buildView(overrides: Partial<ProblemDepartmentOverview> = {}): ProblemD
 
 async function renderWithView(view: ProblemDepartmentOverview) {
   vi.mocked(api.fetchProblemDepartmentOverview).mockResolvedValue(view);
-  render(<ProblemDepartmentScreen />);
+  render(
+    <MemoryRouter>
+      <ProblemDepartmentScreen />
+    </MemoryRouter>,
+  );
   await waitFor(() => expect(screen.getByText('Problem Department')).toBeInTheDocument());
 }
 
@@ -152,25 +172,29 @@ describe('ProblemDepartmentScreen — status filter', () => {
 });
 
 describe('ProblemDepartmentScreen — StartInvestigationForm submission', () => {
-  it('a successful submission triggers a portfolio refetch', async () => {
+  it('a successful submission navigates into the new durable workspace route (US-2 AC1) instead of refetching the portfolio', async () => {
     await renderWithView(buildView());
 
     vi.mocked(api.createInvestigation).mockResolvedValue({
       investigationId: 'new-inv',
       status: 'open',
+      sourcesAdded: 1,
     });
-    const refetchedView = buildView({
-      investigations: [investigation({ id: 'new-inv', status: 'open' })],
-    });
-    vi.mocked(api.fetchProblemDepartmentOverview).mockResolvedValue(refetchedView);
+    const callsBeforeSubmit = vi.mocked(api.fetchProblemDepartmentOverview).mock.calls.length;
 
     fireEvent.change(screen.getByLabelText('Source content'), {
       target: { value: 'https://example.com' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Start Investigation' }));
 
-    await waitFor(() => expect(screen.getByText(shortenId('new-inv'))).toBeInTheDocument());
-    expect(vi.mocked(api.fetchProblemDepartmentOverview).mock.calls.length).toBeGreaterThan(1);
+    await waitFor(() =>
+      expect(mockNavigate).toHaveBeenCalledWith(
+        '/departments/problem-department/investigations/new-inv',
+      ),
+    );
+    expect(vi.mocked(api.fetchProblemDepartmentOverview).mock.calls.length).toBe(
+      callsBeforeSubmit,
+    );
   });
 
   it('a failed submission renders an inline error and does not refetch the portfolio', async () => {
@@ -192,7 +216,7 @@ describe('ProblemDepartmentScreen — StartInvestigationForm submission', () => 
 });
 
 describe('ProblemDepartmentScreen — per-row Open-current-view affordance', () => {
-  it("renders the shortened id as plain text plus a separate honestly-labeled <a href=\"/investigations/{id}\"> anchor labeled \"Open current view\" (not a router Link)", async () => {
+  it('renders the shortened id as plain text plus a router <Link> labeled "Open current view" targeting the new workspace route', async () => {
     await renderWithView(
       buildView({
         investigations: [investigation({ id: 'inv-last-active', status: 'open' })],
@@ -203,14 +227,16 @@ describe('ProblemDepartmentScreen — per-row Open-current-view affordance', () 
     // shortened id renders as plain text
     expect(screen.getByText(shortenId('inv-last-active'))).toBeInTheDocument();
 
-    // a separate, honestly-labeled anchor exists alongside it
     const link = screen.getByRole('link', { name: 'Open current view' });
     expect(link.tagName).toBe('A');
     expect(link).toHaveClass('legacy-view-button');
-    expect(link).toHaveAttribute('href', '/investigations/inv-last-active');
+    expect(link).toHaveAttribute(
+      'href',
+      '/departments/problem-department/investigations/inv-last-active',
+    );
   });
 
-  it('renders plain text, not a link, when the investigation status is brief-generated', async () => {
+  it('renders the same "Open current view" link for a brief-generated row (the legacy no-link branch was removed)', async () => {
     await renderWithView(
       buildView({
         investigations: [investigation({ id: 'inv-last-active', status: 'brief-generated' })],
@@ -219,27 +245,16 @@ describe('ProblemDepartmentScreen — per-row Open-current-view affordance', () 
     );
 
     expect(
-      screen.getByText('Brief ready — review workspace not yet available.'),
-    ).toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: 'Open current view' })).not.toBeInTheDocument();
-  });
-
-  it('renders no interactive control at all (no link, no button) for a brief-generated row', async () => {
-    await renderWithView(
-      buildView({
-        investigations: [investigation({ id: 'inv-brief', status: 'brief-generated' })],
-      }),
+      screen.queryByText('Brief ready — review workspace not yet available.'),
+    ).not.toBeInTheDocument();
+    const link = screen.getByRole('link', { name: 'Open current view' });
+    expect(link).toHaveAttribute(
+      'href',
+      '/departments/problem-department/investigations/inv-last-active',
     );
-
-    const row = screen
-      .getByText('Brief ready — review workspace not yet available.')
-      .closest('tr');
-    expect(row).not.toBeNull();
-    expect(within(row!).queryByRole('link')).not.toBeInTheDocument();
-    expect(within(row!).queryByRole('button')).not.toBeInTheDocument();
   });
 
-  it('the affordance is no longer gated to only the last-active row — a non-last-active row with an actionable status also renders the "Open current view" button', async () => {
+  it('the affordance is not gated to only the last-active row — a non-last-active row also renders the "Open current view" link, targeting the new workspace route', async () => {
     await renderWithView(
       buildView({
         investigations: [
@@ -252,7 +267,10 @@ describe('ProblemDepartmentScreen — per-row Open-current-view affordance', () 
 
     const links = screen.getAllByRole('link', { name: 'Open current view' });
     expect(links.length).toBe(2);
-    expect(links[1]).toHaveAttribute('href', '/investigations/inv-other');
+    expect(links[1]).toHaveAttribute(
+      'href',
+      '/departments/problem-department/investigations/inv-other',
+    );
   });
 });
 

@@ -377,6 +377,9 @@ export interface GenerationRun {
   // SchemaValidationRecord.toolName + every ToolInvocationRecord.toolName across stepLog
   stepLog: GenerationStep[]; // ordered, one entry per component in Section 2 — appended to by
   // recordGenerationStep, in order, as each step completes or fails
+  fenceToken: number; // §1.6 — the authorization token this run's own pipeline invocation must
+  // pass to every subsequent generation_run/generation_step write; captured once, in-memory, from
+  // createGenerationRun's RETURNING fence_token. Starts at 1 for every new run.
 }
 
 /** One entry per component step in a GenerationRun's pipeline. `outcome` (§1.9 point 3) is
@@ -585,4 +588,75 @@ export interface BriefVersion {
   uncertaintyStatement: UncertaintyStatement;
   recommendation: Recommendation;
   personalPullNoteIds: string[]; // may be empty
+}
+
+// ---- Decision / ReconsiderationCondition (Product Surface Checkpoint 2, §3.4, §1.2 resolution
+// applied) — type declarations only in C2-S2, moved earlier from C2-S5 because this checkpoint's
+// own WorkspaceDecisionSummary (readModels.ts) references ReconsiderationConditionType. No
+// migration, no service logic, no route exists yet for these types — that remains C2-S5's scope. ----
+
+/** NEW union, first defined by this checkpoint — mirrors migration 010's
+ *  `reconsideration_condition.type` CHECK constraint exactly (C2-S5's own scope). */
+export type ReconsiderationConditionType =
+  | 'new-evidence'
+  | 'product-change'
+  | 'stronger-demand-signal'
+  | 'feasibility-shift'
+  | 'price-change'
+  | 'market-event'
+  | 'other';
+
+export interface ReconsiderationCondition {
+  id: string;
+  decisionId: string;
+  type: ReconsiderationConditionType;
+  otherTypeLabel?: string; // required when type === 'other'
+  description: string;
+}
+
+/** No actor/identity field (§1.2). Immutable once created — a revisit creates a new Decision, it
+ *  never edits an existing one. */
+export interface Decision {
+  id: string;
+  briefVersionId: string; // bound to the specific version reviewed — never reassigned on a later
+  // correction (US-10 AC1)
+  decision: RecommendationDecision; // 'Approve' | 'Reject' | 'Watch'
+  decidedAt: string;
+  rationale?: string;
+  reconsiderationConditionIds: string[]; // length >= 1 iff decision === 'Watch' (US-10 AC4)
+}
+
+// ---- AssignedValidityState (Product Surface Checkpoint 2, §3.6, US-12) — type-alias declaration
+// only in C2-S2, for the identical sequencing reason as above: this checkpoint's own
+// WorkspaceBriefSummary (readModels.ts) references it. Migration 011, status_event table, and
+// both real read queries remain C2-S4's own scope exactly as before. ----
+
+/** Answers "what validity state did Department OS assign to this item at time T" — never "was
+ *  this item objectively valid at time T." */
+export type AssignedValidityState = 'valid' | 'challenged' | 'invalidated';
+
+// ---- StatusEvent (Product Surface Checkpoint 2, §3.6, US-12) — schema and semantics reused
+// verbatim from problem-department-mvp/02-ARCHITECTURE.md §3 ("Bitemporal validity (Q-3)") and
+// §4's assignValidityState/getAssignedState/getAssignedStateAsRecorded — restated here (not
+// merely pointed to) because C2-S4 is the first slice to actually build it. ----
+
+/** Answers "what validity state did Department OS assign to this item at time T" — never "was
+ *  this item objectively valid at time T." Append-only; a correction is a new StatusEvent with a
+ *  later recordedAt (and possibly an earlier effectiveAt, for a late-discovered correction), never
+ *  an edit to an existing event. */
+export interface StatusEvent {
+  id: string;
+  sequence: number; // DB-assigned monotonic insertion order (BIGSERIAL), the deterministic
+  // tiebreak when two events share the same (effectiveAt, recordedAt); never caller-supplied,
+  // never reused
+  targetType: 'claim-version' | 'brief-version';
+  targetId: string; // ClaimVersion.id or BriefVersion.id — validated to exist as a row of this
+  // targetType BEFORE this row is ever inserted
+  assignedState: AssignedValidityState;
+  effectiveAt: string; // when this state became true in the represented world
+  recordedAt: string; // when Department OS learned/recorded it
+  recordedBy: string; // which service/process recorded it (e.g. 'forge-verification',
+  // 'test-harness') — not a human-actor identity field; this sprint has no browser-reachable
+  // caller (Out of Scope, US-12), so no UI ever populates this from a person
+  reason: string;
 }

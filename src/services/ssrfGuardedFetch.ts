@@ -145,8 +145,12 @@ export function isDisallowedIp(ip: string): boolean {
  *  option (Sol review item 2 — "must also apply to every redirect hop"). */
 export function safeLookup(
   hostname: string,
-  options: dns.LookupOneOptions,
-  callback: (err: NodeJS.ErrnoException | null, address: string, family: number) => void,
+  options: dns.LookupOneOptions | dns.LookupAllOptions,
+  callback: (
+    err: NodeJS.ErrnoException | null,
+    address: string | dns.LookupAddress[],
+    family?: number,
+  ) => void,
 ): void {
   if (allowedTestHosts.has(hostname.toLowerCase())) {
     dns.lookup(hostname, options, callback);
@@ -164,7 +168,11 @@ export function safeLookup(
       );
       return;
     }
-    callback(null, hostname, net.isIPv6(hostname) ? 6 : 4);
+    if (options.all) {
+      callback(null, [{ address: hostname, family: net.isIPv6(hostname) ? 6 : 4 }]);
+    } else {
+      callback(null, hostname, net.isIPv6(hostname) ? 6 : 4);
+    }
     return;
   }
 
@@ -191,8 +199,12 @@ export function safeLookup(
       );
       return;
     }
-    const chosen = addresses[0];
-    callback(null, chosen.address, chosen.family);
+    if (options.all) {
+      callback(null, addresses);
+    } else {
+      const chosen = addresses[0];
+      callback(null, chosen.address, chosen.family);
+    }
   });
 }
 
@@ -200,6 +212,7 @@ export interface FetchResult {
   statusCode: number;
   statusMessage: string;
   body: string;
+  finalUrl: string;
 }
 
 /** Performs the HTTP(S) request with SSRF guards: caller is responsible for protocol validation
@@ -287,6 +300,7 @@ export async function fetchWithGuards(
             statusCode,
             statusMessage: res.statusMessage ?? '',
             body: Buffer.concat(chunks).toString('utf-8'),
+            finalUrl: startUrl.toString(),
           });
         });
 

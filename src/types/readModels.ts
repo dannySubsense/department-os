@@ -2,6 +2,12 @@ import type {
   InvestigationStatus,
   RecommendationDecision,
   EvidenceLabel,
+  SourceArtifactType,
+  SourceResolution,
+  SchemaValidationRecord,
+  ToolInvocationRecord,
+  AssignedValidityState,
+  ReconsiderationConditionType,
 } from './domain.js';
 
 /** Checkpoint-1-scoped replacement for DESIGN-PROPOSAL.md §8's `ActivityFeedEntry` — omits
@@ -93,4 +99,101 @@ export interface ProblemDepartmentOverview {
   sourceCount: number;
   evidenceCount: number;
   recentRuns: GenerationRunSummary[];
+}
+
+// ---- Investigation Workspace Read Model (Product Surface Checkpoint 2, §3.2) ----
+
+export interface WorkspaceInvestigationSummary {
+  id: string;
+  createdAt: string;
+  status: InvestigationStatus;
+  statusReason: string | null;
+  sourceCount: number;
+  sources: Array<{
+    id: string;
+    type: SourceArtifactType;
+    raw: string;
+    resolutionStatus: SourceResolution['status'];
+    failureReason?: string; // populated only when resolutionStatus === 'unreachable'
+    noContentReason?: string; // populated only when resolutionStatus === 'reachable-no-content'
+  }>;
+}
+
+/** Exactly the persisted GenerationStep facts (US-4 AC1) — no field here is ever computed from
+ *  "what the pipeline is doing right now." */
+export interface WorkspaceGenerationStepSummary {
+  component: string;
+  startedAt: string;
+  completedAt: string;
+  outcome: 'succeeded' | 'failed';
+  error?: string;
+  modelIdentifier?: string;
+  validationRecords?: SchemaValidationRecord[];
+  toolInvocations?: ToolInvocationRecord[];
+}
+
+/** One WebSearchQuery + its results, scoped to one GenerationRun. */
+export interface WorkspaceWebSearchQuerySummary {
+  id: string;
+  query: string;
+  performedAt: string;
+  scopeNote: string | null;
+  limitations: string[]; // populated by joining query_limitation.reason rows for this
+  // web_search_query.id, never by reading web_search_query.limitations directly (§3.2)
+  results: Array<{
+    url: string;
+    retrievedAt: string;
+    status: 'retrieved' | 'blocked' | 'failed';
+    failureReason?: string;
+  }>;
+}
+
+/** One GenerationRun as reported to the workspace. `livenessState` is computed at READ time from
+ *  persisted facts only (§4.9) — never itself a stored column. */
+export interface WorkspaceGenerationRunSummary {
+  id: string;
+  outcome: 'in-progress' | 'succeeded' | 'failed';
+  livenessState: 'active' | 'stale-or-interrupted' | 'terminal';
+  startedAt: string;
+  completedAt: string | null; // null iff outcome === 'in-progress'
+  runtimeIdentifier: string;
+  steps: WorkspaceGenerationStepSummary[]; // persisted steps only, in step_index order
+  webSearchQueries: WorkspaceWebSearchQuerySummary[]; // every WebSearchQuery for this run
+}
+
+export interface WorkspaceBriefSummary {
+  briefVersionId: string;
+  versionNumber: number;
+  createdAt: string;
+  isCurrent: boolean;
+  assignedState: AssignedValidityState; // 'valid' by construction when no StatusEvent exists yet
+  isSuperseded: boolean;
+  forwardSupersededByVersionNumber: number | null;
+}
+
+export interface WorkspaceDecisionSummary {
+  id: string;
+  briefVersionId: string; // internal id — not rendered as primary content
+  versionNumber: number; // human-readable version reference (US-1 AC5)
+  decision: RecommendationDecision;
+  decidedAt: string;
+  rationale?: string;
+  reconsiderationConditions: Array<{
+    type: ReconsiderationConditionType;
+    otherTypeLabel?: string;
+    description: string;
+  }>;
+}
+
+/** GET /api/investigations/:id/workspace response (§3.2). `briefs`/`decisionLineage`/
+ *  `newSourceSnapshotSinceCurrentBriefVersion` are honestly empty/false in this slice — no
+ *  ProblemBrief/Decision row can exist yet, and §4.8's eligibility mechanism is C2-S3's scope. */
+export interface InvestigationWorkspaceView {
+  investigation: WorkspaceInvestigationSummary;
+  generationRuns: WorkspaceGenerationRunSummary[]; // ALL runs for this Investigation, newest first
+  latestGenerationRun: WorkspaceGenerationRunSummary | null; // = generationRuns[0]
+  briefs: WorkspaceBriefSummary[];
+  decisionLineage: WorkspaceDecisionSummary[];
+  generationEligible: boolean;
+  newSourceSnapshotSinceCurrentBriefVersion: boolean;
 }

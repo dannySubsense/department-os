@@ -87,6 +87,7 @@ const stubLandscapeResearch = {
   existingSolutionCandidates: [],
   landscapeEvidenceItems: [],
   generationFailed: false as const,
+  extractionInputSourceIds: [],
 };
 const stubGapHypothesisGeneration = {
   gapHypothesisCandidates: [],
@@ -101,6 +102,7 @@ describe('runStepWithProvenance — outcome classification for a fn that RETURNS
 
     const result = await runStepWithProvenance({
       generationRunId: run.id,
+      fenceToken: run.fenceToken,
       component: 'gapHypothesisGenerator',
       inputRefs: [],
       getOutputRefs: () => [],
@@ -141,6 +143,7 @@ describe('runStepWithProvenance — outcome classification for a fn that RETURNS
 
     const result = await runStepWithProvenance({
       generationRunId: run.id,
+      fenceToken: run.fenceToken,
       component: 'gapHypothesisGenerator',
       inputRefs: [],
       getOutputRefs: () => [],
@@ -177,6 +180,7 @@ describe('runStepWithProvenance — per-component coverage of the no-invalid-att
     const run = await newRun('test-c-demand');
     const result = await runStepWithProvenance({
       generationRunId: run.id,
+      fenceToken: run.fenceToken,
       component: 'demandAnalyzer',
       inputRefs: [],
       getOutputRefs: () => [],
@@ -193,6 +197,7 @@ describe('runStepWithProvenance — per-component coverage of the no-invalid-att
     const run = await newRun('test-c-personal-pull');
     const result = await runStepWithProvenance({
       generationRunId: run.id,
+      fenceToken: run.fenceToken,
       component: 'personalPullExtractor',
       inputRefs: [],
       getOutputRefs: () => [],
@@ -213,10 +218,11 @@ describe('runStepWithProvenance — per-component coverage of the no-invalid-att
     const run = await newRun('test-c-landscape');
     const result = await runStepWithProvenance({
       generationRunId: run.id,
+      fenceToken: run.fenceToken,
       component: 'landscapeResearcher',
       inputRefs: [],
       getOutputRefs: () => [],
-      fn: () => researchLandscape(run.investigationId, run.id),
+      fn: () => researchLandscape(run.investigationId, run.id, run.fenceToken),
     });
     expect(result.generationFailed).toBe(true);
 
@@ -240,6 +246,7 @@ describe('runStepWithProvenance — per-component coverage of the no-invalid-att
 
     const result = await runStepWithProvenance({
       generationRunId: run.id,
+      fenceToken: run.fenceToken,
       component: 'gapHypothesisGenerator',
       inputRefs: [],
       getOutputRefs: () => [],
@@ -273,6 +280,7 @@ describe('runStepWithProvenance — per-component coverage of the no-invalid-att
     const run = await newRun('test-c-uncertainty');
     const result = await runStepWithProvenance({
       generationRunId: run.id,
+      fenceToken: run.fenceToken,
       component: 'uncertaintyCompiler',
       inputRefs: [],
       getOutputRefs: () => [],
@@ -298,6 +306,7 @@ describe('runStepWithProvenance — per-component coverage of the no-invalid-att
     const run = await newRun('test-c-recommendation');
     const result = await runStepWithProvenance({
       generationRunId: run.id,
+      fenceToken: run.fenceToken,
       component: 'recommendationEngine',
       inputRefs: [],
       getOutputRefs: () => [],
@@ -325,10 +334,11 @@ describe('runStepWithProvenance — per-component coverage of the no-invalid-att
     const run = await newRun('test-c-extraction');
     const result = await runStepWithProvenance({
       generationRunId: run.id,
+      fenceToken: run.fenceToken,
       component: 'extractClaimsAndEvidence',
       inputRefs: [],
       getOutputRefs: () => [],
-      fn: () => extractClaimsAndEvidence(run.investigationId),
+      fn: () => extractClaimsAndEvidence(run.investigationId, run.id, run.fenceToken),
     });
     expect(result.generationFailed).toBe(true);
 
@@ -351,6 +361,7 @@ describe('runStepWithProvenance — outputRefs population (defect 3)', () => {
 
     await runStepWithProvenance({
       generationRunId: run.id,
+      fenceToken: run.fenceToken,
       component: 'demandAnalyzer',
       inputRefs: [],
       getOutputRefs: (result: { id: string }) => [result.id],
@@ -368,6 +379,7 @@ describe('finalizeGenerationRun — run-level outcome/step-log consistency (requ
 
     await runStepWithProvenance({
       generationRunId: run.id,
+      fenceToken: run.fenceToken,
       component: 'demandAnalyzer',
       inputRefs: [],
       getOutputRefs: () => [],
@@ -378,6 +390,7 @@ describe('finalizeGenerationRun — run-level outcome/step-log consistency (requ
       generationRunId: run.id,
       outcome: 'failed',
       briefVersionId: null,
+      fenceToken: run.fenceToken,
     });
 
     expect(finalized.outcome).toBe('failed');
@@ -395,6 +408,7 @@ describe('regression guard — schema-validation exhaustion still classifies as 
 
     const result = await runStepWithProvenance({
       generationRunId: run.id,
+      fenceToken: run.fenceToken,
       component: 'demandAnalyzer',
       inputRefs: [],
       getOutputRefs: () => [],
@@ -454,6 +468,7 @@ describe('recordGenerationStep — direct-call regression guard for defect 1/2 (
     const run = await newRun('test-direct-record');
     await recordGenerationStep({
       generationRunId: run.id,
+      fenceToken: run.fenceToken,
       step: {
         component: 'demandAnalyzer',
         startedAt: new Date().toISOString(),

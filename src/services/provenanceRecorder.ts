@@ -66,11 +66,12 @@ export async function createGenerationRun(input: {
   const id = randomUUID();
   const startedAt = new Date().toISOString();
 
-  await pool.query(
+  const result = await pool.query<{ fence_token: number }>(
     `INSERT INTO generation_run
        (id, investigation_id, brief_version_id, outcome, started_at, completed_at,
         runtime_identifier, model_identifiers, tools_invoked)
-     VALUES ($1, $2, NULL, 'in-progress', $3, NULL, $4, '{}', '{}')`,
+     VALUES ($1, $2, NULL, 'in-progress', $3, NULL, $4, '{}', '{}')
+     RETURNING fence_token`,
     [id, input.investigationId, startedAt, input.runtimeIdentifier],
   );
 
@@ -85,7 +86,67 @@ export async function createGenerationRun(input: {
     modelIdentifiers: [],
     toolsInvoked: [],
     stepLog: [],
+    fenceToken: result.rows[0].fence_token,
   };
+}
+
+/** §1.6 SOL-HIGH-2 — thrown by `assertFenceOwnership` when the caller's `fenceToken` no longer
+ *  matches the row's current token, OR the row is no longer `outcome === 'in-progress'` (a fenced-
+ *  out or already-terminal run). Every call site treats this identically to
+ *  `GenerationRunAlreadyFinalizedError`'s graceful-no-op disposition — caught, logged, and treated
+ *  as "this run has been superseded, stop attempting further writes on its behalf." */
+export class GenerationRunFencedOutError extends Error {
+  constructor(public readonly generationRunId: string) {
+    super(`GenerationRun ${generationRunId} is fenced out (stale fence token or no longer in-progress)`);
+    this.name = 'GenerationRunFencedOutError';
+  }
+}
+
+/** §1.6 — thrown by `finalizeGenerationRun`'s atomic guarded UPDATE when `rowCount === 0`: either
+ *  another finalizer already won (outcome no longer 'in-progress'), or this call was fenced out
+ *  (fence_token no longer matches). Callers do not need to distinguish which — the disposition is
+ *  identical either way (see 02-ARCHITECTURE.md §1.6 mechanism (a)/(b)). */
+export class GenerationRunAlreadyFinalizedError extends Error {
+  constructor(public readonly generationRunId: string) {
+    super(`GenerationRun ${generationRunId} was already finalized or has been fenced out`);
+    this.name = 'GenerationRunAlreadyFinalizedError';
+  }
+}
+
+/** §1.6 — the single new guard mechanism, alongside recordGenerationStep/finalizeGenerationRun.
+ *  `SELECT ... FOR UPDATE` takes a row lock on `generation_run.id`, closing the check-then-act race:
+ *  a concurrent `abandonGenerationRun` fence-increment blocks until this transaction commits or
+ *  rolls back, and vice versa. Throws `GenerationRunFencedOutError` when the row is missing, its
+ *  `fence_token` no longer matches, OR its `outcome` is no longer `'in-progress'` (SOL-HIGH-2 —
+ *  outcome, not id/token alone, since a legitimately-finalized run's fence_token never changes). */
+export async function assertFenceOwnership(
+  client: PoolClient,
+  generationRunId: string,
+  fenceToken: number,
+): Promise<void> {
+  const { rows } = await client.query<{ fence_token: number; outcome: string }>(
+    `SELECT fence_token, outcome FROM generation_run WHERE id = $1 FOR UPDATE`,
+    [generationRunId],
+  );
+  if (rows.length === 0 || rows[0].fence_token !== fenceToken || rows[0].outcome !== 'in-progress') {
+    throw new GenerationRunFencedOutError(generationRunId);
+  }
+}
+
+/** §4.2 step 5b — small, new read helper used only by the Generation Run Connector's finalization
+ *  safety net: reads the run's REAL persisted `outcome` before that handler decides whether a
+ *  best-effort terminal write is needed. Never used to infer anything from an error's class. */
+export async function getGenerationRunOutcome(
+  generationRunId: string,
+): Promise<{ outcome: 'in-progress' | 'succeeded' | 'failed' }> {
+  const result = await pool.query<{ outcome: 'in-progress' | 'succeeded' | 'failed' }>(
+    `SELECT outcome FROM generation_run WHERE id = $1`,
+    [generationRunId],
+  );
+  if (result.rows.length === 0) {
+    throw new Error(`getGenerationRunOutcome: no GenerationRun found for id ${generationRunId}`);
+  }
+  return { outcome: result.rows[0].outcome };
 }
 
 /** Called once per completed OR failed component step, in pipeline order — appends exactly one
@@ -95,14 +156,31 @@ export async function createGenerationRun(input: {
 export async function recordGenerationStep(input: {
   generationRunId: string;
   step: GenerationStep;
+  fenceToken: number;
+  client?: PoolClient;
 }): Promise<void> {
+  const runner = input.client ?? pool;
+
+  // §1.6 write-site guard — renews the heartbeat AND the monotonic heartbeat_revision CAS counter
+  // (SOL-HIGH-1) in the same statement, only if the caller's fence_token still matches.
+  // rowCount === 0: this pipeline has been fenced out — silent no-op, no GenerationStep inserted.
+  const heartbeat = await runner.query(
+    `UPDATE generation_run SET lease_heartbeat_at = now(), heartbeat_revision = heartbeat_revision + 1
+      WHERE id = $1 AND fence_token = $2
+    RETURNING id`,
+    [input.generationRunId, input.fenceToken],
+  );
+  if ((heartbeat.rowCount ?? 0) === 0) {
+    return;
+  }
+
   const { step } = input;
   const stepData = {
     validationRecords: step.validationRecords,
     toolInvocations: step.toolInvocations,
   };
 
-  await pool.query(
+  await runner.query(
     `INSERT INTO generation_step
        (id, generation_run_id, step_index, component, started_at, completed_at, outcome, error,
         model_identifier, input_refs, output_refs, step_data)
@@ -140,23 +218,10 @@ export async function finalizeGenerationRun(input: {
   generationRunId: string;
   outcome: 'succeeded' | 'failed';
   briefVersionId: string | null;
+  fenceToken: number;
   client?: PoolClient;
 }): Promise<GenerationRun> {
   const runner = input.client ?? pool;
-  const existing = await runner.query<{ outcome: string; investigation_id: string; started_at: Date; runtime_identifier: string }>(
-    `SELECT outcome, investigation_id, started_at, runtime_identifier FROM generation_run WHERE id = $1`,
-    [input.generationRunId],
-  );
-  if (existing.rows.length === 0) {
-    throw new Error(`finalizeGenerationRun: no GenerationRun found for id ${input.generationRunId}`);
-  }
-  if (existing.rows[0].outcome !== 'in-progress') {
-    throw new Error(
-      `finalizeGenerationRun: GenerationRun ${input.generationRunId} was already finalized ` +
-        `(outcome: ${existing.rows[0].outcome}) — exactly one finalization per run is a hard ` +
-        `programming-error-level assertion (Architecture §1.9 point 4)`,
-    );
-  }
 
   const stepLog = await loadStepLog(input.generationRunId, input.client);
 
@@ -186,25 +251,42 @@ export async function finalizeGenerationRun(input: {
 
   const completedAt = new Date().toISOString();
 
-  await runner.query(
+  // §1.6 — atomic guarded UPDATE, replacing the prior unguarded SELECT-then-UPDATE. rowCount === 0
+  // means either another finalizer already won (outcome no longer 'in-progress') or this call was
+  // fenced out (fence_token no longer matches) — both are "I do not own this write anymore."
+  const result = await runner.query<{ investigation_id: string; started_at: Date; runtime_identifier: string }>(
     `UPDATE generation_run
         SET outcome = $2, completed_at = $3, brief_version_id = $4,
             model_identifiers = $5, tools_invoked = $6
-      WHERE id = $1`,
-    [input.generationRunId, input.outcome, completedAt, input.briefVersionId, modelIdentifiers, toolsInvoked],
+      WHERE id = $1 AND outcome = 'in-progress' AND fence_token = $7
+    RETURNING investigation_id, started_at, runtime_identifier`,
+    [
+      input.generationRunId,
+      input.outcome,
+      completedAt,
+      input.briefVersionId,
+      modelIdentifiers,
+      toolsInvoked,
+      input.fenceToken,
+    ],
   );
+
+  if (result.rowCount === 0) {
+    throw new GenerationRunAlreadyFinalizedError(input.generationRunId);
+  }
 
   return {
     id: input.generationRunId,
-    investigationId: existing.rows[0].investigation_id,
+    investigationId: result.rows[0].investigation_id,
     briefVersionId: input.briefVersionId,
     outcome: input.outcome,
-    startedAt: existing.rows[0].started_at.toISOString(),
+    startedAt: result.rows[0].started_at.toISOString(),
     completedAt,
-    runtimeIdentifier: existing.rows[0].runtime_identifier,
+    runtimeIdentifier: result.rows[0].runtime_identifier,
     modelIdentifiers,
     toolsInvoked,
     stepLog,
+    fenceToken: input.fenceToken,
   };
 }
 
@@ -331,6 +413,7 @@ export async function runStepWithProvenance<T>(input: {
   inputRefs: string[];
   fn: () => Promise<T>;
   getOutputRefs: (result: T) => string[];
+  fenceToken: number;
 }): Promise<T> {
   const invocations: CapturedToolInvocation[] = [];
   const collector = { record: (invocation: CapturedToolInvocation) => invocations.push(invocation) };
@@ -359,6 +442,7 @@ export async function runStepWithProvenance<T>(input: {
         validationRecords: validationRecords.length > 0 ? validationRecords : undefined,
         toolInvocations: toolInvocations.length > 0 ? toolInvocations : undefined,
       },
+      fenceToken: input.fenceToken,
     });
 
     return result;
@@ -383,6 +467,7 @@ export async function runStepWithProvenance<T>(input: {
         validationRecords: validationRecords.length > 0 ? validationRecords : undefined,
         toolInvocations: toolInvocations.length > 0 ? toolInvocations : undefined,
       },
+      fenceToken: input.fenceToken,
     });
 
     throw err;

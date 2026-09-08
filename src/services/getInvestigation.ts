@@ -1,6 +1,15 @@
 import { pool } from '../db/pool.js';
 import type { Investigation, SourceArtifact, SourceResolution } from '../types/domain.js';
 
+/** Thrown only when the Investigation query succeeds with zero rows (Product Surface Checkpoint
+ *  2, §4.4) — never for a database/connection/query failure, which propagates unchanged. */
+export class InvestigationNotFoundError extends Error {
+  constructor(public readonly investigationId: string) {
+    super(`getInvestigation: investigation ${investigationId} does not exist`);
+    this.name = 'InvestigationNotFoundError';
+  }
+}
+
 interface InvestigationRow {
   id: string;
   created_at: Date;
@@ -42,7 +51,7 @@ export async function getInvestigation(investigationId: string): Promise<{
     [investigationId],
   );
   if (investigationResult.rowCount === 0) {
-    throw new Error(`getInvestigation: investigation ${investigationId} does not exist`);
+    throw new InvestigationNotFoundError(investigationId);
   }
   const row = investigationResult.rows[0];
 

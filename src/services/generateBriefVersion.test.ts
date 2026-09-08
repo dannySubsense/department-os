@@ -25,7 +25,12 @@ import type { RecommendationResult } from './recommendationEngine.js';
 
 vi.mock('./extractClaimsAndEvidence.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./extractClaimsAndEvidence.js')>();
-  return { ...actual, extractClaimsAndEvidence: vi.fn() };
+  // C2-S3 fix: a correction attempt now calls `extractClaimsAndEvidenceForSourceArtifacts`
+  // (scoped to its own candidate source ids), not the whole-Investigation `extractClaimsAndEvidence`
+  // — every correction-path test below must wire BOTH mocks (they resolve identically for a given
+  // scenario; `getCandidateCorrectionSourceIds`'s real, unmocked return value only determines the
+  // ARGUMENTS the mocked function is called with, not which mock fires).
+  return { ...actual, extractClaimsAndEvidence: vi.fn(), extractClaimsAndEvidenceForSourceArtifacts: vi.fn() };
 });
 vi.mock('./demandAnalyzer.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./demandAnalyzer.js')>();
@@ -52,7 +57,9 @@ vi.mock('./recommendationEngine.js', async (importOriginal) => {
   return { ...actual, generateRecommendation: vi.fn() };
 });
 
-const { extractClaimsAndEvidence } = await import('./extractClaimsAndEvidence.js');
+const { extractClaimsAndEvidence, extractClaimsAndEvidenceForSourceArtifacts } = await import(
+  './extractClaimsAndEvidence.js'
+);
 const { analyzeDemand } = await import('./demandAnalyzer.js');
 const { extractPersonalPull } = await import('./personalPullExtractor.js');
 const { researchLandscape } = await import('./landscapeResearcher.js');
@@ -81,6 +88,7 @@ beforeEach(async () => {
               source_artifact, submission, investigation CASCADE`,
   );
   vi.mocked(extractClaimsAndEvidence).mockReset();
+  vi.mocked(extractClaimsAndEvidenceForSourceArtifacts).mockReset();
   vi.mocked(analyzeDemand).mockReset();
   vi.mocked(extractPersonalPull).mockReset();
   vi.mocked(researchLandscape).mockReset();
@@ -167,7 +175,9 @@ async function seedCleanExtraction(sourceArtifactId: string): Promise<{
         supportingClaimVersionIds: [claimVersionId],
       },
     ],
+    outcome: 'completed-with-evidence',
     generationFailed: false,
+    extractionInputSourceIds: [sourceArtifactId],
   };
   return { claimVersionId, evidenceItemId, extraction };
 }
@@ -220,6 +230,7 @@ function cleanLandscape(evidenceItemId: string): LandscapeResearchResult {
     ],
     landscapeEvidenceItems: [],
     generationFailed: false,
+    extractionInputSourceIds: [],
   };
 }
 
@@ -259,6 +270,9 @@ function wireCleanPipeline(params: {
   primaryEvidenceItemId: string;
 }): void {
   vi.mocked(extractClaimsAndEvidence).mockResolvedValue(params.extraction);
+  // Corrections call extractClaimsAndEvidenceForSourceArtifacts instead (C2-S3 scoping fix) — wired
+  // identically so a caller that sets supersedesVersionId still gets a clean, matching extraction.
+  vi.mocked(extractClaimsAndEvidenceForSourceArtifacts).mockResolvedValue(params.extraction);
   vi.mocked(analyzeDemand).mockResolvedValue(cleanDemand(params.primaryEvidenceItemId));
   vi.mocked(extractPersonalPull).mockResolvedValue(cleanPersonalPull(params.sourceArtifactId));
   vi.mocked(researchLandscape).mockResolvedValue(cleanLandscape(params.primaryEvidenceItemId));
@@ -346,7 +360,9 @@ describe('generateBriefVersion — Q-2 non-negatable Problem Statement', () => {
       claimVersions: [],
       evidenceItems: [],
       problemStatementCandidates: [],
+      outcome: 'no-problem-statement-established',
       generationFailed: false, // nominally successful extraction, but zero problem statements
+      extractionInputSourceIds: [],
     });
 
     await expect(
@@ -472,7 +488,9 @@ describe('generateBriefVersion — blocked distinct from generation-failed (G-13
       claimVersions: [],
       evidenceItems: [],
       problemStatementCandidates: [],
+      outcome: 'completed-zero-evidence',
       generationFailed: true,
+      extractionInputSourceIds: [],
     });
 
     let caught: unknown;
@@ -555,6 +573,7 @@ describe('generateBriefVersion — negative findings, maximum three rows', () =>
       landscapeEvidenceItems: [],
       generationFailed: false,
       negativeFindingSignal: { statement: 'No existing solutions found.' },
+      extractionInputSourceIds: [],
     });
     vi.mocked(generateGapHypotheses).mockResolvedValue({
       gapHypothesisCandidates: [],
@@ -635,7 +654,9 @@ describe('generateBriefVersion — falsification test E: overrides upstream gene
           supportingClaimVersionIds: [claimVersionId],
         },
       ],
+      outcome: 'completed-with-evidence',
       generationFailed: false,
+      extractionInputSourceIds: [],
     };
     vi.mocked(extractClaimsAndEvidence).mockResolvedValue(extraction);
     void sourceArtifactId;
@@ -685,7 +706,9 @@ describe('generateBriefVersion — falsification tests C/D: ownership (zero-fore
           supportingClaimVersionIds: [claimVersionId],
         },
       ],
+      outcome: 'completed-with-evidence',
       generationFailed: false,
+      extractionInputSourceIds: [],
     };
     vi.mocked(extractClaimsAndEvidence).mockResolvedValue(extraction);
     void sourceArtifactId;
@@ -734,7 +757,9 @@ describe('generateBriefVersion — falsification tests C/D: ownership (zero-fore
           supportingClaimVersionIds: [claimVersionId],
         },
       ],
+      outcome: 'completed-with-evidence',
       generationFailed: false,
+      extractionInputSourceIds: [sourceArtifactId],
     };
     vi.mocked(extractClaimsAndEvidence).mockResolvedValue(extraction);
 
@@ -802,6 +827,7 @@ describe('generateBriefVersion — falsification tests C/D: ownership (zero-fore
       ],
       landscapeEvidenceItems: [],
       generationFailed: false,
+      extractionInputSourceIds: [],
     });
 
     await expect(
@@ -899,9 +925,12 @@ describe('generateBriefVersion — falsification test B: legitimate correction c
           supportingClaimVersionIds: [claimVersionId],
         },
       ],
+      outcome: 'completed-with-evidence',
       generationFailed: false,
+      extractionInputSourceIds: [sourceArtifactId],
     };
     vi.mocked(extractClaimsAndEvidence).mockResolvedValue(correctionExtraction);
+    vi.mocked(extractClaimsAndEvidenceForSourceArtifacts).mockResolvedValue(correctionExtraction);
     vi.mocked(analyzeDemand).mockResolvedValue(cleanDemand(v1Evidence));
     vi.mocked(extractPersonalPull).mockResolvedValue(cleanPersonalPull(sourceArtifactId));
     vi.mocked(researchLandscape).mockResolvedValue(cleanLandscape(v1Evidence));
@@ -985,6 +1014,11 @@ describe('generateBriefVersion — real concurrency', () => {
     // mock functions — each resolves once per call, consumed in call order by whichever
     // generateBriefVersion invocation reaches that pipeline step first.
     vi.mocked(extractClaimsAndEvidence)
+      .mockResolvedValueOnce(xA)
+      .mockResolvedValueOnce(xB);
+    // Both racers here are CORRECTIONS (supersedesVersionId: v1.id below) — C2-S3 scoping routes
+    // corrections through extractClaimsAndEvidenceForSourceArtifacts, not extractClaimsAndEvidence.
+    vi.mocked(extractClaimsAndEvidenceForSourceArtifacts)
       .mockResolvedValueOnce(xA)
       .mockResolvedValueOnce(xB);
     vi.mocked(analyzeDemand)
@@ -1093,7 +1127,9 @@ describe('generateBriefVersion — retry from generation-failed', () => {
       claimVersions: [],
       evidenceItems: [],
       problemStatementCandidates: [],
+      outcome: 'no-problem-statement-established',
       generationFailed: false,
+      extractionInputSourceIds: [],
     });
     await expect(
       generateBriefVersion({ investigationId, runtimeIdentifier: 'test' }),
@@ -1142,7 +1178,9 @@ describe('generateBriefVersion — exactly-once finalization', () => {
       claimVersions: [],
       evidenceItems: [],
       problemStatementCandidates: [],
+      outcome: 'no-problem-statement-established',
       generationFailed: false,
+      extractionInputSourceIds: [],
     });
 
     await expect(
@@ -1222,6 +1260,7 @@ describe('generateBriefVersion — end-to-end pipeline provenance (persisted gen
 
     const { extraction: correctionExtraction } = await seedCleanExtraction(sourceArtifactId);
     vi.mocked(extractClaimsAndEvidence).mockResolvedValue(correctionExtraction);
+    vi.mocked(extractClaimsAndEvidenceForSourceArtifacts).mockResolvedValue(correctionExtraction);
     vi.mocked(analyzeDemand).mockResolvedValue({
       demandSignalCandidates: [],
       demandConfidenceClassificationCandidate: { level: 'Insufficient', narrative: 'n/a', citedDemandSignalIds: [] },
@@ -1419,6 +1458,43 @@ describe('generateBriefVersion — unexpected preflight failure still finalizes 
     );
     expect(brief.rows[0].current_version_id).toBe(v2.id); // untouched by the caller-contract failure
   });
+
+  it('US-3 AC6: the InvalidSupersedeTargetError preflight failure records exactly one GenerationStep with component "Preflight: supersede-target validation", outcome failed, and the real thrown error message — not steps: []', async () => {
+    const { investigationId, sourceArtifactId } = await seedInvestigation();
+    const { evidenceItemId, extraction } = await seedCleanExtraction(sourceArtifactId);
+    wireCleanPipeline({ extraction, sourceArtifactId, primaryEvidenceItemId: evidenceItemId });
+    const v1 = await generateBriefVersion({ investigationId, runtimeIdentifier: 'test' });
+
+    const { evidenceItemId: evidenceItemId2, extraction: extraction2 } = await seedCleanExtraction(sourceArtifactId);
+    wireCleanPipeline({ extraction: extraction2, sourceArtifactId, primaryEvidenceItemId: evidenceItemId2 });
+    // v2 becomes current; v1 becomes a real but no-longer-current supersede target.
+    await generateBriefVersion({ investigationId, supersedesVersionId: v1.id, runtimeIdentifier: 'test' });
+
+    let thrown: unknown;
+    try {
+      await generateBriefVersion({ investigationId, supersedesVersionId: v1.id, runtimeIdentifier: 'test' });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(InvalidSupersedeTargetError);
+    const thrownMessage = (thrown as Error).message;
+    expect(thrownMessage.length).toBeGreaterThan(0);
+
+    const runs = await pool.query<{ id: string }>(
+      `SELECT id FROM generation_run WHERE investigation_id = $1 ORDER BY started_at DESC LIMIT 1`,
+      [investigationId],
+    );
+    const failedRunId = runs.rows[0].id;
+
+    const steps = await pool.query<{ component: string; outcome: string; error: string | null }>(
+      `SELECT component, outcome, error FROM generation_step WHERE generation_run_id = $1`,
+      [failedRunId],
+    );
+    expect(steps.rows).toHaveLength(1);
+    expect(steps.rows[0].component).toBe('Preflight: supersede-target validation');
+    expect(steps.rows[0].outcome).toBe('failed');
+    expect(steps.rows[0].error).toBe(thrownMessage);
+  });
 });
 
 // ---- 19. Composer FAIL round 2, defect 2 — declined failure transitions must be handled and
@@ -1439,7 +1515,9 @@ describe('generateBriefVersion — declined status transition is recorded, not s
       claimVersions: [],
       evidenceItems: [],
       problemStatementCandidates: [],
+      outcome: 'no-problem-statement-established',
       generationFailed: false,
+      extractionInputSourceIds: [],
     });
 
     let caught: unknown;
